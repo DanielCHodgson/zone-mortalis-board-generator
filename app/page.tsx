@@ -225,16 +225,39 @@ export default function Home() {
     setMessage("Piece returned to inventory");
   }, [selected]);
 
+  const duplicateSelected = useCallback(() => {
+    if (!selected) return;
+    const source = pieces.find((piece) => piece.uid === selected);
+    if (!source) return;
+    const def = getDef(source.defId);
+    const currentCount = pieces.filter((piece) => piece.defId === source.defId).length;
+    if (currentCount >= limits[source.defId]) { setMessage(`No more ${def.shortName} pieces available`); return; }
+    const width = source.rotation === 90 ? def.depth : def.width;
+    const height = source.rotation === 90 ? def.width : def.depth;
+    const offset = snap ? gridSize : 1;
+    const duplicate = { ...source, uid:nextUid(), x:quantize(clamp(source.x + offset, 0, BOARD_IN - width)), y:quantize(clamp(source.y + offset, 0, BOARD_IN - height)) };
+    setPieces((current) => [...current, duplicate]);
+    setSelected(duplicate.uid);
+    setMessage(`${def.shortName} duplicated`);
+  }, [gridSize, limits, pieces, quantize, selected, snap]);
+
+  const clearTerrain = useCallback(() => {
+    setPieces([]);
+    setSelected(null);
+    setMessage("Terrain cleared · reserved zones preserved");
+  }, []);
+
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if ((event.target as HTMLElement)?.matches("input, select")) return;
       if (event.key.toLowerCase() === "r") rotateSelected();
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "d") { event.preventDefault(); duplicateSelected(); }
       if (event.key === "Delete" || event.key === "Backspace") { event.preventDefault(); deleteSelected(); }
       if (event.key === "Escape") { setSelected(null); setFocusedZone(null); setZoneDraft(null); setZoneResize(null); setZoneMode(false); }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [deleteSelected, rotateSelected]);
+  }, [deleteSelected, duplicateSelected, rotateSelected]);
 
   const chooseDefinition = (slot: GeneratorSlot, pool: Record<string, number>) => {
     const hasEnabledDoors = TERRAIN.some((def) => def.catalogue === activeCatalogue && def.kind === "door" && enabled[def.id] && limits[def.id] > 0);
@@ -756,7 +779,7 @@ export default function Home() {
 
         <div className="board-column">
           <div className="board-toolbar panel">
-            <div className="tool-group"><button className={`tool ${!zoneMode ? "active" : ""}`} aria-pressed={!zoneMode} onClick={() => { setZoneMode(false); setZoneDraft(null); }}>Select</button><button className={`tool ${zoneMode ? "active zone-tool" : ""}`} aria-pressed={zoneMode} onClick={() => { setZoneMode(true); setSelected(null); setFocusedZone(null); setZoneResize(null); setMessage("Name the zone, then drag it on the board"); }}>Draw zone</button><button className="tool" onClick={rotateSelected} disabled={!selected || zoneMode}>Rotate 90° <kbd>R</kbd></button><button className="tool danger" onClick={deleteSelected} disabled={!selected || zoneMode}>Delete</button><button className="tool danger" onClick={() => { setZones([]); setFocusedZone(null); setZoneDraft(null); setZoneResize(null); setMessage("Reserved zones cleared"); }} disabled={!zones.length}>Clear zones</button></div>
+            <div className="tool-group primary-tools"><button className={`tool ${!zoneMode ? "active" : ""}`} aria-pressed={!zoneMode} onClick={() => { setZoneMode(false); setZoneDraft(null); }}>Select</button><button className={`tool ${zoneMode ? "active zone-tool" : ""}`} aria-pressed={zoneMode} onClick={() => { setZoneMode(true); setSelected(null); setFocusedZone(null); setZoneResize(null); setMessage("Name the zone, then drag it on the board"); }}>Draw zone</button><span className="tool-divider" aria-hidden="true" /><button className="tool" title="Duplicate selected terrain" onClick={duplicateSelected} disabled={!selected || zoneMode}>Duplicate <kbd>Ctrl D</kbd></button><button className="tool" onClick={rotateSelected} disabled={!selected || zoneMode}>Rotate <kbd>R</kbd></button><button className="tool danger" onClick={deleteSelected} disabled={!selected || zoneMode}>Delete</button><span className="tool-divider" aria-hidden="true" /><button className="tool danger" title="Remove terrain but preserve reserved zones" onClick={clearTerrain} disabled={!pieces.length}>Clear terrain</button><button className="tool danger" title="Remove reserved zones but preserve terrain" onClick={() => { setZones([]); setFocusedZone(null); setZoneDraft(null); setZoneResize(null); setMessage("Reserved zones cleared · terrain preserved"); }} disabled={!zones.length}>Clear zones</button></div>
             <div className="tool-group settings">
               <label className="switch-label"><input type="checkbox" checked={snap} onChange={(event) => setSnap(event.target.checked)} /><span className="toggle" /> Snap</label>
               {snap && <select aria-label="Snap grid size" value={gridSize} onChange={(event) => setGridSize(Number(event.target.value))}><option value="1">1″ grid</option><option value="0.5">½″ grid</option><option value="0.25">¼″ grid</option></select>}
@@ -765,7 +788,7 @@ export default function Home() {
           </div>
           {zoneMode && <div className="zone-designator panel"><label><span>Zone name</span><input aria-label="Zone name" value={zoneName} maxLength={32} onChange={(event) => setZoneName(event.target.value)} /></label><p>Drag on the grid to reserve a clear area. Hold <kbd>Shift</kbd> while dragging for a perfect square.</p><strong>{zones.length} saved</strong></div>}
 
-          <div className="board-frame">
+          <div className="board-area"><div className="board-frame">
             <div className="ruler ruler-top"><span>0</span><span>12</span><span>24</span><span>36</span><span>48″</span></div>
             <div className="ruler ruler-left"><span>0</span><span>12</span><span>24</span><span>36</span><span>48″</span></div>
             <div ref={boardRef} className={`board ${theme}-board ${drag ? "dragging" : ""} ${zoneMode ? "zone-mode" : ""} ${zoneResize ? "resizing-zone" : ""}`} aria-label="48 by 48 inch layout board" onDragOver={(event) => event.preventDefault()} onDrop={onDrop} onPointerMove={onBoardPointerMove} onPointerUp={() => { if (zoneDraft) finishZone(); if (zoneResize) { const zone = zones.find((item) => item.uid === zoneResize.uid); if (zone) setMessage(`${zone.name} resized · ${zone.width.toFixed(1)} × ${zone.height.toFixed(1)} in`); setZoneResize(null); } setDrag(null); }} onPointerCancel={() => { setZoneDraft(null); setZoneResize(null); setDrag(null); }} onPointerDown={beginZone}>
@@ -779,8 +802,8 @@ export default function Home() {
                 return <button key={piece.uid} title={`${def.name} · ${def.note} × ${Math.round(piece.height * MM_PER_IN)} mm high`} aria-label={`${def.name}, ${Math.round(piece.height * MM_PER_IN)} millimetres high, selected ${selected === piece.uid}`} className={`placed-piece ${def.kind} ${def.visual ? `visual-${def.visual}` : ""} ${piece.rotation === 90 ? "rotated" : ""} ${selected === piece.uid ? "selected" : ""}`} style={{ left:`${piece.x / BOARD_IN * 100}%`, top:`${piece.y / BOARD_IN * 100}%`, width:`${width / BOARD_IN * 100}%`, height:`${height / BOARD_IN * 100}%` }} onDoubleClick={() => rotatePiece(piece.uid)} onContextMenu={(event) => { event.preventDefault(); setFocusedZone(null); setSelected(piece.uid); rotatePiece(piece.uid); }} onPointerDown={(event) => { event.stopPropagation(); (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId); setFocusedZone(null); setSelected(piece.uid); const point = boardPoint(event.clientX, event.clientY); setDrag({ uid:piece.uid, dx:point.x - piece.x, dy:point.y - piece.y }); }}><span className="terrain-detail" /></button>;
               })}
             </div>
-          </div>
-          <div className="status-line"><span>{message}</span><span>{zones.length ? `${zones.length} reserved zone${zones.length === 1 ? "" : "s"} · ` : ""}{snap ? `Snap ${gridSize}″` : "Free placement"} · R rotate · Del remove</span></div>
+          </div></div>
+          <div className="status-line"><span>{message}</span><span>{zones.length ? `${zones.length} zone${zones.length === 1 ? "" : "s"} · ` : ""}{snap ? `Snap ${gridSize}″` : "Free placement"} · R rotate · Ctrl D duplicate</span></div>
         </div>
 
         <aside className="inspector panel">
@@ -799,7 +822,6 @@ export default function Home() {
           <p className="inspector-copy">{activeCatalogue === "boarding" ? "The generator scores 32 candidates for route variety, door spacing, connected lanes, reserved-zone clearance and useful open negative space." : "Iron Labyrinth plans search alternative modular connector placements, preserving exact 50 mm nodes and 64 mm spans while keeping reserved zones clear."}</p>
           <div className="layout-key">{activeCatalogue === "boarding" ? <><span><i className="key-wall" /> Wall</span><span><i className="key-door" /> Hatchway</span><span><i className="key-pillar" /> Pillar</span></> : <><span><i className="key-wall" /> Wall</span><span><i className="key-door" /> Wall end</span><span><i className="key-pillar" /> Connector</span></>}</div>
           {zones.length > 0 && <div className="zone-list"><div className="zone-list-heading"><span>Reserved zones</span><button onClick={() => { setZones([]); setFocusedZone(null); setZoneDraft(null); setZoneResize(null); setMessage("Reserved zones cleared"); }}>Clear all</button></div><small className="zone-list-hint">Hover a zone for temporary handles, or click it to keep them active.</small>{zones.map((zone) => <div className={`zone-list-row ${focusedZone === zone.uid ? "active" : ""}`} key={zone.uid} onPointerDown={() => setFocusedZone(zone.uid)}><input aria-label={`Rename ${zone.name}`} value={zone.name} maxLength={32} onFocus={() => setFocusedZone(zone.uid)} onChange={(event) => setZones((current) => current.map((item) => item.uid === zone.uid ? { ...item, name:event.target.value } : item))} /><span>{zone.width.toFixed(1)} × {zone.height.toFixed(1)}″</span><button aria-label={`Remove ${zone.name}`} onClick={() => { setZones((current) => current.filter((item) => item.uid !== zone.uid)); if (focusedZone === zone.uid) setFocusedZone(null); if (zoneResize?.uid === zone.uid) setZoneResize(null); }}>×</button></div>)}</div>}
-          <button className="secondary" disabled={!pieces.length} onClick={() => { setPieces([]); setSelected(null); setMessage("Board cleared"); }}>Clear board</button>
           <p className="accuracy-note">Scale basis: 48″ square board · 25.4 mm per inch. Iron Labyrinth dimensions are manufacturer-published; Boarding Actions footprints remain physical-kit approximations. Default wall height is 60 mm in both systems.</p>
         </aside>
       </section>
