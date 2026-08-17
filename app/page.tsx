@@ -1435,6 +1435,27 @@ export default function Home() {
             <label><span>Manufacturer</span><select value={activeCatalogue} onChange={(event) => selectManufacturer(event.target.value as CatalogueId)}>{(Object.keys(MANUFACTURERS) as CatalogueId[]).map((catalogueId) => <option key={catalogueId} value={catalogueId}>{MANUFACTURERS[catalogueId].name}</option>)}</select></label>
             <label><span>Kit</span><select value={activeKitId} onChange={(event) => selectKit(event.target.value)}>{manufacturerKits.map((kit) => <option key={kit.id} value={kit.id}>{kit.name}</option>)}</select></label>
           </div>
+          <section className="kit-browser" aria-labelledby="kit-browser-heading">
+            <div className="section-heading">
+              <div><p className="eyebrow">Available pieces · selected kit</p><h2 id="kit-browser-heading">{activeCatalogueMeta.name}</h2></div>
+              <button className="add-kit" onClick={addKitToPalette}>Add full kit · {activeKitTotal}</button>
+            </div>
+            <p className="section-intro">{activeCatalogueMeta.description} <a href={activeCatalogueMeta.sourceUrl} target="_blank" rel="noreferrer">Source</a></p>
+            <div className="kit-piece-list" aria-label={`${activeCatalogueMeta.name} available pieces`}>
+              {kitTerrain.map((def) => {
+                const amountKey = `${activeKitId}:${def.id}`;
+                const kitAmount = kitAddAmounts[amountKey] ?? activeCatalogueMeta.inventory[def.id] ?? 1;
+                return <div className="kit-piece-row" key={def.id}>
+                  <span className={`piece-icon ${def.kind} ${def.width > 5 ? "long" : "short"} ${def.visual ? `visual-${def.visual}` : ""}`}><i /></span>
+                  <span className="piece-copy"><strong>{def.shortName}</strong><small>{def.note} · kit includes {activeCatalogueMeta.inventory[def.id]}</small></span>
+                  <label className="add-amount"><span className="sr-only">Amount of {def.name} to add</span><input aria-label={`Amount of ${def.name} to add`} type="number" min="1" max="999" value={kitAmount} onChange={(event) => setKitAddAmounts((current) => ({ ...current, [amountKey]:clamp(Number(event.target.value), 1, 999) }))} /></label>
+                  <button className="add-piece-to-palette" onClick={() => addToPalette(def.id, kitAmount)} aria-label={`Add ${kitAmount} ${def.name} to palette`}>Add</button>
+                </div>;
+              })}
+            </div>
+            {activeCatalogueMeta.caveat && <p className="kit-caveat">{activeCatalogueMeta.caveat}</p>}
+          </section>
+
           <section className="palette-builder" aria-labelledby="generator-palette-heading">
             <div className="section-heading">
               <div><p className="eyebrow">Layout inventory</p><h2 id="generator-palette-heading">Current generator palette</h2></div>
@@ -1460,26 +1481,6 @@ export default function Home() {
             </div>
           </section>
 
-          <section className="kit-browser" aria-labelledby="kit-browser-heading">
-            <div className="section-heading">
-              <div><p className="eyebrow">Available pieces · selected kit</p><h2 id="kit-browser-heading">{activeCatalogueMeta.name}</h2></div>
-              <button className="add-kit" onClick={addKitToPalette}>Add full kit · {activeKitTotal}</button>
-            </div>
-            <p className="section-intro">{activeCatalogueMeta.description} <a href={activeCatalogueMeta.sourceUrl} target="_blank" rel="noreferrer">Source</a></p>
-            <div className="kit-piece-list" aria-label={`${activeCatalogueMeta.name} available pieces`}>
-              {kitTerrain.map((def) => {
-                const amountKey = `${activeKitId}:${def.id}`;
-                const kitAmount = kitAddAmounts[amountKey] ?? activeCatalogueMeta.inventory[def.id] ?? 1;
-                return <div className="kit-piece-row" key={def.id}>
-                  <span className={`piece-icon ${def.kind} ${def.width > 5 ? "long" : "short"} ${def.visual ? `visual-${def.visual}` : ""}`}><i /></span>
-                  <span className="piece-copy"><strong>{def.shortName}</strong><small>{def.note} · kit includes {activeCatalogueMeta.inventory[def.id]}</small></span>
-                  <label className="add-amount"><span className="sr-only">Amount of {def.name} to add</span><input aria-label={`Amount of ${def.name} to add`} type="number" min="1" max="999" value={kitAmount} onChange={(event) => setKitAddAmounts((current) => ({ ...current, [amountKey]:clamp(Number(event.target.value), 1, 999) }))} /></label>
-                  <button className="add-piece-to-palette" onClick={() => addToPalette(def.id, kitAmount)} aria-label={`Add ${kitAmount} ${def.name} to palette`}>Add</button>
-                </div>;
-              })}
-            </div>
-            {activeCatalogueMeta.caveat && <p className="kit-caveat">{activeCatalogueMeta.caveat}</p>}
-          </section>
         </aside>
 
         <div className="board-column">
