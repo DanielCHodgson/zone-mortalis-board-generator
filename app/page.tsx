@@ -344,6 +344,171 @@ export default function Home() {
     setMessage(`${activeCatalogueMeta.name} sector generated · ${finalPieces.length} pieces`);
   };
 
+  const exportLayoutPng = () => {
+    if (!pieces.length) return;
+
+    const canvas = document.createElement("canvas");
+    canvas.width = 1800;
+    canvas.height = 1320;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) { setMessage("PNG export is unavailable in this browser"); return; }
+
+    const boardX = 70;
+    const boardY = 160;
+    const boardSize = 1080;
+    const boardScale = boardSize / BOARD_IN;
+    const manifestX = 1200;
+    const manifestWidth = 530;
+    const themeColours = {
+      industrial: { board:"#858e89", minor:"rgba(238,243,239,.16)", major:"rgba(28,37,34,.30)" },
+      gothic: { board:"#626967", minor:"rgba(235,237,230,.13)", major:"rgba(18,23,22,.36)" },
+      desert: { board:"#b9aa8b", minor:"rgba(255,248,226,.25)", major:"rgba(77,65,45,.28)" },
+    }[theme];
+    const manifest = TERRAIN.map((def) => {
+      const matches = pieces.filter((piece) => piece.defId === def.id);
+      const heightCounts = matches.reduce<Record<string, number>>((counts, piece) => {
+        const height = String(Math.round(piece.height * MM_PER_IN));
+        return { ...counts, [height]:(counts[height] || 0) + 1 };
+      }, {});
+      return { def, count:matches.length, heightCounts };
+    }).filter((item) => item.count > 0);
+    const cataloguesUsed = [...new Set(manifest.map((item) => item.def.catalogue))];
+
+    ctx.fillStyle = "#f2f3f0";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = "#17201e";
+    ctx.font = "700 38px Arial, sans-serif";
+    ctx.fillText("MORTALIS ARCHITECT", 70, 70);
+    ctx.fillStyle = "#68736e";
+    ctx.font = "700 15px Arial, sans-serif";
+    ctx.fillText("HORUS HERESY LAYOUT SHEET", 72, 102);
+    ctx.textAlign = "right";
+    ctx.font = "700 17px Arial, sans-serif";
+    ctx.fillText("BOARD 48 × 48 IN  ·  SCALE 1:1 DATA", 1730, 76);
+    ctx.font = "15px Arial, sans-serif";
+    ctx.fillText(cataloguesUsed.map((id) => `${CATALOGUES[id].maker} ${CATALOGUES[id].name}`).join(" + "), 1730, 103);
+    ctx.textAlign = "left";
+
+    ctx.fillStyle = themeColours.board;
+    ctx.fillRect(boardX, boardY, boardSize, boardSize);
+    for (let inch = 0; inch <= BOARD_IN; inch++) {
+      const position = boardX + inch * boardScale;
+      ctx.beginPath();
+      ctx.strokeStyle = inch % 12 === 0 ? themeColours.major : themeColours.minor;
+      ctx.lineWidth = inch % 12 === 0 ? 3 : 1;
+      ctx.moveTo(position, boardY);
+      ctx.lineTo(position, boardY + boardSize);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(boardX, boardY + inch * boardScale);
+      ctx.lineTo(boardX + boardSize, boardY + inch * boardScale);
+      ctx.stroke();
+    }
+    ctx.strokeStyle = "#17201e";
+    ctx.lineWidth = 5;
+    ctx.strokeRect(boardX, boardY, boardSize, boardSize);
+    ctx.fillStyle = "#5f6965";
+    ctx.font = "13px Arial, sans-serif";
+    ctx.textAlign = "center";
+    [0, 12, 24, 36, 48].forEach((inch) => ctx.fillText(`${inch}${inch === 48 ? "″" : ""}`, boardX + inch * boardScale, boardY - 17));
+    ctx.textAlign = "right";
+    [0, 12, 24, 36, 48].forEach((inch) => ctx.fillText(`${inch}${inch === 48 ? "″" : ""}`, boardX - 17, boardY + inch * boardScale + 5));
+    ctx.textAlign = "left";
+
+    pieces.forEach((piece) => {
+      const def = getDef(piece.defId);
+      const widthIn = piece.rotation === 90 ? def.depth : def.width;
+      const depthIn = piece.rotation === 90 ? def.width : def.depth;
+      const x = boardX + piece.x * boardScale;
+      const y = boardY + piece.y * boardScale;
+      const width = Math.max(4, widthIn * boardScale);
+      const depth = Math.max(4, depthIn * boardScale);
+      const colour = def.kind === "door" ? "#7d4b39" : def.kind === "wall" ? "#3d4844" : def.kind === "end" ? "#56615c" : "#2d3934";
+      ctx.fillStyle = colour;
+      ctx.fillRect(x, y, width, depth);
+      ctx.strokeStyle = "#18211e";
+      ctx.lineWidth = 2;
+      ctx.strokeRect(x, y, width, depth);
+      ctx.strokeStyle = "rgba(226,233,228,.48)";
+      ctx.lineWidth = 2;
+      if (def.kind === "door") {
+        ctx.fillStyle = "#252d2a";
+        if (width >= depth) ctx.fillRect(x + width * .35, y + 3, width * .3, Math.max(2, depth - 6));
+        else ctx.fillRect(x + 3, y + depth * .35, Math.max(2, width - 6), depth * .3);
+      } else if (["pillar", "connector"].includes(def.kind)) {
+        ctx.strokeRect(x + 4, y + 4, Math.max(1, width - 8), Math.max(1, depth - 8));
+      } else if (def.visual === "grid") {
+        for (let offset = 5; offset < Math.max(width, depth); offset += 8) {
+          ctx.beginPath(); ctx.moveTo(x + Math.min(offset, width), y); ctx.lineTo(x + Math.min(offset, width), y + depth); ctx.stroke();
+        }
+      } else if (["pipe", "vertical-pipe"].includes(def.visual || "")) {
+        ctx.beginPath();
+        if (width >= depth) { ctx.moveTo(x + 5, y + depth * .35); ctx.lineTo(x + width - 5, y + depth * .35); ctx.moveTo(x + 5, y + depth * .65); ctx.lineTo(x + width - 5, y + depth * .65); }
+        else { ctx.moveTo(x + width * .35, y + 5); ctx.lineTo(x + width * .35, y + depth - 5); ctx.moveTo(x + width * .65, y + 5); ctx.lineTo(x + width * .65, y + depth - 5); }
+        ctx.stroke();
+      } else if (def.visual === "reinforced") {
+        ctx.strokeRect(x + 4, y + 4, Math.max(1, width - 8), Math.max(1, depth - 8));
+      } else if (def.visual === "fan") {
+        ctx.beginPath(); ctx.arc(x + width / 2, y + depth / 2, Math.max(2, Math.min(width, depth) * .28), 0, Math.PI * 2); ctx.stroke();
+      }
+    });
+
+    ctx.fillStyle = "#fafbf9";
+    ctx.fillRect(manifestX, boardY, manifestWidth, boardSize);
+    ctx.strokeStyle = "#d0d6d2";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(manifestX, boardY, manifestWidth, boardSize);
+    ctx.fillStyle = "#17201e";
+    ctx.font = "700 25px Arial, sans-serif";
+    ctx.fillText("PIECES USED", manifestX + 30, boardY + 48);
+    ctx.fillStyle = "#68736e";
+    ctx.font = "15px Arial, sans-serif";
+    ctx.fillText(`${pieces.length} terrain pieces  ·  ${coverage.toFixed(1)}% footprint coverage`, manifestX + 30, boardY + 77);
+    let rowY = boardY + 118;
+    cataloguesUsed.forEach((catalogueId) => {
+      ctx.fillStyle = "#eef1ed";
+      ctx.fillRect(manifestX + 20, rowY - 22, manifestWidth - 40, 34);
+      ctx.fillStyle = "#4e5a55";
+      ctx.font = "700 13px Arial, sans-serif";
+      ctx.fillText(`${CATALOGUES[catalogueId].maker.toUpperCase()} · ${CATALOGUES[catalogueId].name.toUpperCase()}`, manifestX + 30, rowY);
+      rowY += 42;
+      manifest.filter((item) => item.def.catalogue === catalogueId).forEach(({ def, count, heightCounts }) => {
+        ctx.fillStyle = def.kind === "door" ? "#7d4b39" : def.kind === "wall" ? "#3d4844" : def.kind === "end" ? "#56615c" : "#2d3934";
+        ctx.fillRect(manifestX + 30, rowY - 16, 12, 12);
+        ctx.fillStyle = "#17201e";
+        ctx.font = "700 16px Arial, sans-serif";
+        ctx.fillText(`${count} × ${def.shortName}`, manifestX + 55, rowY - 4);
+        ctx.fillStyle = "#68736e";
+        ctx.font = "13px Arial, sans-serif";
+        const heightEntries = Object.entries(heightCounts).sort(([a], [b]) => Number(a) - Number(b));
+        const zText = heightEntries.length === 1 ? `${heightEntries[0][0]} mm` : heightEntries.map(([height, quantity]) => `${quantity}×${height}`).join(" / ") + " mm";
+        ctx.fillText(`${def.note}  ·  Z ${zText}`, manifestX + 55, rowY + 15);
+        rowY += 45;
+      });
+      rowY += 10;
+    });
+    ctx.fillStyle = "#68736e";
+    ctx.font = "13px Arial, sans-serif";
+    ctx.fillText("Bird's-eye placement diagram · dimensions shown at real-world scale", manifestX + 30, boardY + boardSize - 35);
+    ctx.fillText("Generated with Mortalis Architect", 70, 1286);
+    ctx.textAlign = "right";
+    ctx.fillText(new Date().toLocaleDateString(undefined, { year:"numeric", month:"short", day:"numeric" }), 1730, 1286);
+    ctx.textAlign = "left";
+
+    setMessage("Preparing PNG layout sheet…");
+    canvas.toBlob((blob) => {
+      if (!blob) { setMessage("PNG export could not be created"); return; }
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      const catalogueSlug = cataloguesUsed.map((id) => CATALOGUES[id].name.toLowerCase().replace(/[^a-z0-9]+/g, "-")).join("-");
+      link.href = url;
+      link.download = `mortalis-layout-${catalogueSlug}-${new Date().toISOString().slice(0, 10)}.png`;
+      link.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setMessage(`PNG exported · ${pieces.length} pieces listed`);
+    }, "image/png");
+  };
+
   const boardPoint = (clientX: number, clientY: number) => {
     const rect = boardRef.current!.getBoundingClientRect();
     return { x: (clientX - rect.left) / rect.width * BOARD_IN, y: (clientY - rect.top) / rect.height * BOARD_IN };
@@ -401,7 +566,7 @@ export default function Home() {
     <main className="app-shell">
       <header className="topbar">
         <div><p className="eyebrow">Horus Heresy layout utility</p><h1>Mortalis Architect</h1></div>
-        <div className="top-actions"><span className="board-chip">BOARD 48 × 48 IN</span><button className="primary" onClick={generateLayout}>Generate layout</button></div>
+        <div className="top-actions"><span className="board-chip">BOARD 48 × 48 IN</span><button className="export-action" onClick={exportLayoutPng} disabled={!pieces.length} aria-label="Export layout as PNG">Export PNG</button><button className="primary" onClick={generateLayout}>Generate layout</button></div>
       </header>
 
       <section className="workspace">

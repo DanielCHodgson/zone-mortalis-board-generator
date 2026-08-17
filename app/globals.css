@@ -18,6 +18,8 @@ h2 { font-size:15px; letter-spacing:-.02em; }
 .primary { background:var(--ink); color:#fff; border-radius:4px; padding:10px 16px; font-size:12px; font-weight:650; transition:transform .15s,background .15s; }
 .primary:hover { background:#2c3834; transform:translateY(-1px); }
 .primary:active { transform:none; }
+.export-action { padding:9px 12px; border:1px solid #bfc7c2; border-radius:4px; background:transparent; color:var(--ink); font-size:11px; font-weight:650; }
+.export-action:hover:not(:disabled) { background:#e8ebe7; }
 .workspace { display:grid; grid-template-columns:230px minmax(490px,1fr) 205px; gap:16px; padding-top:16px; align-items:start; }
 .panel { background:var(--panel); border:1px solid var(--line); border-radius:5px; }
 .catalogue,.inspector { padding:15px; }
