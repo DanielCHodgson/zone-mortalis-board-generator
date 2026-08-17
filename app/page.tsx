@@ -1461,7 +1461,6 @@ export default function Home() {
               <div><p className="eyebrow">Layout inventory</p><h2 id="generator-palette-heading">Current generator palette</h2></div>
               <div className="section-actions"><span className="count">{catalogueTotal} pcs</span><button className="text-action danger" onClick={clearPalette} disabled={!catalogueTotal}>Clear</button></div>
             </div>
-            <p className="section-intro">Generate uses only this persistent list. Drag a piece onto the board, or edit how many the generator may use.</p>
             {catalogueTotal > 0 && <div className="palette-range"><span>{paletteMaker}</span><strong>{paletteLabel}</strong><em>{Math.max(0, catalogueTotal - paletteUsed)} unplaced</em></div>}
             <div className="palette-list" aria-label="Current generator terrain palette">
               {!catalogueTotal && <div className="palette-empty"><strong>Your palette is empty</strong><span>Add individual pieces or a full kit below.</span></div>}

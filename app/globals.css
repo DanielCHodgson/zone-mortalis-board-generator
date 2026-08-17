@@ -32,8 +32,8 @@ h2 { font-size:15px; letter-spacing:-.02em; }
 .catalogue-selectors label { min-width:0; display:grid; gap:4px; color:var(--muted); font-size:12px; font-weight:700; }
 .catalogue-selectors select { min-width:0; width:100%; padding:8px 24px 8px 7px; border:1px solid #adb8b1; border-radius:3px; background:#fff; color:var(--ink); font-size:12px; text-overflow:ellipsis; }
 .palette-builder,.kit-browser { min-height:0; display:flex; flex-direction:column; border:1px solid var(--line); border-radius:4px; background:#f8f9f7; overflow:hidden; }
-.palette-builder { flex:1 1 47%; border-color:#aeb9b3; background:#fff; box-shadow:0 1px 2px rgba(25,34,30,.04); }
-.kit-browser { flex:1 1 53%; margin-bottom:9px; }
+.palette-builder { flex:1 1 60%; border-color:#aeb9b3; background:#fff; box-shadow:0 1px 2px rgba(25,34,30,.04); }
+.kit-browser { flex:1 1 40%; margin-bottom:9px; }
 .section-heading { flex:0 0 auto; display:flex; justify-content:space-between; align-items:center; gap:8px; padding:9px 10px 7px; }
 .section-heading h2 { font-size:14px; line-height:1.15; }
 .section-heading .eyebrow { margin-bottom:3px; font-size:10px; }

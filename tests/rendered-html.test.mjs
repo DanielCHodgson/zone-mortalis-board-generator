@@ -36,6 +36,7 @@ test("server-renders the Mortalis Architect workspace", async () => {
   assert.match(html, /Available pieces|Selected kit/);
   assert.match(html, /Generate from palette/);
   assert.ok(html.indexOf("Available pieces · selected kit") < html.indexOf("Current generator palette"), "kit pieces should appear before layout inventory");
+  assert.doesNotMatch(html, /Generate uses only this persistent list/);
   assert.match(html, /48 by 48 inch layout board/);
   assert.match(html, /role="toolbar" aria-label="Layout tools"/);
   assert.match(html, /role="status" aria-live="polite"/);
