@@ -34,6 +34,8 @@ type ReservedZone = {
   height: number;
 };
 
+type ZoneCorner = "nw" | "ne" | "sw" | "se";
+
 type GeneratorSlot = {
   x: number;
   y: number;
@@ -134,6 +136,7 @@ export default function Home() {
   const [zoneMode, setZoneMode] = useState(false);
   const [zoneName, setZoneName] = useState("Hangar");
   const [zoneDraft, setZoneDraft] = useState<{ startX:number; startY:number; currentX:number; currentY:number } | null>(null);
+  const [zoneResize, setZoneResize] = useState<{ uid:string; corner:ZoneCorner; anchorX:number; anchorY:number } | null>(null);
   const [paletteDrag, setPaletteDrag] = useState<{ defId: string; x: number; y: number } | null>(null);
   const paletteDragRef = useRef<{ defId: string; x: number; y: number } | null>(null);
   const [message, setMessage] = useState("Ready to build");
@@ -226,7 +229,7 @@ export default function Home() {
       if ((event.target as HTMLElement)?.matches("input, select")) return;
       if (event.key.toLowerCase() === "r") rotateSelected();
       if (event.key === "Delete" || event.key === "Backspace") { event.preventDefault(); deleteSelected(); }
-      if (event.key === "Escape") { setSelected(null); setZoneDraft(null); setZoneMode(false); }
+      if (event.key === "Escape") { setSelected(null); setZoneDraft(null); setZoneResize(null); setZoneMode(false); }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -610,6 +613,17 @@ export default function Home() {
     setMessage(`${name} reserved · ${zone.width.toFixed(1)} × ${zone.height.toFixed(1)} in`);
   };
 
+  const beginZoneResize = (event: React.PointerEvent<HTMLButtonElement>, zone: ReservedZone, corner: ZoneCorner) => {
+    event.preventDefault();
+    event.stopPropagation();
+    try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* Pointer capture may be unavailable in embedded browsers. */ }
+    const anchorX = corner.endsWith("w") ? zone.x + zone.width : zone.x;
+    const anchorY = corner.startsWith("n") ? zone.y + zone.height : zone.y;
+    setZoneResize({ uid:zone.uid, corner, anchorX, anchorY });
+    setSelected(null);
+    setMessage(`Resizing ${zone.name} · hold Shift for a perfect square`);
+  };
+
   const onDrop = (event: React.DragEvent) => {
     event.preventDefault();
     const defId = event.dataTransfer.getData("terrain/def-id");
@@ -647,6 +661,30 @@ export default function Home() {
   }, [addPiece]);
 
   const onBoardPointerMove = (event: React.PointerEvent) => {
+    if (zoneResize && boardRef.current) {
+      const point = boardPoint(event.clientX, event.clientY);
+      const minimumSize = snap ? gridSize : .5;
+      const directionX = zoneResize.corner.endsWith("w") ? -1 : 1;
+      const directionY = zoneResize.corner.startsWith("n") ? -1 : 1;
+      let currentX = clamp(quantize(point.x), 0, BOARD_IN);
+      let currentY = clamp(quantize(point.y), 0, BOARD_IN);
+      currentX = directionX > 0 ? Math.max(currentX, zoneResize.anchorX + minimumSize) : Math.min(currentX, zoneResize.anchorX - minimumSize);
+      currentY = directionY > 0 ? Math.max(currentY, zoneResize.anchorY + minimumSize) : Math.min(currentY, zoneResize.anchorY - minimumSize);
+      currentX = clamp(currentX, 0, BOARD_IN);
+      currentY = clamp(currentY, 0, BOARD_IN);
+      if (event.shiftKey) {
+        const maximumSide = Math.min(directionX > 0 ? BOARD_IN - zoneResize.anchorX : zoneResize.anchorX, directionY > 0 ? BOARD_IN - zoneResize.anchorY : zoneResize.anchorY);
+        const side = clamp(Math.max(Math.abs(currentX - zoneResize.anchorX), Math.abs(currentY - zoneResize.anchorY)), minimumSize, maximumSide);
+        currentX = zoneResize.anchorX + directionX * side;
+        currentY = zoneResize.anchorY + directionY * side;
+      }
+      const x = Math.min(currentX, zoneResize.anchorX);
+      const y = Math.min(currentY, zoneResize.anchorY);
+      const width = Math.abs(currentX - zoneResize.anchorX);
+      const height = Math.abs(currentY - zoneResize.anchorY);
+      setZones((current) => current.map((zone) => zone.uid === zoneResize.uid ? { ...zone, x, y, width, height } : zone));
+      return;
+    }
     if (zoneDraft && boardRef.current) {
       const point = boardPoint(event.clientX, event.clientY);
       let currentX = clamp(quantize(point.x), 0, BOARD_IN);
@@ -713,7 +751,7 @@ export default function Home() {
 
         <div className="board-column">
           <div className="board-toolbar panel">
-            <div className="tool-group"><button className={`tool ${!zoneMode ? "active" : ""}`} onClick={() => { setZoneMode(false); setZoneDraft(null); }}>Select</button><button className={`tool ${zoneMode ? "active zone-tool" : ""}`} onClick={() => { setZoneMode(true); setSelected(null); setMessage("Name the zone, then drag it on the board"); }}>Draw zone</button><button className="tool" onClick={rotateSelected} disabled={!selected || zoneMode}>Rotate 90° <kbd>R</kbd></button><button className="tool danger" onClick={deleteSelected} disabled={!selected || zoneMode}>Delete</button><button className="tool danger" onClick={() => { setZones([]); setZoneDraft(null); setMessage("Reserved zones cleared"); }} disabled={!zones.length}>Clear zones</button></div>
+            <div className="tool-group"><button className={`tool ${!zoneMode ? "active" : ""}`} onClick={() => { setZoneMode(false); setZoneDraft(null); }}>Select</button><button className={`tool ${zoneMode ? "active zone-tool" : ""}`} onClick={() => { setZoneMode(true); setSelected(null); setZoneResize(null); setMessage("Name the zone, then drag it on the board"); }}>Draw zone</button><button className="tool" onClick={rotateSelected} disabled={!selected || zoneMode}>Rotate 90° <kbd>R</kbd></button><button className="tool danger" onClick={deleteSelected} disabled={!selected || zoneMode}>Delete</button><button className="tool danger" onClick={() => { setZones([]); setZoneDraft(null); setZoneResize(null); setMessage("Reserved zones cleared"); }} disabled={!zones.length}>Clear zones</button></div>
             <div className="tool-group settings">
               <label className="switch-label"><input type="checkbox" checked={snap} onChange={(event) => setSnap(event.target.checked)} /><span className="toggle" /> Snap</label>
               {snap && <select aria-label="Snap grid size" value={gridSize} onChange={(event) => setGridSize(Number(event.target.value))}><option value="1">1″ grid</option><option value="0.5">½″ grid</option></select>}
@@ -725,9 +763,9 @@ export default function Home() {
           <div className="board-frame">
             <div className="ruler ruler-top"><span>0</span><span>12</span><span>24</span><span>36</span><span>48″</span></div>
             <div className="ruler ruler-left"><span>0</span><span>12</span><span>24</span><span>36</span><span>48″</span></div>
-            <div ref={boardRef} className={`board ${theme}-board ${drag ? "dragging" : ""} ${zoneMode ? "zone-mode" : ""}`} aria-label="48 by 48 inch layout board" onDragOver={(event) => event.preventDefault()} onDrop={onDrop} onPointerMove={onBoardPointerMove} onPointerUp={() => { if (zoneDraft) finishZone(); setDrag(null); }} onPointerCancel={() => { setZoneDraft(null); setDrag(null); }} onPointerDown={beginZone}>
+            <div ref={boardRef} className={`board ${theme}-board ${drag ? "dragging" : ""} ${zoneMode ? "zone-mode" : ""} ${zoneResize ? "resizing-zone" : ""}`} aria-label="48 by 48 inch layout board" onDragOver={(event) => event.preventDefault()} onDrop={onDrop} onPointerMove={onBoardPointerMove} onPointerUp={() => { if (zoneDraft) finishZone(); if (zoneResize) { const zone = zones.find((item) => item.uid === zoneResize.uid); if (zone) setMessage(`${zone.name} resized · ${zone.width.toFixed(1)} × ${zone.height.toFixed(1)} in`); setZoneResize(null); } setDrag(null); }} onPointerCancel={() => { setZoneDraft(null); setZoneResize(null); setDrag(null); }} onPointerDown={beginZone}>
               {pieces.length === 0 && <div className="board-mark"><strong>4′ × 4′</strong><span>{zoneMode ? "DRAG TO RESERVE A CLEAR ZONE" : "DROP TERRAIN TO PLACE"}</span></div>}
-              {zones.map((zone) => <div key={zone.uid} className="reserved-zone" style={{ left:`${zone.x / BOARD_IN * 100}%`, top:`${zone.y / BOARD_IN * 100}%`, width:`${zone.width / BOARD_IN * 100}%`, height:`${zone.height / BOARD_IN * 100}%` }}><strong>{zone.name}</strong><span>{zone.width.toFixed(1)} × {zone.height.toFixed(1)}″</span></div>)}
+              {zones.map((zone) => <div key={zone.uid} className={`reserved-zone ${zoneResize?.uid === zone.uid ? "resizing" : ""}`} style={{ left:`${zone.x / BOARD_IN * 100}%`, top:`${zone.y / BOARD_IN * 100}%`, width:`${zone.width / BOARD_IN * 100}%`, height:`${zone.height / BOARD_IN * 100}%` }}><strong>{zone.name}</strong><span>{zone.width.toFixed(1)} × {zone.height.toFixed(1)}″</span>{!zoneMode && (["nw","ne","sw","se"] as ZoneCorner[]).map((corner) => <button key={corner} className={`zone-handle ${corner}`} aria-label={`Resize ${zone.name} from ${corner} corner`} title="Drag to resize" onPointerDown={(event) => beginZoneResize(event, zone, corner)} />)}</div>)}
               {zoneDraft && (() => { const zone = normaliseZoneDraft(zoneDraft); return <div className="reserved-zone draft" style={{ left:`${zone.x / BOARD_IN * 100}%`, top:`${zone.y / BOARD_IN * 100}%`, width:`${zone.width / BOARD_IN * 100}%`, height:`${zone.height / BOARD_IN * 100}%` }}><strong>{zoneName.trim() || "Hangar"}</strong><span>{zone.width.toFixed(1)} × {zone.height.toFixed(1)}″</span></div>; })()}
               {pieces.map((piece) => {
                 const def = getDef(piece.defId);
@@ -755,7 +793,7 @@ export default function Home() {
           <div className="divider" />
           <p className="inspector-copy">{activeCatalogue === "boarding" ? "The generator scores 32 candidates for route variety, door spacing, connected lanes, reserved-zone clearance and useful open negative space." : "Iron Labyrinth plans search alternative modular connector placements, preserving exact 50 mm nodes and 64 mm spans while keeping reserved zones clear."}</p>
           <div className="layout-key">{activeCatalogue === "boarding" ? <><span><i className="key-wall" /> Wall</span><span><i className="key-door" /> Hatchway</span><span><i className="key-pillar" /> Pillar</span></> : <><span><i className="key-wall" /> Wall</span><span><i className="key-door" /> Wall end</span><span><i className="key-pillar" /> Connector</span></>}</div>
-          {zones.length > 0 && <div className="zone-list"><div className="zone-list-heading"><span>Reserved zones</span><button onClick={() => { setZones([]); setZoneDraft(null); setMessage("Reserved zones cleared"); }}>Clear all</button></div>{zones.map((zone) => <div className="zone-list-row" key={zone.uid}><input aria-label={`Rename ${zone.name}`} value={zone.name} maxLength={32} onChange={(event) => setZones((current) => current.map((item) => item.uid === zone.uid ? { ...item, name:event.target.value } : item))} /><span>{zone.width.toFixed(1)} × {zone.height.toFixed(1)}″</span><button aria-label={`Remove ${zone.name}`} onClick={() => setZones((current) => current.filter((item) => item.uid !== zone.uid))}>×</button></div>)}</div>}
+          {zones.length > 0 && <div className="zone-list"><div className="zone-list-heading"><span>Reserved zones</span><button onClick={() => { setZones([]); setZoneDraft(null); setZoneResize(null); setMessage("Reserved zones cleared"); }}>Clear all</button></div><small className="zone-list-hint">Drag any corner handle on the board to resize.</small>{zones.map((zone) => <div className="zone-list-row" key={zone.uid}><input aria-label={`Rename ${zone.name}`} value={zone.name} maxLength={32} onChange={(event) => setZones((current) => current.map((item) => item.uid === zone.uid ? { ...item, name:event.target.value } : item))} /><span>{zone.width.toFixed(1)} × {zone.height.toFixed(1)}″</span><button aria-label={`Remove ${zone.name}`} onClick={() => { setZones((current) => current.filter((item) => item.uid !== zone.uid)); if (zoneResize?.uid === zone.uid) setZoneResize(null); }}>×</button></div>)}</div>}
           <button className="secondary" disabled={!pieces.length} onClick={() => { setPieces([]); setSelected(null); setMessage("Board cleared"); }}>Clear board</button>
           <p className="accuracy-note">Scale basis: 48″ square board · 25.4 mm per inch. Iron Labyrinth dimensions are manufacturer-published; Boarding Actions footprints remain physical-kit approximations. Default wall height is 60 mm in both systems.</p>
         </aside>
