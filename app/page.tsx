@@ -85,26 +85,26 @@ const TERRAIN: TerrainDef[] = [
 // runs are intentional corridors, while door tokens preserve traversal.
 const RUN_LAYOUTS: GeneratorRun[][] = [
   [
-    { x: 2, y: 9, rotation: 0, sequence: ["wall-long", "door-long", "wall-short"] },
-    { x: 20, y: 1, rotation: 90, sequence: ["wall-long", "door-short", "wall-long"] },
-    { x: 28, y: 9, rotation: 0, sequence: ["wall-long", "door-long", "wall-short"] },
-    { x: 3, y: 27, rotation: 0, sequence: ["wall-long", "door-short", "wall-long"] },
-    { x: 27, y: 27, rotation: 0, sequence: ["wall-long", "door-long", "wall-short"] },
-    { x: 39, y: 29, rotation: 90, sequence: ["wall-long", "door-short", "wall-short"] },
+    { x: 2, y: 7, rotation: 0, sequence: ["wall-long", "door-long", "wall-short"] },
+    { x: 27, y: 7, rotation: 0, sequence: ["wall-long", "door-short", "wall-long"] },
+    { x: 2, y: 24, rotation: 0, sequence: ["wall-long", "door-long", "wall-short"] },
+    { x: 27, y: 24, rotation: 0, sequence: ["wall-long", "door-short", "wall-long"] },
+    { x: 12, y: 29, rotation: 90, sequence: ["wall-long", "door-long", "wall-short"] },
+    { x: 36, y: 29, rotation: 90, sequence: ["wall-long", "door-short", "wall-short"] },
   ],
   [
     { x: 7, y: 2, rotation: 90, sequence: ["wall-long", "door-long", "wall-short"] },
     { x: 24, y: 2, rotation: 90, sequence: ["wall-long", "door-long", "wall-long"] },
     { x: 41, y: 2, rotation: 90, sequence: ["wall-long", "door-long", "wall-short"] },
-    { x: 2, y: 25, rotation: 0, sequence: ["wall-short", "door-long", "wall-long"] },
-    { x: 25, y: 25, rotation: 0, sequence: ["wall-long", "door-long", "wall-short"] },
-    { x: 14, y: 42, rotation: 0, sequence: ["wall-long", "door-long", "wall-long"] },
+    { x: 2, y: 29, rotation: 0, sequence: ["wall-short", "door-long", "wall-long"] },
+    { x: 25, y: 29, rotation: 0, sequence: ["wall-long", "door-long", "wall-short"] },
+    { x: 14, y: 44, rotation: 0, sequence: ["wall-long", "door-long", "wall-long"] },
   ],
   [
-    { x: 3, y: 7, rotation: 0, sequence: ["wall-long", "door-long", "wall-short"] },
-    { x: 27, y: 7, rotation: 0, sequence: ["wall-long", "door-long", "wall-short"] },
-    { x: 3, y: 24, rotation: 0, sequence: ["wall-long", "door-long", "wall-long"] },
-    { x: 27, y: 24, rotation: 0, sequence: ["wall-long", "door-long", "wall-short"] },
+    { x: 2, y: 25, rotation: 0, sequence: ["wall-long", "door-long", "wall-short"] },
+    { x: 27, y: 25, rotation: 0, sequence: ["wall-long", "door-long", "wall-short"] },
+    { x: 24, y: 1, rotation: 90, sequence: ["wall-long", "door-long", "wall-short"] },
+    { x: 14, y: 44, rotation: 0, sequence: ["wall-long", "door-long", "wall-long"] },
     { x: 12, y: 29, rotation: 90, sequence: ["wall-short", "door-long", "wall-long"] },
     { x: 36, y: 26, rotation: 90, sequence: ["wall-long", "door-short", "wall-long"] },
   ],
@@ -263,6 +263,21 @@ export default function Home() {
     const supportBase = basePieces.filter((piece) => supportKinds.has(getDef(piece.defId).kind));
     const endBase = basePieces.filter((piece) => getDef(piece.defId).kind === "end");
     const result = [...framePieces];
+    const structuralEndpointsFor = (piece: PlacedPiece) => {
+      const def = getDef(piece.defId);
+      const centre = def.depth / 2;
+      return piece.rotation === 0
+        ? [{ x:piece.x, y:piece.y + centre }, { x:piece.x + def.width, y:piece.y + centre }]
+        : [{ x:piece.x + centre, y:piece.y }, { x:piece.x + centre, y:piece.y + def.width }];
+    };
+    const piecesShareEndpoint = (first: PlacedPiece, second: PlacedPiece) => structuralEndpointsFor(first).some((firstPoint) => structuralEndpointsFor(second).some((secondPoint) => Math.abs(firstPoint.x - secondPoint.x) < .15 && Math.abs(firstPoint.y - secondPoint.y) < .15));
+    const clearanceBetween = (first: PlacedPiece, second: PlacedPiece) => {
+      const a = pieceRect(first);
+      const b = pieceRect(second);
+      const gapX = Math.max(0, Math.max(a.x, b.x) - Math.min(a.x + a.width, b.x + b.width));
+      const gapY = Math.max(0, Math.max(a.y, b.y) - Math.min(a.y + a.height, b.y + b.height));
+      return Math.hypot(gapX, gapY);
+    };
     const structuralGroups = new Map<string, PlacedPiece[]>();
     structuralBase.forEach((piece) => {
       const key = activeCatalogue === "boarding" ? piece.runId || piece.uid : piece.uid;
@@ -270,22 +285,18 @@ export default function Home() {
     });
     structuralGroups.forEach((unsortedGroup) => {
       const group = [...unsortedGroup].sort((a, b) => (a.sequenceIndex || 0) - (b.sequenceIndex || 0));
-      const groupEndpoints = (piece: PlacedPiece) => {
-        const def = getDef(piece.defId);
-        const centre = def.depth / 2;
-        return piece.rotation === 0
-          ? [{ x:piece.x, y:piece.y + centre }, { x:piece.x + def.width, y:piece.y + centre }]
-          : [{ x:piece.x + centre, y:piece.y }, { x:piece.x + centre, y:piece.y + def.width }];
-      };
-      const doorsAreInternal = group.filter((piece) => getDef(piece.defId).kind === "door").every((door) => groupEndpoints(door).every((endpoint) => group.some((candidate) => {
+      const doorsAreInternal = group.filter((piece) => getDef(piece.defId).kind === "door").every((door) => structuralEndpointsFor(door).every((endpoint) => group.some((candidate) => {
         if (getDef(candidate.defId).kind !== "wall" || candidate.rotation !== door.rotation) return false;
-        return groupEndpoints(candidate).some((wallEndpoint) => Math.abs(wallEndpoint.x - endpoint.x) < .12 && Math.abs(wallEndpoint.y - endpoint.y) < .12);
+        return structuralEndpointsFor(candidate).some((wallEndpoint) => Math.abs(wallEndpoint.x - endpoint.x) < .12 && Math.abs(wallEndpoint.y - endpoint.y) < .12);
       })));
       const groupCounts = group.reduce<Record<string, number>>((acc, piece) => ({ ...acc, [piece.defId]:(acc[piece.defId] || 0) + 1 }), {});
       const inventoryAvailable = Object.entries(groupCounts).every(([defId, quantity]) => enabled[defId] && (counts[defId] || 0) + quantity <= limits[defId]);
-      const overlapsExisting = group.some((piece) => result.some((existing) => ["wall", "door"].includes(getDef(existing.defId).kind) && piecesOverlap(existing, piece, -.03)));
+      const existingStructures = result.filter((piece) => ["wall", "door"].includes(getDef(piece.defId).kind));
+      const connectedExistingRuns = new Set(existingStructures.filter((existing) => group.some((piece) => piecesShareEndpoint(existing, piece))).map((piece) => piece.runId || piece.uid));
+      const overlapsExisting = group.some((piece) => existingStructures.some((existing) => piecesOverlap(existing, piece, -.03) && !piecesShareEndpoint(existing, piece)));
+      const createsNearMiss = group.some((piece) => existingStructures.some((existing) => !connectedExistingRuns.has(existing.runId || existing.uid) && !piecesShareEndpoint(existing, piece) && clearanceBetween(existing, piece) < 3));
       const overlapsItself = group.some((piece, index) => group.some((other, otherIndex) => otherIndex > index && piecesOverlap(piece, other, -.03)));
-      if (!doorsAreInternal || !inventoryAvailable || overlapsExisting || overlapsItself) return;
+      if (!doorsAreInternal || !inventoryAvailable || overlapsExisting || overlapsItself || createsNearMiss) return;
       Object.entries(groupCounts).forEach(([defId, quantity]) => { counts[defId] = (counts[defId] || 0) + quantity; });
       result.push(...group);
     });
@@ -555,20 +566,43 @@ export default function Home() {
   const generateLayout = () => {
     if (activeCatalogue === "ttcombat") { generateIronLabyrinth(); return; }
     const candidates = Array.from({ length: 32 }, (_, attempt) => {
-      const base = RUN_LAYOUTS[(attempt + Math.floor(Math.random() * RUN_LAYOUTS.length)) % RUN_LAYOUTS.length];
-      const quarterTurns = attempt % 4;
+      const layoutIndex = (attempt + Math.floor(Math.random() * RUN_LAYOUTS.length)) % RUN_LAYOUTS.length;
+      const base = RUN_LAYOUTS[layoutIndex];
+      const quarterTurns = layoutIndex === 2 ? 0 : attempt % 4;
       const pool: Record<string, number> = {};
       const generated: PlacedPiece[] = [];
       base.forEach((run, runIndex) => {
-        let cursorX = run.x;
-        let cursorY = run.y;
         let complete = true;
-        const runPieces: PlacedPiece[] = [];
-        run.sequence.forEach((token, sequenceIndex) => {
+        const runDefs: TerrainDef[] = [];
+        run.sequence.forEach((token) => {
           if (!complete) return;
-          const slot = { x: cursorX, y: cursorY, rotation: run.rotation, length: token.endsWith("long") ? "long" as const : "short" as const, door: token.startsWith("door") };
+          const slot = { x:run.x, y:run.y, rotation:run.rotation, length:token.endsWith("long") ? "long" as const : "short" as const, door:token.startsWith("door") };
           const def = chooseDefinition(slot, pool);
           if (!def) { complete = false; return; }
+          runDefs.push(def);
+        });
+        if (!complete || runDefs.length !== run.sequence.length) {
+          runDefs.forEach((def) => { pool[def.id] = Math.max(0, (pool[def.id] || 1) - 1); });
+          return;
+        }
+
+        const totalLength = runDefs.reduce((sum, def) => sum + def.width, 0);
+        let cursorX = run.x;
+        let cursorY = layoutIndex === 1 && runIndex < 3 ? 23 - totalLength : layoutIndex === 2 && runIndex === 2 ? 19 - totalLength : run.y;
+        if (layoutIndex === 2 && runIndex >= 4) {
+          const targetRunIndex = runIndex === 4 ? 0 : 1;
+          const targetPiece = generated.find((piece) => piece.runId === `candidate-run-${attempt}-${targetRunIndex}` && piece.sequenceIndex === 2);
+          if (!targetPiece) {
+            runDefs.forEach((def) => { pool[def.id] = Math.max(0, (pool[def.id] || 1) - 1); });
+            return;
+          }
+          const targetDef = getDef(targetPiece.defId);
+          cursorX = targetPiece.x - runDefs[0].depth / 2;
+          cursorY = targetPiece.y + targetDef.depth / 2 - totalLength;
+        }
+
+        const runPieces: PlacedPiece[] = [];
+        runDefs.forEach((def, sequenceIndex) => {
           let x = cursorX;
           let y = cursorY;
           let rotation = run.rotation;
@@ -586,8 +620,8 @@ export default function Home() {
           if (run.rotation === 0) cursorX += def.width;
           else cursorY += def.width;
         });
-        if (!complete || runPieces.length !== run.sequence.length || runPieces.some((piece) => pieceIntersectsReservedZone(piece))) {
-          runPieces.forEach((piece) => { pool[piece.defId] = Math.max(0, (pool[piece.defId] || 1) - 1); });
+        if (runPieces.some((piece) => pieceIntersectsReservedZone(piece))) {
+          runDefs.forEach((def) => { pool[def.id] = Math.max(0, (pool[def.id] || 1) - 1); });
           return;
         }
         generated.push(...runPieces);
@@ -1015,7 +1049,7 @@ export default function Home() {
           <div className="metric"><span>Reserved clear space</span><strong>{zones.length} · {reservedCoverage.toFixed(1)}%</strong></div>
           <div className="metric"><span>{activeCatalogue === "boarding" ? "Operable hatchways" : "Wall modules"}</span><strong>{activeCatalogue === "boarding" ? doors : wallPieces.length}</strong></div><div className="metric"><span>Corridor loops</span><strong>{loops}</strong></div><div className="metric"><span>Open chambers</span><strong>{chambers}</strong></div>
           <div className="divider" />
-          <p className="inspector-copy">{activeCatalogue === "boarding" ? "The generator scores 32 candidates, requires every hatch between collinear wall sections, centres pillars on true joins, and prioritises framed reserved zones." : "Iron Labyrinth plans search alternative modular placements, then use exact connector nodes to frame reserved zones and join real wall endpoints."}</p>
+          <p className="inspector-copy">{activeCatalogue === "boarding" ? "The generator scores 32 candidates, requires every hatch between collinear walls, rejects sub-3-inch near misses, and builds either exact junctions or consistent room-scale passages." : "Iron Labyrinth plans search alternative modular placements, then use exact connector nodes to frame reserved zones and join real wall endpoints."}</p>
           <div className="layout-key">{activeCatalogue === "boarding" ? <><span><i className="key-wall" /> Wall</span><span><i className="key-door" /> Hatchway</span><span><i className="key-pillar" /> Pillar</span></> : <><span><i className="key-wall" /> Wall</span><span><i className="key-door" /> Wall end</span><span><i className="key-pillar" /> Connector</span></>}</div>
           {zones.length > 0 && <div className="zone-list"><div className="zone-list-heading"><span>Reserved zones</span><button onClick={() => { setZones([]); setFocusedZone(null); setZoneDraft(null); setZoneResize(null); setMessage("Reserved zones cleared"); }}>Clear all</button></div><small className="zone-list-hint">Hover a zone for temporary handles, or click it to keep them active.</small>{zones.map((zone) => <div className={`zone-list-row ${focusedZone === zone.uid ? "active" : ""}`} key={zone.uid} onPointerDown={() => setFocusedZone(zone.uid)}><input aria-label={`Rename ${zone.name}`} value={zone.name} maxLength={32} onFocus={() => setFocusedZone(zone.uid)} onChange={(event) => setZones((current) => current.map((item) => item.uid === zone.uid ? { ...item, name:event.target.value } : item))} /><span>{zone.width.toFixed(1)} × {zone.height.toFixed(1)}″</span><button aria-label={`Remove ${zone.name}`} onClick={() => { setZones((current) => current.filter((item) => item.uid !== zone.uid)); if (focusedZone === zone.uid) setFocusedZone(null); if (zoneResize?.uid === zone.uid) setZoneResize(null); }}>×</button></div>)}</div>}
           <p className="accuracy-note">Scale basis: 48″ square board · 25.4 mm per inch. Iron Labyrinth dimensions are manufacturer-published; Boarding Actions footprints remain physical-kit approximations. Default wall height is 60 mm in both systems.</p>
