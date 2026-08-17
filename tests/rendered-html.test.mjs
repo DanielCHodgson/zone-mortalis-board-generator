@@ -32,6 +32,9 @@ test("server-renders the Mortalis Architect workspace", async () => {
   assert.match(html, /<title>Mortalis Architect<\/title>/i);
   assert.match(html, /Horus Heresy layout utility/);
   assert.match(html, /Boarding Actions Terrain Set/);
+  assert.match(html, /Current generator palette/);
+  assert.match(html, /Available pieces|Selected kit/);
+  assert.match(html, /Generate from palette/);
   assert.match(html, /48 by 48 inch layout board/);
   assert.match(html, /role="toolbar" aria-label="Layout tools"/);
   assert.match(html, /role="status" aria-live="polite"/);
@@ -62,6 +65,9 @@ test("ships the complete first-pass catalogues and planner tools", async () => {
   assert.match(page, /ArrowLeft/);
   assert.match(page, /Export layout and piece manifest as PNG/);
   assert.match(page, /reserved-zone/);
+  assert.match(page, /PALETTE_STORAGE_KEY/);
+  assert.match(page, /mergeGeneratedSystems/);
+  assert.match(page, /compatible cross-kit wall joins enabled/);
 });
 
 test("keeps the desktop workspace fixed while panels scroll independently", async () => {
@@ -69,7 +75,7 @@ test("keeps the desktop workspace fixed while panels scroll independently", asyn
 
   assert.match(css, /body\s*\{[^}]*overflow:hidden/s);
   assert.match(css, /\.app-shell\s*\{[^}]*height:100vh[^}]*overflow:hidden/s);
-  assert.match(css, /\.catalogue-scroll\s*\{[^}]*overflow:auto/s);
+  assert.match(css, /\.palette-list,\.kit-piece-list\s*\{[^}]*overflow:auto/s);
   assert.match(css, /\.inspector\s*\{[^}]*overflow:auto/s);
   assert.match(css, /:focus-visible/);
   assert.match(css, /prefers-reduced-motion:reduce/);

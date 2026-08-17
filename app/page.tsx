@@ -65,6 +65,7 @@ type GeneratorRun = { x: number; y: number; rotation: 0 | 90; sequence: RunToken
 
 const BOARD_IN = 48;
 const MM_PER_IN = 25.4;
+const PALETTE_STORAGE_KEY = "mortalis-architect-terrain-palette-v1";
 
 const MANUFACTURERS: Record<CatalogueId, { name:string; range:string }> = {
   boarding: { name:"Games Workshop", range:"Boarding Actions" },
@@ -165,8 +166,10 @@ export default function Home() {
   const [smartFit, setSmartFit] = useState(true);
   const [gridSize, setGridSize] = useState(1);
   const [theme, setTheme] = useState<"industrial" | "gothic" | "desert">("industrial");
-  const [enabled, setEnabled] = useState<Record<string, boolean>>(() => Object.fromEntries(TERRAIN.map((item) => [item.id, true])));
+  const [enabled, setEnabled] = useState<Record<string, boolean>>(() => Object.fromEntries(TERRAIN.map((item) => [item.id, Boolean(BOARDING_INVENTORY[item.id])])));
   const [limits, setLimits] = useState<Record<string, number>>(() => Object.fromEntries(TERRAIN.map((item) => [item.id, BOARDING_INVENTORY[item.id] || 0])));
+  const [kitAddAmounts, setKitAddAmounts] = useState<Record<string, number>>({});
+  const [paletteReady, setPaletteReady] = useState(false);
   const [heightDefaults, setHeightDefaults] = useState<Record<string, number>>(() => Object.fromEntries(TERRAIN.map((item) => [item.id, item.height])));
   const [drag, setDrag] = useState<{ uids:string[]; startX:number; startY:number; origins:Record<string, {x:number;y:number}> } | null>(null);
   const [marquee, setMarquee] = useState<{ startX:number; startY:number; currentX:number; currentY:number; additive:boolean } | null>(null);
@@ -184,11 +187,17 @@ export default function Home() {
 
   const manufacturerKits = useMemo(() => TERRAIN_KITS.filter((kit) => kit.catalogue === activeCatalogue), [activeCatalogue]);
   const activeCatalogueMeta = TERRAIN_KITS.find((kit) => kit.id === activeKitId) || TERRAIN_KITS[0];
-  const catalogueTerrain = useMemo(() => TERRAIN.filter((item) => (activeCatalogueMeta.inventory[item.id] || 0) > 0), [activeCatalogueMeta]);
-  const catalogueTotal = catalogueTerrain.reduce((sum, item) => sum + limits[item.id], 0);
+  const kitTerrain = useMemo(() => TERRAIN.filter((item) => (activeCatalogueMeta.inventory[item.id] || 0) > 0), [activeCatalogueMeta]);
+  const paletteCatalogues = useMemo(() => ([...new Set(TERRAIN.filter((item) => (limits[item.id] || 0) > 0).map((item) => item.catalogue))]), [limits]);
+  const catalogueTerrain = useMemo(() => TERRAIN.filter((item) => (limits[item.id] || 0) > 0), [limits]);
+  const catalogueTotal = catalogueTerrain.reduce((sum, item) => sum + (limits[item.id] || 0), 0);
+  const activeKitTotal = kitTerrain.reduce((sum, item) => sum + (activeCatalogueMeta.inventory[item.id] || 0), 0);
+  const paletteMaker = paletteCatalogues.length ? paletteCatalogues.map((catalogue) => MANUFACTURERS[catalogue].name).join(" + ") : null;
+  const paletteLabel = paletteCatalogues.length > 1 ? "Mixed terrain palette" : paletteCatalogues[0] === "boarding" ? "Boarding Actions palette" : paletteCatalogues[0] === "ttcombat" ? "Iron Labyrinth palette" : "Empty palette";
+  const generationCatalogue = paletteCatalogues[0] || activeCatalogue;
   const selectedPiece = pieces.find((piece) => piece.uid === selected) || null;
   const used = useMemo(() => pieces.reduce<Record<string, number>>((acc, piece) => ({ ...acc, [piece.defId]: (acc[piece.defId] || 0) + 1 }), {}), [pieces]);
-  const activeKitUsed = pieces.filter((piece) => Boolean(activeCatalogueMeta.inventory[piece.defId])).length;
+  const paletteUsed = catalogueTerrain.reduce((sum, def) => sum + Math.min(used[def.id] || 0, limits[def.id] || 0), 0);
   const wallPieces = pieces.filter((piece) => ["wall", "door"].includes(getDef(piece.defId).kind));
   const coverage = Math.min(100, pieces.reduce((sum, piece) => { const def = getDef(piece.defId); return sum + def.width * def.depth; }, 0) / (BOARD_IN * BOARD_IN) * 100);
   const doors = pieces.filter((piece) => getDef(piece.defId).kind === "door").length;
@@ -200,14 +209,59 @@ export default function Home() {
     if (!kit) return;
     setActiveCatalogue(kit.catalogue);
     setActiveKitId(kit.id);
-    setLimits(Object.fromEntries(TERRAIN.map((item) => [item.id, kit.inventory[item.id] || 0])));
-    setEnabled(Object.fromEntries(TERRAIN.map((item) => [item.id, Boolean(kit.inventory[item.id])])));
-    setMessage(`${kit.name} palette loaded · existing layout preserved`);
+    setMessage(`${kit.name} opened · choose pieces to add to the persistent palette`);
   };
 
   const selectManufacturer = (catalogue: CatalogueId) => {
     const firstKit = TERRAIN_KITS.find((kit) => kit.catalogue === catalogue);
     if (firstKit) selectKit(firstKit.id);
+  };
+
+  useEffect(() => {
+    const restoreTimer = window.setTimeout(() => {
+      try {
+        const saved = window.localStorage.getItem(PALETTE_STORAGE_KEY);
+        if (saved) {
+          const parsed = JSON.parse(saved) as Record<string, number>;
+          const restored = Object.fromEntries(TERRAIN.map((item) => [item.id, clamp(Number(parsed[item.id]) || 0, 0, 999)]));
+          setLimits(restored);
+          setEnabled(Object.fromEntries(TERRAIN.map((item) => [item.id, restored[item.id] > 0])));
+        }
+      } catch { /* Ignore unavailable or malformed device-local storage. */ }
+      setPaletteReady(true);
+    }, 0);
+    return () => window.clearTimeout(restoreTimer);
+  }, []);
+
+  useEffect(() => {
+    if (!paletteReady) return;
+    try { window.localStorage.setItem(PALETTE_STORAGE_KEY, JSON.stringify(limits)); } catch { /* Persistence is a convenience, not a requirement. */ }
+  }, [limits, paletteReady]);
+
+  const setPaletteQuantity = (defId: string, quantity: number) => {
+    const nextQuantity = clamp(Math.round(quantity || 0), 0, 999);
+    setLimits((current) => ({ ...current, [defId]:nextQuantity }));
+    setEnabled((current) => ({ ...current, [defId]:nextQuantity > 0 }));
+  };
+
+  const addToPalette = (defId: string, quantity: number) => {
+    const def = getDef(defId);
+    const amount = clamp(Math.round(quantity || 0), 1, 999);
+    setLimits((current) => ({ ...current, [defId]:clamp((current[defId] || 0) + amount, 0, 999) }));
+    setEnabled((current) => ({ ...current, [defId]:true }));
+    setMessage(`${amount} × ${def.shortName} added to the generator palette`);
+  };
+
+  const addKitToPalette = () => {
+    setLimits((current) => ({ ...current, ...Object.fromEntries(kitTerrain.map((def) => [def.id, clamp((current[def.id] || 0) + (activeCatalogueMeta.inventory[def.id] || 0), 0, 999)])) }));
+    setEnabled((current) => ({ ...current, ...Object.fromEntries(kitTerrain.map((def) => [def.id, true])) }));
+    setMessage(`${activeCatalogueMeta.name} added to the generator palette`);
+  };
+
+  const clearPalette = () => {
+    setLimits(Object.fromEntries(TERRAIN.map((item) => [item.id, 0])));
+    setEnabled(Object.fromEntries(TERRAIN.map((item) => [item.id, false])));
+    setMessage("Terrain palette cleared · pieces already on the board were preserved");
   };
 
   const nextUid = () => `piece-${++uidRef.current}`;
@@ -251,9 +305,14 @@ export default function Home() {
   const connectionCandidates = (moving: PlacedPiece, fixed: PlacedPiece) => {
     const movingDef = getDef(moving.defId);
     const fixedDef = getDef(fixed.defId);
-    if (movingDef.catalogue !== fixedDef.catalogue) return [] as Array<{ dx:number;dy:number;rotation?:0|90 }>;
     const movingStructural = ["wall", "door"].includes(movingDef.kind);
     const fixedStructural = ["wall", "door"].includes(fixedDef.kind);
+    if (movingDef.catalogue !== fixedDef.catalogue) {
+      const hasSpecialFace = (def: TerrainDef) => ["pipe", "vertical-pipe", "floor", "stair"].includes(def.visual || "");
+      if (!movingStructural || !fixedStructural || hasSpecialFace(movingDef) || hasSpecialFace(fixedDef)) return [] as Array<{ dx:number;dy:number;rotation?:0|90 }>;
+      if (Math.abs(movingDef.depth - fixedDef.depth) > .55) return [] as Array<{ dx:number;dy:number;rotation?:0|90 }>;
+      return structuralEndpoints(moving).flatMap((movingPoint) => structuralEndpoints(fixed).map((fixedPoint) => ({ dx:fixedPoint.x - movingPoint.x, dy:fixedPoint.y - movingPoint.y })));
+    }
     let movingPoints: Array<{x:number;y:number}> = [];
     let fixedPoints: Array<{x:number;y:number}> = [];
     let rotation: 0 | 90 | undefined;
@@ -286,16 +345,17 @@ export default function Home() {
     return a.x < b.x + b.width + padding && a.x + a.width > b.x - padding && a.y < b.y + b.height + padding && a.y + a.height > b.y - padding;
   };
 
-  const finalizeGeneratedLayout = (basePieces: PlacedPiece[]) => {
+  const finalizeGeneratedLayout = (basePieces: PlacedPiece[], catalogue: CatalogueId) => {
     const counts: Record<string, number> = {};
     const framePieces: PlacedPiece[] = [];
     const frameJointPoints: Array<{ x:number; y:number }> = [];
     const supportKinds = new Set(["pillar", "connector"]);
-    const frameWalls = catalogueTerrain.filter((def) => def.kind === "wall" && enabled[def.id] && limits[def.id] > 0);
-    const frameDoors = catalogueTerrain.filter((def) => def.kind === "door" && enabled[def.id] && limits[def.id] > 0);
-    const frameSupport = catalogueTerrain.find((def) => supportKinds.has(def.kind) && enabled[def.id] && limits[def.id] > 0);
-    const moduleGap = activeCatalogue === "ttcombat" ? frameSupport?.width || 0 : 0;
-    const frameClearanceDepth = Math.max(...frameWalls.map((def) => def.depth), activeCatalogue === "ttcombat" ? frameSupport?.depth || 0 : 0);
+    const systemTerrain = catalogueTerrain.filter((def) => def.catalogue === catalogue);
+    const frameWalls = systemTerrain.filter((def) => def.kind === "wall" && enabled[def.id] && limits[def.id] > 0);
+    const frameDoors = systemTerrain.filter((def) => def.kind === "door" && enabled[def.id] && limits[def.id] > 0);
+    const frameSupport = systemTerrain.find((def) => supportKinds.has(def.kind) && enabled[def.id] && limits[def.id] > 0);
+    const moduleGap = catalogue === "ttcombat" ? frameSupport?.width || 0 : 0;
+    const frameClearanceDepth = Math.max(...frameWalls.map((def) => def.depth), catalogue === "ttcombat" ? frameSupport?.depth || 0 : 0);
 
     const takeDefinition = (kind: "wall" | "door", maximumWidth: number, preferLongest = true) => {
       const source = kind === "wall" ? frameWalls : frameDoors;
@@ -341,7 +401,7 @@ export default function Home() {
       const modules = buildModules(span);
       if (!modules.length) return;
       const totalLength = modules.reduce((sum, def) => sum + def.width, 0) + Math.max(0, modules.length - 1) * moduleGap;
-      const frameDepth = Math.max(...modules.map((def) => def.depth), activeCatalogue === "ttcombat" ? frameSupport?.depth || 0 : 0);
+      const frameDepth = Math.max(...modules.map((def) => def.depth), catalogue === "ttcombat" ? frameSupport?.depth || 0 : 0);
       let cursor = (horizontal ? zone.x : zone.y) + (span - totalLength) / 2;
       const jointPoints: Array<{ x:number; y:number }> = [];
       const candidates = modules.map((def, index) => {
@@ -360,7 +420,7 @@ export default function Home() {
       candidates.forEach((piece) => {
         const def = getDef(piece.defId);
         const centre = def.depth / 2;
-        if (activeCatalogue === "ttcombat") {
+        if (catalogue === "ttcombat") {
           jointPoints.push(horizontal ? { x:piece.x - moduleGap / 2, y:piece.y + centre } : { x:piece.x + centre, y:piece.y - moduleGap / 2 });
           jointPoints.push(horizontal ? { x:piece.x + def.width + moduleGap / 2, y:piece.y + centre } : { x:piece.x + centre, y:piece.y + def.width + moduleGap / 2 });
         } else {
@@ -394,7 +454,7 @@ export default function Home() {
     };
     const structuralGroups = new Map<string, PlacedPiece[]>();
     structuralBase.forEach((piece) => {
-      const key = activeCatalogue === "boarding" ? piece.runId || piece.uid : piece.uid;
+      const key = catalogue === "boarding" ? piece.runId || piece.uid : piece.uid;
       structuralGroups.set(key, [...(structuralGroups.get(key) || []), piece]);
     });
     structuralGroups.forEach((unsortedGroup) => {
@@ -428,8 +488,8 @@ export default function Home() {
     };
     const endpointIsShared = (point: typeof endpointRecords[number], index: number) => endpointRecords.some((candidate, candidateIndex) => candidateIndex !== index && candidate.piece.uid !== point.piece.uid && Math.abs(candidate.x - point.x) < .2 && Math.abs(candidate.y - point.y) < .2);
     const cappedPoints: Array<{ x:number; y:number }> = [];
-    if (activeCatalogue === "boarding") {
-      const endDef = catalogueTerrain.find((def) => def.kind === "end" && enabled[def.id] && limits[def.id] > 0);
+    if (catalogue === "boarding") {
+      const endDef = systemTerrain.find((def) => def.kind === "end" && enabled[def.id] && limits[def.id] > 0);
       endpointRecords.forEach((point, index) => {
         if (!endDef || (counts[endDef.id] || 0) >= limits[endDef.id] || getDef(point.piece.defId).kind !== "wall" || endpointIsShared(point, index)) return;
         const rotation: 0 | 90 = point.piece.rotation === 0 ? 90 : 0;
@@ -447,11 +507,11 @@ export default function Home() {
       });
     }
 
-    const supportDef = catalogueTerrain.find((def) => supportKinds.has(def.kind) && enabled[def.id] && limits[def.id] > 0);
+    const supportDef = systemTerrain.find((def) => supportKinds.has(def.kind) && enabled[def.id] && limits[def.id] > 0);
     if (supportDef) {
       const doorPoints = endpointRecords.filter((point) => getDef(point.piece.defId).kind === "door");
       const uncappedPoints = endpointRecords.filter((point) => !cappedPoints.some((capped) => Math.abs(capped.x - point.x) < .2 && Math.abs(capped.y - point.y) < .2));
-      const requiredPoints: Array<{ x:number; y:number }> = activeCatalogue === "boarding" ? [...doorPoints, ...uncappedPoints] : [...frameJointPoints];
+      const requiredPoints: Array<{ x:number; y:number }> = catalogue === "boarding" ? [...doorPoints, ...uncappedPoints] : [...frameJointPoints];
       const uniquePoints = requiredPoints.filter((point, index, points) => points.findIndex((candidate) => Math.abs(candidate.x - point.x) < .2 && Math.abs(candidate.y - point.y) < .2) === index);
       uniquePoints.forEach((point) => {
         if ((counts[supportDef.id] || 0) >= limits[supportDef.id]) return;
@@ -463,14 +523,14 @@ export default function Home() {
     }
 
     supportBase.forEach((piece) => {
-      if (activeCatalogue !== "ttcombat") return;
+      if (catalogue !== "ttcombat") return;
       if ((counts[piece.defId] || 0) >= limits[piece.defId] || pieceIntersectsReservedZone(piece)) return;
       if (!endpointRecords.some((point) => pointTouchesPiece(point, piece))) return;
       if (result.some((existing) => supportKinds.has(getDef(existing.defId).kind) && Math.abs(existing.x - piece.x) < .25 && Math.abs(existing.y - piece.y) < .25)) return;
       counts[piece.defId] = (counts[piece.defId] || 0) + 1;
       result.push(piece);
     });
-    if (activeCatalogue === "ttcombat") {
+    if (catalogue === "ttcombat") {
       const validSupports = result.filter((piece) => supportKinds.has(getDef(piece.defId).kind));
       endBase.forEach((piece) => {
         if ((counts[piece.defId] || 0) >= limits[piece.defId] || pieceIntersectsReservedZone(piece) || !validSupports.some((support) => piecesOverlap(support, piece, .03))) return;
@@ -492,7 +552,7 @@ export default function Home() {
     const matchingIds = new Set(catalogueTerrain.filter((def) => familyFor(def) === family).map((def) => def.id));
     setHeightDefaults((current) => ({ ...current, ...Object.fromEntries([...matchingIds].map((id) => [id, nextHeight])) }));
     setPieces((current) => current.map((piece) => matchingIds.has(piece.defId) ? { ...piece, height:nextHeight } : piece));
-    setMessage(`${activeCatalogueMeta.name} ${family === "wall" ? "wall" : family} height set to ${Math.round(nextHeight * MM_PER_IN)} mm`);
+    setMessage(`${paletteLabel} ${family === "wall" ? "wall" : family} height set to ${Math.round(nextHeight * MM_PER_IN)} mm`);
   };
 
   const setSelectedHeightMm = (millimetres: number) => {
@@ -626,15 +686,15 @@ export default function Home() {
     return () => window.removeEventListener("keydown", onKey);
   }, [copySelected, deleteSelected, duplicateSelected, moveSelected, pasteCopied, rotateSelected, selectOnly, selectedIds]);
 
-  const chooseDefinition = (slot: GeneratorSlot, pool: Record<string, number>) => {
-    const hasEnabledDoors = TERRAIN.some((def) => def.catalogue === activeCatalogue && def.kind === "door" && enabled[def.id] && limits[def.id] > 0);
+  const chooseDefinition = (slot: GeneratorSlot, pool: Record<string, number>, catalogue: CatalogueId) => {
+    const hasEnabledDoors = TERRAIN.some((def) => def.catalogue === catalogue && def.kind === "door" && enabled[def.id] && limits[def.id] > 0);
     const candidates = TERRAIN.filter((def) => {
-      if (def.catalogue !== activeCatalogue) return false;
+      if (def.catalogue !== catalogue) return false;
       if (!enabled[def.id] || (pool[def.id] || 0) >= limits[def.id]) return false;
       if (slot.door && hasEnabledDoors && def.kind !== "door") return false;
       if (slot.door && !hasEnabledDoors && def.kind !== "wall") return false;
       if (!slot.door && def.kind !== "wall") return false;
-      if (activeCatalogue === "ttcombat") return true;
+      if (catalogue === "ttcombat") return true;
       return slot.length === "long" ? def.width > 5 : def.width <= 5;
     });
     const chosen = candidates[Math.floor(Math.random() * candidates.length)];
@@ -648,10 +708,11 @@ export default function Home() {
     const directions: Direction[] = ["right", "down", "left", "up"];
     const opposite: Record<Direction, Direction> = { right:"left", left:"right", up:"down", down:"up" };
     const shuffle = <T,>(values: T[]) => [...values].sort(() => Math.random() - .5);
-    const structuralPool = catalogueTerrain.filter((def) => ["wall", "door"].includes(def.kind) && enabled[def.id] && limits[def.id] > 0).flatMap((def) => Array.from({ length:limits[def.id] }, () => def));
-    const accessoryPool = catalogueTerrain.filter((def) => ["floor", "stair"].includes(def.kind) && enabled[def.id] && limits[def.id] > 0).flatMap((def) => Array.from({ length:limits[def.id] }, () => def));
-    const connectorDef = catalogueTerrain.find((def) => def.kind === "connector" && enabled[def.id] && limits[def.id] > 0);
-    const endDef = catalogueTerrain.find((def) => def.kind === "end" && enabled[def.id] && limits[def.id] > 0);
+    const ironTerrain = catalogueTerrain.filter((def) => def.catalogue === "ttcombat");
+    const structuralPool = ironTerrain.filter((def) => ["wall", "door"].includes(def.kind) && enabled[def.id] && limits[def.id] > 0).flatMap((def) => Array.from({ length:limits[def.id] }, () => def));
+    const accessoryPool = ironTerrain.filter((def) => ["floor", "stair"].includes(def.kind) && enabled[def.id] && limits[def.id] > 0).flatMap((def) => Array.from({ length:limits[def.id] }, () => def));
+    const connectorDef = ironTerrain.find((def) => def.kind === "connector" && enabled[def.id] && limits[def.id] > 0);
+    const endDef = ironTerrain.find((def) => def.kind === "end" && enabled[def.id] && limits[def.id] > 0);
     const clearance = (first: PlacedPiece, second: PlacedPiece) => {
       const a = pieceRect(first);
       const b = pieceRect(second);
@@ -665,7 +726,7 @@ export default function Home() {
     };
 
     const placeStandaloneSet = (attempt: number) => {
-      const modules = shuffle([...structuralPool, ...accessoryPool]);
+      const modules = shuffle([...(connectorDef ? structuralPool : structuralPool.filter((def) => def.kind !== "door")), ...accessoryPool]);
       const templates = [
         [{x:5,y:11,r:0},{x:29,y:11,r:0},{x:11,y:31,r:90},{x:33,y:31,r:90}],
         [{x:7,y:8,r:90},{x:25,y:8,r:90},{x:7,y:31,r:90},{x:25,y:31,r:90}],
@@ -793,13 +854,10 @@ export default function Home() {
     const shortlist = candidates.slice(0, Math.min(8, candidates.length));
     const chosen = shortlist[Math.floor(Math.random() * shortlist.length)] || { generated:[], score:0 };
     const finalized = chosen.generated.map((piece) => ({ ...piece, uid:nextUid() }));
-    setPieces(finalized);
-    selectOnly(null);
-    setMessage(`${activeCatalogueMeta.name} layout generated · ${finalized.length} pieces${zones.length ? ` · ${zones.length} zone${zones.length === 1 ? "" : "s"} respected` : ""}`);
+    return finalized;
   };
 
-  const generateLayout = () => {
-    if (activeCatalogue === "ttcombat") { generateIronLabyrinth(); return; }
+  const generateBoardingLayout = () => {
     const candidates = Array.from({ length: 32 }, (_, attempt) => {
       const layoutIndex = (attempt + Math.floor(Math.random() * RUN_LAYOUTS.length)) % RUN_LAYOUTS.length;
       const base = RUN_LAYOUTS[layoutIndex];
@@ -812,7 +870,7 @@ export default function Home() {
         run.sequence.forEach((token) => {
           if (!complete) return;
           const slot = { x:run.x, y:run.y, rotation:run.rotation, length:token.endsWith("long") ? "long" as const : "short" as const, door:token.startsWith("door") };
-          const def = chooseDefinition(slot, pool);
+          const def = chooseDefinition(slot, pool, "boarding");
           if (!def) { complete = false; return; }
           runDefs.push(def);
         });
@@ -868,10 +926,82 @@ export default function Home() {
     }).sort((a, b) => b.score - a.score)[0];
 
     const finalPieces = candidates.generated.map((piece) => ({ ...piece, uid:nextUid() }));
-    const finalized = finalizeGeneratedLayout(finalPieces);
+    return finalizeGeneratedLayout(finalPieces, "boarding");
+  };
+
+  const mergeGeneratedSystems = (layouts: PlacedPiece[][]) => {
+    const orderedLayouts = layouts.filter((layout) => layout.length).sort((a, b) => b.length - a.length);
+    if (!orderedLayouts.length) return [] as PlacedPiece[];
+    const accepted = [...orderedLayouts[0]];
+    const rectClearance = (first: PlacedPiece, second: PlacedPiece) => {
+      const a = pieceRect(first);
+      const b = pieceRect(second);
+      const gapX = Math.max(0, Math.max(a.x, b.x) - Math.min(a.x + a.width, b.x + b.width));
+      const gapY = Math.max(0, Math.max(a.y, b.y) - Math.min(a.y + a.height, b.y + b.height));
+      return Math.hypot(gapX, gapY);
+    };
+    const splitComponents = (layout: PlacedPiece[]) => {
+      const remaining = new Set(layout.map((piece) => piece.uid));
+      const components: PlacedPiece[][] = [];
+      while (remaining.size) {
+        const firstUid = remaining.values().next().value as string;
+        const queue = [layout.find((piece) => piece.uid === firstUid)!];
+        const component: PlacedPiece[] = [];
+        remaining.delete(firstUid);
+        while (queue.length) {
+          const current = queue.shift()!;
+          component.push(current);
+          layout.forEach((candidate) => {
+            if (!remaining.has(candidate.uid) || !piecesOverlap(current, candidate, .1)) return;
+            remaining.delete(candidate.uid);
+            queue.push(candidate);
+          });
+        }
+        components.push(component);
+      }
+      return components.sort((a, b) => b.length - a.length);
+    };
+    const transform = (component: PlacedPiece[], dx: number, dy: number) => component.map((piece) => ({ ...piece, x:piece.x + dx, y:piece.y + dy }));
+    const candidateFits = (component: PlacedPiece[]) => component.every((piece) => {
+      const rect = pieceRect(piece);
+      if (rect.x < 0 || rect.y < 0 || rect.x + rect.width > BOARD_IN || rect.y + rect.height > BOARD_IN || pieceIntersectsReservedZone(piece)) return false;
+      return accepted.every((fixed) => {
+        if (piecesOverlap(piece, fixed, -.04)) return false;
+        if (rectClearance(piece, fixed) >= .45) return true;
+        return connectionCandidates(piece, fixed).some((fit) => Math.hypot(fit.dx, fit.dy) < .14);
+      });
+    });
+    const joinCount = (component: PlacedPiece[]) => component.reduce((sum, piece) => sum + accepted.filter((fixed) => connectionCandidates(piece, fixed).some((fit) => Math.hypot(fit.dx, fit.dy) < .14)).length, 0);
+
+    orderedLayouts.slice(1).flatMap(splitComponents).forEach((component) => {
+      const translations: Array<{ dx:number; dy:number }> = [{ dx:0, dy:0 }];
+      const movingStructures = component.filter((piece) => ["wall", "door"].includes(getDef(piece.defId).kind));
+      const fixedStructures = accepted.filter((piece) => ["wall", "door"].includes(getDef(piece.defId).kind));
+      movingStructures.forEach((moving) => structuralEndpoints(moving).forEach((movingPoint) => fixedStructures.forEach((fixed) => structuralEndpoints(fixed).forEach((fixedPoint) => {
+        const dx = fixedPoint.x - movingPoint.x;
+        const dy = fixedPoint.y - movingPoint.y;
+        if (Math.abs(dx) <= 18 && Math.abs(dy) <= 18) translations.push({ dx, dy });
+      }))));
+      [-8, -4, 4, 8].forEach((dx) => [-8, -4, 4, 8].forEach((dy) => translations.push({ dx, dy })));
+      const options = translations.map(({ dx, dy }) => transform(component, dx, dy)).filter(candidateFits).map((candidate) => ({ candidate, joins:joinCount(candidate), shift:Math.abs(candidate[0].x - component[0].x) + Math.abs(candidate[0].y - component[0].y) }));
+      options.sort((a, b) => b.joins - a.joins || a.shift - b.shift);
+      if (options[0]) accepted.push(...options[0].candidate);
+    });
+    return accepted.map((piece) => ({ ...piece, uid:nextUid() }));
+  };
+
+  const generateLayout = () => {
+    if (!catalogueTotal) { setMessage("Add terrain to the current palette before generating"); return; }
+    if (!catalogueTerrain.some((def) => ["wall", "door", "floor", "stair"].includes(def.kind))) { setMessage("Add at least one wall, door, floor, or stair piece before generating"); return; }
+    const layouts: PlacedPiece[][] = [];
+    if (paletteCatalogues.includes("boarding")) layouts.push(generateBoardingLayout());
+    if (paletteCatalogues.includes("ttcombat")) layouts.push(generateIronLabyrinth());
+    const finalized = mergeGeneratedSystems(layouts);
+    if (!finalized.length) { setMessage("That palette cannot form a supported layout · add compatible walls or connectors"); return; }
     setPieces(finalized);
     selectOnly(null);
-    setMessage(`${activeCatalogueMeta.name} sector generated · ${finalized.length} pieces${zones.length ? ` · ${zones.length} zone${zones.length === 1 ? "" : "s"} framed` : ""}`);
+    const joined = paletteCatalogues.length > 1 ? " · compatible cross-kit wall joins enabled" : "";
+    setMessage(`${paletteLabel} generated · ${finalized.length} pieces${zones.length ? ` · ${zones.length} zone${zones.length === 1 ? "" : "s"} respected` : ""}${joined}`);
   };
 
   const exportLayoutPng = () => {
@@ -916,7 +1046,10 @@ export default function Home() {
     ctx.font = "700 17px Arial, sans-serif";
     ctx.fillText("BOARD 48 × 48 IN  ·  SCALE 1:1 DATA", 1730, 76);
     ctx.font = "15px Arial, sans-serif";
-    ctx.fillText(`${activeCatalogueMeta.maker} · ${activeCatalogueMeta.name}`, 1730, 103);
+    const exportSource = cataloguesUsed.length === 1
+      ? `${MANUFACTURERS[cataloguesUsed[0]].name} · ${MANUFACTURERS[cataloguesUsed[0]].range}`
+      : "Mixed terrain layout";
+    ctx.fillText(exportSource, 1730, 103);
     ctx.textAlign = "left";
 
     ctx.fillStyle = themeColours.board;
@@ -1056,7 +1189,7 @@ export default function Home() {
       if (!blob) { setMessage("PNG export could not be created"); return; }
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
-      const catalogueSlug = activeCatalogueMeta.name.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+      const catalogueSlug = (cataloguesUsed.length === 1 ? MANUFACTURERS[cataloguesUsed[0]].range : "mixed-terrain").toLowerCase().replace(/[^a-z0-9]+/g, "-");
       link.href = url;
       link.download = `mortalis-layout-${catalogueSlug}-${new Date().toISOString().slice(0, 10)}.png`;
       link.click();
@@ -1293,7 +1426,7 @@ export default function Home() {
       <a className="skip-link" href="#layout-board">Skip to layout board</a>
       <header className="topbar">
         <div><p className="eyebrow">Horus Heresy layout utility</p><h1>Mortalis Architect</h1></div>
-        <div className="top-actions"><span className="board-chip">BOARD 48 × 48 IN</span><button className="export-action" onClick={exportLayoutPng} disabled={!pieces.length} aria-label="Export layout and piece manifest as PNG">Export PNG</button><button className="primary" onClick={generateLayout}>Generate layout</button></div>
+        <div className="top-actions"><span className="board-chip">BOARD 48 × 48 IN</span><button className="export-action" onClick={exportLayoutPng} disabled={!pieces.length} aria-label="Export layout and piece manifest as PNG">Export PNG</button><button className="primary" onClick={generateLayout} disabled={!catalogueTotal} aria-label="Generate layout from current terrain palette">Generate from palette</button></div>
       </header>
 
       <section className="workspace">
@@ -1302,46 +1435,58 @@ export default function Home() {
             <label><span>Manufacturer</span><select value={activeCatalogue} onChange={(event) => selectManufacturer(event.target.value as CatalogueId)}>{(Object.keys(MANUFACTURERS) as CatalogueId[]).map((catalogueId) => <option key={catalogueId} value={catalogueId}>{MANUFACTURERS[catalogueId].name}</option>)}</select></label>
             <label><span>Kit</span><select value={activeKitId} onChange={(event) => selectKit(event.target.value)}>{manufacturerKits.map((kit) => <option key={kit.id} value={kit.id}>{kit.name}</option>)}</select></label>
           </div>
-          <div className="panel-heading"><div><p className="eyebrow">Available terrain</p><h2>{activeCatalogueMeta.name}</h2><small className="catalogue-subtitle">{activeCatalogueMeta.description}</small></div><span className="count">{catalogueTotal} pcs</span></div>
-          <section className="current-palette" aria-labelledby="current-terrain-heading">
-            <div className="current-palette-heading"><strong id="current-terrain-heading">Current terrain</strong><span>{pieces.length} placed</span></div>
-            <div className="current-palette-items">
-              {!pieces.length && <small>No terrain placed yet</small>}
-              {Object.entries(used).filter(([, count]) => count > 0).map(([defId, count]) => { const def = getDef(defId); return <button key={defId} title={`Select next ${def.name}`} onClick={() => { const matches = pieces.filter((piece) => piece.defId === defId); const currentIndex = matches.findIndex((piece) => piece.uid === selected); const next = matches[(currentIndex + 1) % matches.length]; if (next) { selectOnly(next.uid); setFocusedZone(null); setMessage(`${def.shortName} selected from current terrain`); } }}><span className={`piece-icon ${def.kind} ${def.width > 5 ? "long" : "short"} ${def.visual ? `visual-${def.visual}` : ""}`}><i /></span><span>{def.shortName}</span><em>×{count}</em></button>; })}
+          <section className="palette-builder" aria-labelledby="generator-palette-heading">
+            <div className="section-heading">
+              <div><p className="eyebrow">Layout inventory</p><h2 id="generator-palette-heading">Current generator palette</h2></div>
+              <div className="section-actions"><span className="count">{catalogueTotal} pcs</span><button className="text-action danger" onClick={clearPalette} disabled={!catalogueTotal}>Clear</button></div>
             </div>
-          </section>
-          <details className="height-settings" open>
-            <summary><span>Height defaults</span><em>Z axis · mm</em></summary>
-            <div className="height-grid">
-              {familyIsAvailable("wall") && <label><span>Structures</span><input aria-label={`${activeCatalogueMeta.name} structure default height`} type="number" min="10" max="300" step="1" value={familyHeightMm("wall")} onChange={(event) => setFamilyHeightMm("wall", Number(event.target.value))} /></label>}
-              {familyIsAvailable("support") && <label><span>{activeCatalogue === "boarding" ? "Pillars" : "Connectors"}</span><input aria-label={`${activeCatalogueMeta.name} support default height`} type="number" min="10" max="300" step="1" value={familyHeightMm("support")} onChange={(event) => setFamilyHeightMm("support", Number(event.target.value))} /></label>}
-              {familyIsAvailable("end") && <label><span>Wall ends</span><input aria-label={`${activeCatalogueMeta.name} end default height`} type="number" min="10" max="300" step="1" value={familyHeightMm("end")} onChange={(event) => setFamilyHeightMm("end", Number(event.target.value))} /></label>}
-            </div>
-          </details>
-          <div className="catalogue-scroll" aria-label={`${activeCatalogueMeta.name} terrain palette`}>
-            {catalogueTerrain.map((def) => {
-              const remaining = Math.max(0, limits[def.id] - (used[def.id] || 0));
-              return (
-                <div className={`terrain-row ${!enabled[def.id] ? "disabled" : ""}`} key={def.id} onPointerDown={(event) => { if (!enabled[def.id] || remaining === 0 || (event.target as HTMLElement).closest("input")) return; const nextDrag = { defId:def.id, x:event.clientX, y:event.clientY }; paletteDragRef.current = nextDrag; setPaletteDrag(nextDrag); }}>
-                  <input aria-label={`Include ${def.name}`} type="checkbox" checked={enabled[def.id]} onChange={(event) => setEnabled((current) => ({ ...current, [def.id]: event.target.checked }))} />
-                  <button className="piece-add" onClick={() => addPiece(def.id)} disabled={!enabled[def.id] || remaining === 0} aria-label={`Add ${def.name}`}>
+            <p className="section-intro">Generate uses only this persistent list. Drag a piece onto the board, or edit how many the generator may use.</p>
+            {catalogueTotal > 0 && <div className="palette-range"><span>{paletteMaker}</span><strong>{paletteLabel}</strong><em>{Math.max(0, catalogueTotal - paletteUsed)} unplaced</em></div>}
+            <div className="palette-list" aria-label="Current generator terrain palette">
+              {!catalogueTotal && <div className="palette-empty"><strong>Your palette is empty</strong><span>Add individual pieces or a full kit below.</span></div>}
+              {catalogueTerrain.map((def) => {
+                const remaining = Math.max(0, limits[def.id] - (used[def.id] || 0));
+                return (
+                <div className="palette-row" key={def.id} onPointerDown={(event) => { if (remaining === 0 || (event.target as HTMLElement).closest("input, .remove-palette")) return; const nextDrag = { defId:def.id, x:event.clientX, y:event.clientY }; paletteDragRef.current = nextDrag; setPaletteDrag(nextDrag); }}>
+                  <button className="piece-add" onClick={() => addPiece(def.id)} disabled={remaining === 0} aria-label={`Place ${def.name}`}>
                     <span className={`piece-icon ${def.kind} ${def.width > 5 ? "long" : "short"} ${def.visual ? `visual-${def.visual}` : ""}`}><i /></span>
                     <span className="piece-copy"><strong>{def.shortName}</strong><small>{def.note} · Z {Math.round(heightDefaults[def.id] * MM_PER_IN)} mm</small></span>
                   </button>
-                  <label className="stock"><span aria-hidden="true">×</span><input aria-label={`${def.name} available quantity`} type="number" min="0" max={activeCatalogueMeta.inventory[def.id] || def.limit} value={limits[def.id]} onChange={(event) => setLimits((current) => ({ ...current, [def.id]: clamp(Number(event.target.value), 0, activeCatalogueMeta.inventory[def.id] || def.limit) }))} /><em>{remaining} left</em></label>
+                  <label className="palette-quantity"><span>Available</span><input aria-label={`${def.name} palette quantity`} type="number" min="0" max="999" value={limits[def.id]} onChange={(event) => setPaletteQuantity(def.id, Number(event.target.value))} /><em>{remaining} left</em></label>
+                  <button className="remove-palette" aria-label={`Remove ${def.name} from palette`} title="Remove from palette" onClick={() => setPaletteQuantity(def.id, 0)}>×</button>
                 </div>
               );
             })}
-          </div>
-          {activeCatalogueMeta.caveat && <p className="kit-caveat">{activeCatalogueMeta.caveat}</p>}
-          <p className="hint">Drag or click to place. Quantities match one complete kit. <a href={activeCatalogueMeta.sourceUrl} target="_blank" rel="noreferrer">{activeCatalogueMeta.source}</a>.</p>
+            </div>
+          </section>
+
+          <section className="kit-browser" aria-labelledby="kit-browser-heading">
+            <div className="section-heading">
+              <div><p className="eyebrow">Available pieces · selected kit</p><h2 id="kit-browser-heading">{activeCatalogueMeta.name}</h2></div>
+              <button className="add-kit" onClick={addKitToPalette}>Add full kit · {activeKitTotal}</button>
+            </div>
+            <p className="section-intro">{activeCatalogueMeta.description} <a href={activeCatalogueMeta.sourceUrl} target="_blank" rel="noreferrer">Source</a></p>
+            <div className="kit-piece-list" aria-label={`${activeCatalogueMeta.name} available pieces`}>
+              {kitTerrain.map((def) => {
+                const amountKey = `${activeKitId}:${def.id}`;
+                const kitAmount = kitAddAmounts[amountKey] ?? activeCatalogueMeta.inventory[def.id] ?? 1;
+                return <div className="kit-piece-row" key={def.id}>
+                  <span className={`piece-icon ${def.kind} ${def.width > 5 ? "long" : "short"} ${def.visual ? `visual-${def.visual}` : ""}`}><i /></span>
+                  <span className="piece-copy"><strong>{def.shortName}</strong><small>{def.note} · kit includes {activeCatalogueMeta.inventory[def.id]}</small></span>
+                  <label className="add-amount"><span className="sr-only">Amount of {def.name} to add</span><input aria-label={`Amount of ${def.name} to add`} type="number" min="1" max="999" value={kitAmount} onChange={(event) => setKitAddAmounts((current) => ({ ...current, [amountKey]:clamp(Number(event.target.value), 1, 999) }))} /></label>
+                  <button className="add-piece-to-palette" onClick={() => addToPalette(def.id, kitAmount)} aria-label={`Add ${kitAmount} ${def.name} to palette`}>Add</button>
+                </div>;
+              })}
+            </div>
+            {activeCatalogueMeta.caveat && <p className="kit-caveat">{activeCatalogueMeta.caveat}</p>}
+          </section>
         </aside>
 
         <div className="board-column">
           <div className="board-toolbar panel" role="toolbar" aria-label="Layout tools">
             <div className="tool-group primary-tools"><button className={`tool ${!zoneMode ? "active" : ""}`} aria-pressed={!zoneMode} onClick={() => { setZoneMode(false); setZoneDraft(null); }}>Select</button><button className={`tool ${zoneMode ? "active zone-tool" : ""}`} aria-pressed={zoneMode} onClick={() => { setZoneMode(true); selectOnly(null); setFocusedZone(null); setZoneResize(null); setMarquee(null); setMessage("Name the zone, then drag it on the board"); }}>Draw zone</button><span className="tool-divider" aria-hidden="true" /><button className="tool" title="Copy selected terrain" onClick={copySelected} disabled={!selectedIds.length || zoneMode}>Copy <kbd>Ctrl C</kbd></button><button className="tool" title="Paste copied terrain" onClick={pasteCopied} disabled={!copyBuffer || zoneMode}>Paste <kbd>Ctrl V</kbd></button><button className="tool" title="Duplicate selected terrain" onClick={duplicateSelected} disabled={!selectedIds.length || zoneMode}>Duplicate <kbd>Ctrl D</kbd></button><button className="tool" onClick={rotateSelected} disabled={!selectedIds.length || zoneMode}>Rotate <kbd>R</kbd></button><button className="tool danger" onClick={deleteSelected} disabled={!selectedIds.length || zoneMode}>Delete</button><span className="tool-divider" aria-hidden="true" /><button className="tool danger" title="Remove terrain but preserve reserved zones" onClick={clearTerrain} disabled={!pieces.length}>Clear terrain</button><button className="tool danger" title="Remove reserved zones but preserve terrain" onClick={() => { setZones([]); setFocusedZone(null); setZoneDraft(null); setZoneResize(null); setMessage("Reserved zones cleared · terrain preserved"); }} disabled={!zones.length}>Clear zones</button></div>
             <div className="tool-group settings">
-              <label className="switch-label"><input type="checkbox" checked={smartFit} onChange={(event) => { setSmartFit(event.target.checked); setMessage(event.target.checked ? "Smart fit enabled · compatible parts snap and collisions are blocked" : "Smart fit disabled · free overlap allowed"); }} /><span className="toggle" /> Smart fit</label>
+              <label className="switch-label" title="Snaps matching kit connectors and compatible ordinary wall faces across kits"><input type="checkbox" checked={smartFit} onChange={(event) => { setSmartFit(event.target.checked); setMessage(event.target.checked ? "Smart fit enabled · compatible same-kit and cross-kit wall faces snap cleanly" : "Smart fit disabled · free overlap allowed"); }} /><span className="toggle" /> Smart fit</label>
               <label className="switch-label"><input type="checkbox" checked={snap} onChange={(event) => setSnap(event.target.checked)} /><span className="toggle" /> Snap</label>
               {snap && <select aria-label="Snap grid size" value={gridSize} onChange={(event) => setGridSize(Number(event.target.value))}><option value="1">1″ grid</option><option value="0.5">½″ grid</option><option value="0.25">¼″ grid</option></select>}
               <div className="theme-switch" aria-label="Board style">{(["industrial", "gothic", "desert"] as const).map((item) => <button key={item} className={theme === item ? "active" : ""} aria-pressed={theme === item} onClick={() => setTheme(item)}>{item}</button>)}</div>
@@ -1377,14 +1522,23 @@ export default function Home() {
             <small>{selectedIds.length > 1 ? "Height changes apply to the whole selection" : `${getDef(selectedPiece.defId).note} footprint`}</small>
           </div>}
           <div className="metric"><span>Current layout</span><strong>{pieces.length} pcs</strong></div>
-          <div className="metric"><span>Selected kit used</span><strong>{activeKitUsed} / {catalogueTotal}</strong></div>
-          <div className="metric"><span>Active kit</span><strong>{activeCatalogueMeta.name}</strong></div>
+          <div className="metric"><span>Palette used</span><strong>{paletteUsed} / {catalogueTotal}</strong></div>
+          <div className="metric"><span>Generator palette</span><strong>{paletteMaker || "None"}</strong></div>
           <div className="metric"><span>Footprint coverage</span><strong>{coverage.toFixed(1)}%</strong></div><div className="meter"><i style={{ width:`${Math.min(coverage * 5, 100)}%` }} /></div>
           <div className="metric"><span>Reserved clear space</span><strong>{zones.length} · {reservedCoverage.toFixed(1)}%</strong></div>
-          <div className="metric"><span>{activeCatalogue === "boarding" ? "Operable hatchways" : "Wall modules"}</span><strong>{activeCatalogue === "boarding" ? doors : wallPieces.length}</strong></div><div className="metric"><span>Corridor loops</span><strong>{loops}</strong></div><div className="metric"><span>Open chambers</span><strong>{chambers}</strong></div>
+          <div className="metric"><span>{paletteCatalogues.length > 1 ? "Walls + hatchways" : generationCatalogue === "boarding" ? "Operable hatchways" : "Wall modules"}</span><strong>{paletteCatalogues.length > 1 ? wallPieces.length : generationCatalogue === "boarding" ? doors : wallPieces.length}</strong></div><div className="metric"><span>Corridor loops</span><strong>{loops}</strong></div><div className="metric"><span>Open chambers</span><strong>{chambers}</strong></div>
           <div className="divider" />
-          <p className="inspector-copy">{activeCatalogue === "boarding" ? "The generator scores 32 candidates, requires every hatch between collinear walls, rejects sub-3-inch near misses, and builds either exact junctions or consistent room-scale passages." : "Iron Labyrinth generation grows varied connector networks, keeps doors supported, rejects cramped near-misses, and favours turns, branches, corridors, and reserved-zone framing."}</p>
-          <div className="layout-key">{activeCatalogue === "boarding" ? <><span><i className="key-wall" /> Wall</span><span><i className="key-door" /> Hatchway</span><span><i className="key-pillar" /> Pillar</span></> : <><span><i className="key-wall" /> Wall</span><span><i className="key-door" /> Wall end</span><span><i className="key-pillar" /> Connector</span></>}</div>
+          <p className="inspector-copy">{paletteCatalogues.length > 1 ? "Each terrain system keeps its physical assembly rules, then compatible ordinary wall faces are aligned across kits. Special pipes, floors, stairs, caps, and proprietary connectors remain system-specific." : generationCatalogue === "boarding" ? "The generator scores 32 candidates, requires every hatch between collinear walls, rejects sub-3-inch near misses, and builds either exact junctions or consistent room-scale passages." : "Iron Labyrinth generation grows varied connector networks, keeps doors supported, rejects cramped near-misses, and favours turns, branches, corridors, and reserved-zone framing."}</p>
+          <div className="layout-key">{paletteCatalogues.length > 1 ? <><span><i className="key-wall" /> Compatible wall</span><span><i className="key-door" /> Door / hatch</span><span><i className="key-pillar" /> System support</span></> : generationCatalogue === "boarding" ? <><span><i className="key-wall" /> Wall</span><span><i className="key-door" /> Hatchway</span><span><i className="key-pillar" /> Pillar</span></> : <><span><i className="key-wall" /> Wall</span><span><i className="key-door" /> Wall end</span><span><i className="key-pillar" /> Connector</span></>}</div>
+          {catalogueTotal > 0 && <details className="height-settings inspector-height">
+            <summary><span><strong>Advanced dimensions</strong><small>3D and export height defaults</small></span><em>Z axis · mm</em></summary>
+            <p className="height-explainer">Optional vertical dimensions. They do not change the bird&apos;s-eye footprint.</p>
+            <div className="height-grid">
+              {familyIsAvailable("wall") && <label><span>Structures</span><input aria-label={`${paletteLabel} structure default height`} type="number" min="10" max="300" step="1" value={familyHeightMm("wall")} onChange={(event) => setFamilyHeightMm("wall", Number(event.target.value))} /></label>}
+              {familyIsAvailable("support") && <label><span>{paletteCatalogues.length > 1 ? "Supports" : generationCatalogue === "boarding" ? "Pillars" : "Connectors"}</span><input aria-label={`${paletteLabel} support default height`} type="number" min="10" max="300" step="1" value={familyHeightMm("support")} onChange={(event) => setFamilyHeightMm("support", Number(event.target.value))} /></label>}
+              {familyIsAvailable("end") && <label><span>Wall ends</span><input aria-label={`${paletteLabel} end default height`} type="number" min="10" max="300" step="1" value={familyHeightMm("end")} onChange={(event) => setFamilyHeightMm("end", Number(event.target.value))} /></label>}
+            </div>
+          </details>}
           {zones.length > 0 && <div className="zone-list"><div className="zone-list-heading"><span>Reserved zones</span><button onClick={() => { setZones([]); setFocusedZone(null); setZoneDraft(null); setZoneResize(null); setMessage("Reserved zones cleared"); }}>Clear all</button></div><small className="zone-list-hint">Hover a zone for temporary handles, or click it to keep them active.</small>{zones.map((zone) => <div className={`zone-list-row ${focusedZone === zone.uid ? "active" : ""}`} key={zone.uid} onPointerDown={() => setFocusedZone(zone.uid)}><input aria-label={`Rename ${zone.name}`} value={zone.name} maxLength={32} onFocus={() => setFocusedZone(zone.uid)} onChange={(event) => setZones((current) => current.map((item) => item.uid === zone.uid ? { ...item, name:event.target.value } : item))} /><span>{zone.width.toFixed(1)} × {zone.height.toFixed(1)}″</span><button aria-label={`Remove ${zone.name}`} onClick={() => { setZones((current) => current.filter((item) => item.uid !== zone.uid)); if (focusedZone === zone.uid) setFocusedZone(null); if (zoneResize?.uid === zone.uid) setZoneResize(null); }}>×</button></div>)}</div>}
           <p className="accuracy-note">Scale basis: 48″ square board · 25.4 mm per inch. Iron Labyrinth dimensions are manufacturer-published; Boarding Actions footprints remain physical-kit approximations. Default wall height is 60 mm in both systems.</p>
         </aside>
