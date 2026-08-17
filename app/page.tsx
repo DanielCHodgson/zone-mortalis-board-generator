@@ -4,12 +4,15 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 type TerrainDef = {
   id: string;
+  catalogue: "boarding" | "ttcombat";
   name: string;
   shortName: string;
   width: number;
   depth: number;
+  height: number;
   limit: number;
-  kind: "wall" | "door" | "pillar" | "end";
+  kind: "wall" | "door" | "pillar" | "connector" | "end";
+  visual?: "solid" | "grid" | "pipe" | "vertical-pipe" | "reinforced" | "fan";
   note: string;
 };
 
@@ -19,6 +22,7 @@ type PlacedPiece = {
   x: number;
   y: number;
   rotation: 0 | 90;
+  height: number;
 };
 
 type GeneratorSlot = {
@@ -33,20 +37,35 @@ type RunToken = "wall-long" | "door-long" | "wall-short" | "door-short";
 type GeneratorRun = { x: number; y: number; rotation: 0 | 90; sequence: RunToken[] };
 
 const BOARD_IN = 48;
+const MM_PER_IN = 25.4;
+
+const CATALOGUES = {
+  boarding: { name:"Boarding Actions", maker:"Games Workshop", description:"Complete Gallowdark wall set", source:"Measured physical-kit dimensions" },
+  ttcombat: { name:"Iron Labyrinth", maker:"TTCombat", description:"Ultima Complex bundle", source:"TTCombat published dimensions" },
+} as const;
 
 // Approximate assembled footprints based on the 97 mm Gallowdark board grid
 // and published physical measurements of ~170 mm / ~80 mm wall sections.
 const TERRAIN: TerrainDef[] = [
-  { id: "short-door-pillars-a", name: "Short hatchway + pillars A", shortName: "Hatch A", width: 3.82, depth: 1.1, limit: 4, kind: "door", note: "97 × 28 mm overall" },
-  { id: "short-door-pillars-b", name: "Short hatchway + pillars B", shortName: "Hatch B", width: 3.82, depth: 1.1, limit: 4, kind: "door", note: "97 × 28 mm overall" },
-  { id: "short-door", name: "Short wall with hatchway", shortName: "Short hatch", width: 3.15, depth: 1.1, limit: 4, kind: "door", note: "80 × 28 mm measured" },
-  { id: "long-door-pillars", name: "Long hatchway + pillars", shortName: "Long hatch +", width: 7.2, depth: 1.1, limit: 4, kind: "door", note: "183 × 28 mm overall" },
-  { id: "long-door", name: "Long wall with hatchway", shortName: "Long hatch", width: 6.69, depth: 1.1, limit: 4, kind: "door", note: "170 × 28 mm measured" },
-  { id: "long-wall-pillars", name: "Long wall + pillars", shortName: "Long wall +", width: 7.2, depth: 1.1, limit: 4, kind: "wall", note: "183 × 28 mm overall" },
-  { id: "long-wall", name: "Long wall", shortName: "Long wall", width: 6.69, depth: 1.1, limit: 4, kind: "wall", note: "170 × 28 mm measured" },
-  { id: "short-wall", name: "Short wall", shortName: "Short wall", width: 3.15, depth: 1.1, limit: 4, kind: "wall", note: "80 × 28 mm measured" },
-  { id: "pillar", name: "Pillar", shortName: "Pillar", width: 0.98, depth: 0.98, limit: 32, kind: "pillar", note: "25 × 25 mm measured" },
-  { id: "wall-end", name: "Wall end", shortName: "Wall end", width: 0.98, depth: 0.55, limit: 4, kind: "end", note: "25 × 14 mm approx." },
+  { id:"short-door-pillars-a", catalogue:"boarding", name:"Short hatchway + pillars A", shortName:"Hatch A", width:3.82, depth:1.1, height:60/MM_PER_IN, limit:4, kind:"door", note:"97 × 28 mm" },
+  { id:"short-door-pillars-b", catalogue:"boarding", name:"Short hatchway + pillars B", shortName:"Hatch B", width:3.82, depth:1.1, height:60/MM_PER_IN, limit:4, kind:"door", note:"97 × 28 mm" },
+  { id:"short-door", catalogue:"boarding", name:"Short wall with hatchway", shortName:"Short hatch", width:3.15, depth:1.1, height:60/MM_PER_IN, limit:4, kind:"door", note:"80 × 28 mm" },
+  { id:"long-door-pillars", catalogue:"boarding", name:"Long hatchway + pillars", shortName:"Long hatch +", width:7.2, depth:1.1, height:60/MM_PER_IN, limit:4, kind:"door", note:"183 × 28 mm" },
+  { id:"long-door", catalogue:"boarding", name:"Long wall with hatchway", shortName:"Long hatch", width:6.69, depth:1.1, height:60/MM_PER_IN, limit:4, kind:"door", note:"170 × 28 mm" },
+  { id:"long-wall-pillars", catalogue:"boarding", name:"Long wall + pillars", shortName:"Long wall +", width:7.2, depth:1.1, height:60/MM_PER_IN, limit:4, kind:"wall", note:"183 × 28 mm" },
+  { id:"long-wall", catalogue:"boarding", name:"Long wall", shortName:"Long wall", width:6.69, depth:1.1, height:60/MM_PER_IN, limit:4, kind:"wall", note:"170 × 28 mm" },
+  { id:"short-wall", catalogue:"boarding", name:"Short wall", shortName:"Short wall", width:3.15, depth:1.1, height:60/MM_PER_IN, limit:4, kind:"wall", note:"80 × 28 mm" },
+  { id:"pillar", catalogue:"boarding", name:"Pillar", shortName:"Pillar", width:.98, depth:.98, height:60/MM_PER_IN, limit:32, kind:"pillar", note:"25 × 25 mm" },
+  { id:"wall-end", catalogue:"boarding", name:"Wall end", shortName:"Wall end", width:.98, depth:.55, height:60/MM_PER_IN, limit:4, kind:"end", note:"25 × 14 mm approx." },
+
+  { id:"tt-connector", catalogue:"ttcombat", name:"Iron Labyrinth connector block", shortName:"Connector", width:50/MM_PER_IN, depth:50/MM_PER_IN, height:60/MM_PER_IN, limit:24, kind:"connector", note:"50 × 50 mm" },
+  { id:"tt-wall-end", catalogue:"ttcombat", name:"Iron Labyrinth wall end", shortName:"Wall end", width:46/MM_PER_IN, depth:33/MM_PER_IN, height:60/MM_PER_IN, limit:21, kind:"end", note:"46 × 33 mm" },
+  { id:"tt-solid-wall", catalogue:"ttcombat", name:"Iron Labyrinth solid wall", shortName:"Solid wall", width:64/MM_PER_IN, depth:33/MM_PER_IN, height:60/MM_PER_IN, limit:8, kind:"wall", visual:"solid", note:"64 × 33 mm" },
+  { id:"tt-grid-wall", catalogue:"ttcombat", name:"Iron Labyrinth grid wall", shortName:"Grid wall", width:64/MM_PER_IN, depth:33/MM_PER_IN, height:60/MM_PER_IN, limit:2, kind:"wall", visual:"grid", note:"64 × 33 mm" },
+  { id:"tt-solid-pipe-wall", catalogue:"ttcombat", name:"Iron Labyrinth solid pipe wall", shortName:"Solid pipe", width:64/MM_PER_IN, depth:33/MM_PER_IN, height:60/MM_PER_IN, limit:2, kind:"wall", visual:"pipe", note:"64 × 33 mm" },
+  { id:"tt-vertical-pipe-wall", catalogue:"ttcombat", name:"Iron Labyrinth vertical pipe wall", shortName:"Vertical pipe", width:64/MM_PER_IN, depth:33/MM_PER_IN, height:60/MM_PER_IN, limit:2, kind:"wall", visual:"vertical-pipe", note:"64 × 33 mm" },
+  { id:"tt-reinforced-pipe-wall", catalogue:"ttcombat", name:"Iron Labyrinth reinforced pipe wall", shortName:"Reinforced", width:64/MM_PER_IN, depth:33/MM_PER_IN, height:60/MM_PER_IN, limit:2, kind:"wall", visual:"reinforced", note:"64 × 33 mm" },
+  { id:"tt-fan-wall", catalogue:"ttcombat", name:"Iron Labyrinth fan wall", shortName:"Fan wall", width:64/MM_PER_IN, depth:33/MM_PER_IN, height:60/MM_PER_IN, limit:2, kind:"wall", visual:"fan", note:"64 × 33 mm" },
 ];
 
 // Each plan is a small network of continuous structural runs. Gaps between
@@ -94,17 +113,23 @@ export default function Home() {
   const boardRef = useRef<HTMLDivElement>(null);
   const [pieces, setPieces] = useState<PlacedPiece[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
+  const [activeCatalogue, setActiveCatalogue] = useState<"boarding" | "ttcombat">("boarding");
   const [snap, setSnap] = useState(true);
   const [gridSize, setGridSize] = useState(1);
   const [theme, setTheme] = useState<"industrial" | "gothic" | "desert">("industrial");
   const [enabled, setEnabled] = useState<Record<string, boolean>>(() => Object.fromEntries(TERRAIN.map((item) => [item.id, true])));
   const [limits, setLimits] = useState<Record<string, number>>(() => Object.fromEntries(TERRAIN.map((item) => [item.id, item.limit])));
+  const [heightDefaults, setHeightDefaults] = useState<Record<string, number>>(() => Object.fromEntries(TERRAIN.map((item) => [item.id, item.height])));
   const [drag, setDrag] = useState<{ uid: string; dx: number; dy: number } | null>(null);
   const [paletteDrag, setPaletteDrag] = useState<{ defId: string; x: number; y: number } | null>(null);
   const paletteDragRef = useRef<{ defId: string; x: number; y: number } | null>(null);
   const [message, setMessage] = useState("Ready to build");
   const uidRef = useRef(0);
 
+  const catalogueTerrain = useMemo(() => TERRAIN.filter((item) => item.catalogue === activeCatalogue), [activeCatalogue]);
+  const activeCatalogueMeta = CATALOGUES[activeCatalogue];
+  const catalogueTotal = catalogueTerrain.reduce((sum, item) => sum + limits[item.id], 0);
+  const selectedPiece = pieces.find((piece) => piece.uid === selected) || null;
   const used = useMemo(() => pieces.reduce<Record<string, number>>((acc, piece) => ({ ...acc, [piece.defId]: (acc[piece.defId] || 0) + 1 }), {}), [pieces]);
   const wallPieces = pieces.filter((piece) => ["wall", "door"].includes(getDef(piece.defId).kind));
   const coverage = Math.min(100, pieces.reduce((sum, piece) => { const def = getDef(piece.defId); return sum + def.width * def.depth; }, 0) / (BOARD_IN * BOARD_IN) * 100);
@@ -115,17 +140,37 @@ export default function Home() {
   const nextUid = () => `piece-${++uidRef.current}`;
   const quantize = useCallback((value: number) => snap ? Math.round(value / gridSize) * gridSize : Math.round(value * 10) / 10, [gridSize, snap]);
 
+  const familyFor = (def: TerrainDef) => (["wall", "door"].includes(def.kind) ? "wall" : ["pillar", "connector"].includes(def.kind) ? "support" : "end");
+  const familyHeightMm = (family: "wall" | "support" | "end") => {
+    const matching = catalogueTerrain.filter((def) => familyFor(def) === family);
+    return Math.round((heightDefaults[matching[0]?.id] || 0) * MM_PER_IN);
+  };
+  const setFamilyHeightMm = (family: "wall" | "support" | "end", millimetres: number) => {
+    const nextHeight = clamp(millimetres, 10, 300) / MM_PER_IN;
+    const matchingIds = new Set(catalogueTerrain.filter((def) => familyFor(def) === family).map((def) => def.id));
+    setHeightDefaults((current) => ({ ...current, ...Object.fromEntries([...matchingIds].map((id) => [id, nextHeight])) }));
+    setPieces((current) => current.map((piece) => matchingIds.has(piece.defId) ? { ...piece, height:nextHeight } : piece));
+    setMessage(`${activeCatalogueMeta.name} ${family === "wall" ? "wall" : family} height set to ${Math.round(nextHeight * MM_PER_IN)} mm`);
+  };
+
+  const setSelectedHeightMm = (millimetres: number) => {
+    if (!selected) return;
+    const nextHeight = clamp(millimetres, 10, 300) / MM_PER_IN;
+    setPieces((current) => current.map((piece) => piece.uid === selected ? { ...piece, height:nextHeight } : piece));
+    setMessage(`Selected piece height set to ${Math.round(nextHeight * MM_PER_IN)} mm`);
+  };
+
   const addPiece = useCallback((defId: string, x = 24, y = 24, rotation: 0 | 90 = 0) => {
     const def = getDef(defId);
     const current = pieces.filter((piece) => piece.defId === defId).length;
     if (!enabled[defId] || current >= limits[defId]) { setMessage("No more of that piece available"); return; }
     const w = rotation === 90 ? def.depth : def.width;
     const h = rotation === 90 ? def.width : def.depth;
-    const piece = { uid: nextUid(), defId, x: quantize(clamp(x - w / 2, 0, BOARD_IN - w)), y: quantize(clamp(y - h / 2, 0, BOARD_IN - h)), rotation };
+    const piece = { uid: nextUid(), defId, x: quantize(clamp(x - w / 2, 0, BOARD_IN - w)), y: quantize(clamp(y - h / 2, 0, BOARD_IN - h)), rotation, height:heightDefaults[defId] };
     setPieces((currentPieces) => [...currentPieces, piece]);
     setSelected(piece.uid);
     setMessage(`${def.shortName} placed`);
-  }, [enabled, limits, pieces, quantize]);
+  }, [enabled, heightDefaults, limits, pieces, quantize]);
 
   const rotatePiece = useCallback((uid: string) => {
     setPieces((current) => current.map((piece) => {
@@ -162,10 +207,14 @@ export default function Home() {
   }, [deleteSelected, rotateSelected]);
 
   const chooseDefinition = (slot: GeneratorSlot, pool: Record<string, number>) => {
+    const hasEnabledDoors = TERRAIN.some((def) => def.catalogue === activeCatalogue && def.kind === "door" && enabled[def.id] && limits[def.id] > 0);
     const candidates = TERRAIN.filter((def) => {
+      if (def.catalogue !== activeCatalogue) return false;
       if (!enabled[def.id] || (pool[def.id] || 0) >= limits[def.id]) return false;
-      if (slot.door && def.kind !== "door") return false;
+      if (slot.door && hasEnabledDoors && def.kind !== "door") return false;
+      if (slot.door && !hasEnabledDoors && def.kind !== "wall") return false;
       if (!slot.door && def.kind !== "wall") return false;
+      if (activeCatalogue === "ttcombat") return true;
       return slot.length === "long" ? def.width > 5 : def.width <= 5;
     });
     const chosen = candidates[Math.floor(Math.random() * candidates.length)];
@@ -173,7 +222,69 @@ export default function Home() {
     return chosen;
   };
 
+  const generateIronLabyrinth = () => {
+    const edgePlan: Array<[number, number, number, number]> = [
+      [1,1,2,1], [2,1,3,1], [1,1,1,2], [1,2,1,3], [1,3,2,3], [2,3,3,3],
+      [3,1,3,2], [3,2,4,2], [4,2,5,2], [5,1,6,1], [6,1,7,1], [7,1,7,2],
+      [7,2,7,3], [5,3,6,3], [6,3,7,3], [5,1,5,2], [4,3,4,4], [4,4,4,5],
+    ];
+    const wallPool = catalogueTerrain.filter((def) => def.kind === "wall" && enabled[def.id]).flatMap((def) => Array.from({ length:limits[def.id] }, () => def)).sort(() => Math.random() - .5);
+    const connectorDef = catalogueTerrain.find((def) => def.kind === "connector" && enabled[def.id] && limits[def.id] > 0);
+    const endDef = catalogueTerrain.find((def) => def.kind === "end" && enabled[def.id] && limits[def.id] > 0);
+    const pitch = (50 + 64) / MM_PER_IN;
+    const originX = 3 + Math.round(Math.random() * 3);
+    const originY = 4 + Math.round(Math.random() * 3);
+    const nodePosition = (gx: number, gy: number) => ({ x:originX + gx * pitch, y:originY + gy * pitch });
+    const chosenEdges = edgePlan.slice(0, Math.min(edgePlan.length, wallPool.length));
+    const generated: PlacedPiece[] = [];
+    const nodeKeys = new Set<string>();
+    const degree: Record<string, number> = {};
+
+    chosenEdges.forEach(([ax, ay, bx, by], index) => {
+      const def = wallPool[index];
+      const start = nodePosition(ax, ay);
+      const rotation: 0 | 90 = ax === bx ? 90 : 0;
+      const connectorSize = connectorDef?.width || 50 / MM_PER_IN;
+      const x = rotation === 0 ? start.x + connectorSize : start.x + (connectorSize - def.depth) / 2;
+      const y = rotation === 0 ? start.y + (connectorSize - def.depth) / 2 : start.y + connectorSize;
+      generated.push({ uid:nextUid(), defId:def.id, x, y, rotation, height:heightDefaults[def.id] });
+      const aKey = `${ax},${ay}`;
+      const bKey = `${bx},${by}`;
+      nodeKeys.add(aKey); nodeKeys.add(bKey);
+      degree[aKey] = (degree[aKey] || 0) + 1;
+      degree[bKey] = (degree[bKey] || 0) + 1;
+    });
+
+    if (connectorDef) {
+      [...nodeKeys].slice(0, limits[connectorDef.id]).forEach((key) => {
+        const [gx, gy] = key.split(",").map(Number);
+        const point = nodePosition(gx, gy);
+        generated.push({ uid:nextUid(), defId:connectorDef.id, x:point.x, y:point.y, rotation:0, height:heightDefaults[connectorDef.id] });
+      });
+    }
+
+    if (endDef && connectorDef) {
+      Object.entries(degree).filter(([, count]) => count === 1).slice(0, Math.min(8, limits[endDef.id])).forEach(([key]) => {
+        const [gx, gy] = key.split(",").map(Number);
+        const point = nodePosition(gx, gy);
+        const horizontal = Math.abs(gx - 4) >= Math.abs(gy - 3);
+        const towardNegative = horizontal ? gx < 4 : gy < 3;
+        const rotation: 0 | 90 = horizontal ? 0 : 90;
+        const width = rotation === 0 ? endDef.width : endDef.depth;
+        const height = rotation === 0 ? endDef.depth : endDef.width;
+        const x = horizontal ? point.x + (towardNegative ? -width : connectorDef.width) : point.x + (connectorDef.width - width) / 2;
+        const y = horizontal ? point.y + (connectorDef.depth - height) / 2 : point.y + (towardNegative ? -height : connectorDef.depth);
+        generated.push({ uid:nextUid(), defId:endDef.id, x:clamp(x, 0, BOARD_IN - width), y:clamp(y, 0, BOARD_IN - height), rotation, height:heightDefaults[endDef.id] });
+      });
+    }
+
+    setPieces(generated);
+    setSelected(null);
+    setMessage(`Iron Labyrinth sector generated · ${generated.length} pieces`);
+  };
+
   const generateLayout = () => {
+    if (activeCatalogue === "ttcombat") { generateIronLabyrinth(); return; }
     const candidates = Array.from({ length: 16 }, (_, attempt) => {
       const base = RUN_LAYOUTS[(attempt + Math.floor(Math.random() * RUN_LAYOUTS.length)) % RUN_LAYOUTS.length];
       const quarterTurns = Math.floor(Math.random() * 4);
@@ -199,7 +310,7 @@ export default function Home() {
           }
           const w = rotation === 90 ? def.depth : def.width;
           const h = rotation === 90 ? def.width : def.depth;
-          generated.push({ uid: `candidate-${attempt}-${generated.length}`, defId: def.id, x: quantize(clamp(x, 0, BOARD_IN - w)), y: quantize(clamp(y, 0, BOARD_IN - h)), rotation });
+          generated.push({ uid: `candidate-${attempt}-${generated.length}`, defId: def.id, x: quantize(clamp(x, 0, BOARD_IN - w)), y: quantize(clamp(y, 0, BOARD_IN - h)), rotation, height:heightDefaults[def.id] });
           if (run.rotation === 0) cursorX += def.width;
           else cursorY += def.width;
         });
@@ -212,17 +323,25 @@ export default function Home() {
 
     const finalPieces = candidates.generated.map((piece) => ({ ...piece, uid: nextUid() }));
     const pool = finalPieces.reduce<Record<string, number>>((acc, piece) => ({ ...acc, [piece.defId]: (acc[piece.defId] || 0) + 1 }), {});
-    const pillarDef = TERRAIN.find((item) => item.id === "pillar")!;
-    if (enabled.pillar && limits.pillar > 0) {
-      const jointPoints = finalPieces.slice(0, Math.min(limits.pillar, 12)).map((piece, index) => ({
-        uid: nextUid(), defId: pillarDef.id, x: clamp(piece.x - (index % 2 ? 0 : .5), 0, 47), y: clamp(piece.y - (index % 2 ? .5 : 0), 0, 47), rotation: 0 as const,
+    const supportDef = TERRAIN.find((item) => item.catalogue === activeCatalogue && ["pillar", "connector"].includes(item.kind) && enabled[item.id] && limits[item.id] > 0);
+    if (supportDef) {
+      const jointPoints = finalPieces.slice(0, Math.min(limits[supportDef.id], 12)).map((piece, index) => ({
+        uid: nextUid(), defId: supportDef.id, x: clamp(piece.x - (index % 2 ? 0 : .5), 0, 47), y: clamp(piece.y - (index % 2 ? .5 : 0), 0, 47), rotation: 0 as const, height:heightDefaults[supportDef.id],
       }));
       finalPieces.push(...jointPoints);
-      pool.pillar = jointPoints.length;
+      pool[supportDef.id] = jointPoints.length;
+    }
+    const endDef = TERRAIN.find((item) => item.catalogue === activeCatalogue && item.kind === "end" && enabled[item.id] && limits[item.id] > 0);
+    if (endDef) {
+      const wallEnds = finalPieces.filter((piece) => ["wall", "door"].includes(getDef(piece.defId).kind)).filter((_, index) => index % 3 === 0).slice(0, Math.min(limits[endDef.id], activeCatalogue === "ttcombat" ? 8 : 4)).map((piece) => {
+        const def = getDef(piece.defId);
+        return { uid:nextUid(), defId:endDef.id, x:clamp(piece.x + (piece.rotation === 0 ? def.width : 0), 0, BOARD_IN - endDef.width), y:clamp(piece.y + (piece.rotation === 90 ? def.width : 0), 0, BOARD_IN - endDef.depth), rotation:piece.rotation, height:heightDefaults[endDef.id] };
+      });
+      finalPieces.push(...wallEnds);
     }
     setPieces(finalPieces);
     setSelected(null);
-    setMessage(`Balanced sector generated · ${finalPieces.length} pieces`);
+    setMessage(`${activeCatalogueMeta.name} sector generated · ${finalPieces.length} pieces`);
   };
 
   const boardPoint = (clientX: number, clientY: number) => {
@@ -287,23 +406,34 @@ export default function Home() {
 
       <section className="workspace">
         <aside className="catalogue panel">
-          <div className="panel-heading"><div><p className="eyebrow">Available terrain</p><h2>Boarding Actions</h2></div><span className="count">68 pcs</span></div>
+          <div className="catalogue-tabs" aria-label="Terrain catalogue">
+            {(Object.keys(CATALOGUES) as Array<keyof typeof CATALOGUES>).map((catalogueId) => <button key={catalogueId} className={activeCatalogue === catalogueId ? "active" : ""} onClick={() => setActiveCatalogue(catalogueId)}><span>{CATALOGUES[catalogueId].maker}</span><strong>{CATALOGUES[catalogueId].name}</strong></button>)}
+          </div>
+          <div className="panel-heading"><div><p className="eyebrow">Available terrain</p><h2>{activeCatalogueMeta.name}</h2><small className="catalogue-subtitle">{activeCatalogueMeta.description}</small></div><span className="count">{catalogueTotal} pcs</span></div>
+          <details className="height-settings" open>
+            <summary><span>Height defaults</span><em>Z axis · mm</em></summary>
+            <div className="height-grid">
+              <label><span>Walls {activeCatalogue === "boarding" ? "& doors" : ""}</span><input aria-label={`${activeCatalogueMeta.name} wall default height`} type="number" min="10" max="300" step="1" value={familyHeightMm("wall")} onChange={(event) => setFamilyHeightMm("wall", Number(event.target.value))} /></label>
+              <label><span>{activeCatalogue === "boarding" ? "Pillars" : "Connectors"}</span><input aria-label={`${activeCatalogueMeta.name} support default height`} type="number" min="10" max="300" step="1" value={familyHeightMm("support")} onChange={(event) => setFamilyHeightMm("support", Number(event.target.value))} /></label>
+              <label><span>Wall ends</span><input aria-label={`${activeCatalogueMeta.name} end default height`} type="number" min="10" max="300" step="1" value={familyHeightMm("end")} onChange={(event) => setFamilyHeightMm("end", Number(event.target.value))} /></label>
+            </div>
+          </details>
           <div className="catalogue-scroll">
-            {TERRAIN.map((def) => {
+            {catalogueTerrain.map((def) => {
               const remaining = Math.max(0, limits[def.id] - (used[def.id] || 0));
               return (
                 <div className={`terrain-row ${!enabled[def.id] ? "disabled" : ""}`} key={def.id} onPointerDown={(event) => { if (!enabled[def.id] || remaining === 0 || (event.target as HTMLElement).closest("input")) return; const nextDrag = { defId:def.id, x:event.clientX, y:event.clientY }; paletteDragRef.current = nextDrag; setPaletteDrag(nextDrag); }}>
                   <input aria-label={`Include ${def.name}`} type="checkbox" checked={enabled[def.id]} onChange={(event) => setEnabled((current) => ({ ...current, [def.id]: event.target.checked }))} />
                   <button className="piece-add" onClick={() => addPiece(def.id)} disabled={!enabled[def.id] || remaining === 0} aria-label={`Add ${def.name}`}>
-                    <span className={`piece-icon ${def.kind} ${def.width > 5 ? "long" : "short"}`}><i /></span>
-                    <span className="piece-copy"><strong>{def.shortName}</strong><small>{def.note}</small></span>
+                    <span className={`piece-icon ${def.kind} ${def.width > 5 ? "long" : "short"} ${def.visual ? `visual-${def.visual}` : ""}`}><i /></span>
+                    <span className="piece-copy"><strong>{def.shortName}</strong><small>{def.note} · Z {Math.round(heightDefaults[def.id] * MM_PER_IN)} mm</small></span>
                   </button>
                   <label className="stock"><span>×</span><input aria-label={`${def.name} quantity`} type="number" min="0" max={def.limit} value={limits[def.id]} onChange={(event) => setLimits((current) => ({ ...current, [def.id]: clamp(Number(event.target.value), 0, def.limit) }))} /><em>{remaining} left</em></label>
                 </div>
               );
             })}
           </div>
-          <p className="hint">Drag or click to place. Quantities match one complete 68-piece set.</p>
+          <p className="hint">Drag or click to place. Quantities match one complete {activeCatalogueMeta.name} set. {activeCatalogueMeta.source}.</p>
         </aside>
 
         <div className="board-column">
@@ -325,7 +455,7 @@ export default function Home() {
                 const def = getDef(piece.defId);
                 const width = piece.rotation === 90 ? def.depth : def.width;
                 const height = piece.rotation === 90 ? def.width : def.depth;
-                return <button key={piece.uid} title={`${def.name} · ${def.note}`} aria-label={`${def.name}, selected ${selected === piece.uid}`} className={`placed-piece ${def.kind} ${piece.rotation === 90 ? "rotated" : ""} ${selected === piece.uid ? "selected" : ""}`} style={{ left:`${piece.x / BOARD_IN * 100}%`, top:`${piece.y / BOARD_IN * 100}%`, width:`${width / BOARD_IN * 100}%`, height:`${height / BOARD_IN * 100}%` }} onDoubleClick={() => rotatePiece(piece.uid)} onContextMenu={(event) => { event.preventDefault(); setSelected(piece.uid); rotatePiece(piece.uid); }} onPointerDown={(event) => { event.stopPropagation(); (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId); setSelected(piece.uid); const point = boardPoint(event.clientX, event.clientY); setDrag({ uid:piece.uid, dx:point.x - piece.x, dy:point.y - piece.y }); }}><span className="terrain-detail" /></button>;
+                return <button key={piece.uid} title={`${def.name} · ${def.note} × ${Math.round(piece.height * MM_PER_IN)} mm high`} aria-label={`${def.name}, ${Math.round(piece.height * MM_PER_IN)} millimetres high, selected ${selected === piece.uid}`} className={`placed-piece ${def.kind} ${def.visual ? `visual-${def.visual}` : ""} ${piece.rotation === 90 ? "rotated" : ""} ${selected === piece.uid ? "selected" : ""}`} style={{ left:`${piece.x / BOARD_IN * 100}%`, top:`${piece.y / BOARD_IN * 100}%`, width:`${width / BOARD_IN * 100}%`, height:`${height / BOARD_IN * 100}%` }} onDoubleClick={() => rotatePiece(piece.uid)} onContextMenu={(event) => { event.preventDefault(); setSelected(piece.uid); rotatePiece(piece.uid); }} onPointerDown={(event) => { event.stopPropagation(); (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId); setSelected(piece.uid); const point = boardPoint(event.clientX, event.clientY); setDrag({ uid:piece.uid, dx:point.x - piece.x, dy:point.y - piece.y }); }}><span className="terrain-detail" /></button>;
               })}
             </div>
           </div>
@@ -334,17 +464,23 @@ export default function Home() {
 
         <aside className="inspector panel">
           <p className="eyebrow">Layout analysis</p><h2>{pieces.length ? "Playable sector" : "Ready to build"}</h2>
-          <div className="metric"><span>Terrain used</span><strong>{pieces.length} / {Object.values(limits).reduce((a,b) => a+b, 0)}</strong></div>
+          {selectedPiece && <div className="selected-piece-editor">
+            <div><span>Selected piece</span><strong>{getDef(selectedPiece.defId).shortName}</strong></div>
+            <label><span>Height · Z</span><span className="dimension-input"><input aria-label="Selected piece height" type="number" min="10" max="300" step="1" value={Math.round(selectedPiece.height * MM_PER_IN)} onChange={(event) => setSelectedHeightMm(Number(event.target.value))} /> mm</span></label>
+            <small>{getDef(selectedPiece.defId).note} footprint</small>
+          </div>}
+          <div className="metric"><span>Terrain used</span><strong>{pieces.length} / {catalogueTotal}</strong></div>
+          <div className="metric"><span>Active catalogue</span><strong>{activeCatalogueMeta.maker}</strong></div>
           <div className="metric"><span>Footprint coverage</span><strong>{coverage.toFixed(1)}%</strong></div><div className="meter"><i style={{ width:`${Math.min(coverage * 5, 100)}%` }} /></div>
-          <div className="metric"><span>Operable hatchways</span><strong>{doors}</strong></div><div className="metric"><span>Corridor loops</span><strong>{loops}</strong></div><div className="metric"><span>Open chambers</span><strong>{chambers}</strong></div>
+          <div className="metric"><span>{activeCatalogue === "boarding" ? "Operable hatchways" : "Wall modules"}</span><strong>{activeCatalogue === "boarding" ? doors : wallPieces.length}</strong></div><div className="metric"><span>Corridor loops</span><strong>{loops}</strong></div><div className="metric"><span>Open chambers</span><strong>{chambers}</strong></div>
           <div className="divider" />
-          <p className="inspector-copy">The generator scores 16 candidates for route variety, door spacing, connected lanes and useful open negative space.</p>
-          <div className="layout-key"><span><i className="key-wall" /> Wall</span><span><i className="key-door" /> Hatchway</span><span><i className="key-pillar" /> Pillar</span></div>
+          <p className="inspector-copy">{activeCatalogue === "boarding" ? "The generator scores 16 candidates for route variety, door spacing, connected lanes and useful open negative space." : "Iron Labyrinth plans use a modular connector graph, preserving exact 50 mm nodes and 64 mm spans to form connected chambers and passage runs."}</p>
+          <div className="layout-key">{activeCatalogue === "boarding" ? <><span><i className="key-wall" /> Wall</span><span><i className="key-door" /> Hatchway</span><span><i className="key-pillar" /> Pillar</span></> : <><span><i className="key-wall" /> Wall</span><span><i className="key-door" /> Wall end</span><span><i className="key-pillar" /> Connector</span></>}</div>
           <button className="secondary" disabled={!pieces.length} onClick={() => { setPieces([]); setSelected(null); setMessage("Board cleared"); }}>Clear board</button>
-          <p className="accuracy-note">Scale basis: 48″ square board · 25.4 mm per inch. Measurements are physical-kit approximations; connector tolerances vary after assembly.</p>
+          <p className="accuracy-note">Scale basis: 48″ square board · 25.4 mm per inch. Iron Labyrinth dimensions are manufacturer-published; Boarding Actions footprints remain physical-kit approximations. Default wall height is 60 mm in both systems.</p>
         </aside>
       </section>
-      {paletteDrag && <div className="drag-preview" style={{ left:paletteDrag.x, top:paletteDrag.y }}><span className={`piece-icon ${getDef(paletteDrag.defId).kind} ${getDef(paletteDrag.defId).width > 5 ? "long" : "short"}`}><i /></span><small>{getDef(paletteDrag.defId).shortName}</small></div>}
+      {paletteDrag && <div className="drag-preview" style={{ left:paletteDrag.x, top:paletteDrag.y }}><span className={`piece-icon ${getDef(paletteDrag.defId).kind} ${getDef(paletteDrag.defId).width > 5 ? "long" : "short"} ${getDef(paletteDrag.defId).visual ? `visual-${getDef(paletteDrag.defId).visual}` : ""}`}><i /></span><small>{getDef(paletteDrag.defId).shortName}</small></div>}
     </main>
   );
 }
