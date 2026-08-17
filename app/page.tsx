@@ -25,6 +25,15 @@ type PlacedPiece = {
   height: number;
 };
 
+type ReservedZone = {
+  uid: string;
+  name: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
 type GeneratorSlot = {
   x: number;
   y: number;
@@ -121,6 +130,10 @@ export default function Home() {
   const [limits, setLimits] = useState<Record<string, number>>(() => Object.fromEntries(TERRAIN.map((item) => [item.id, item.limit])));
   const [heightDefaults, setHeightDefaults] = useState<Record<string, number>>(() => Object.fromEntries(TERRAIN.map((item) => [item.id, item.height])));
   const [drag, setDrag] = useState<{ uid: string; dx: number; dy: number } | null>(null);
+  const [zones, setZones] = useState<ReservedZone[]>([]);
+  const [zoneMode, setZoneMode] = useState(false);
+  const [zoneName, setZoneName] = useState("Hangar");
+  const [zoneDraft, setZoneDraft] = useState<{ startX:number; startY:number; currentX:number; currentY:number } | null>(null);
   const [paletteDrag, setPaletteDrag] = useState<{ defId: string; x: number; y: number } | null>(null);
   const paletteDragRef = useRef<{ defId: string; x: number; y: number } | null>(null);
   const [message, setMessage] = useState("Ready to build");
@@ -139,6 +152,19 @@ export default function Home() {
 
   const nextUid = () => `piece-${++uidRef.current}`;
   const quantize = useCallback((value: number) => snap ? Math.round(value / gridSize) * gridSize : Math.round(value * 10) / 10, [gridSize, snap]);
+  const normaliseZoneDraft = (draft: { startX:number; startY:number; currentX:number; currentY:number }) => ({
+    x:Math.min(draft.startX, draft.currentX),
+    y:Math.min(draft.startY, draft.currentY),
+    width:Math.abs(draft.currentX - draft.startX),
+    height:Math.abs(draft.currentY - draft.startY),
+  });
+  const pieceIntersectsReservedZone = (piece: PlacedPiece, padding = .08) => {
+    const def = getDef(piece.defId);
+    const width = piece.rotation === 90 ? def.depth : def.width;
+    const height = piece.rotation === 90 ? def.width : def.depth;
+    return zones.some((zone) => piece.x < zone.x + zone.width + padding && piece.x + width > zone.x - padding && piece.y < zone.y + zone.height + padding && piece.y + height > zone.y - padding);
+  };
+  const reservedCoverage = zones.reduce((sum, zone) => sum + zone.width * zone.height, 0) / (BOARD_IN * BOARD_IN) * 100;
 
   const familyFor = (def: TerrainDef) => (["wall", "door"].includes(def.kind) ? "wall" : ["pillar", "connector"].includes(def.kind) ? "support" : "end");
   const familyHeightMm = (family: "wall" | "support" | "end") => {
@@ -200,7 +226,7 @@ export default function Home() {
       if ((event.target as HTMLElement)?.matches("input, select")) return;
       if (event.key.toLowerCase() === "r") rotateSelected();
       if (event.key === "Delete" || event.key === "Backspace") { event.preventDefault(); deleteSelected(); }
-      if (event.key === "Escape") setSelected(null);
+      if (event.key === "Escape") { setSelected(null); setZoneDraft(null); setZoneMode(false); }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -232,62 +258,72 @@ export default function Home() {
     const connectorDef = catalogueTerrain.find((def) => def.kind === "connector" && enabled[def.id] && limits[def.id] > 0);
     const endDef = catalogueTerrain.find((def) => def.kind === "end" && enabled[def.id] && limits[def.id] > 0);
     const pitch = (50 + 64) / MM_PER_IN;
-    const originX = 3 + Math.round(Math.random() * 3);
-    const originY = 4 + Math.round(Math.random() * 3);
-    const nodePosition = (gx: number, gy: number) => ({ x:originX + gx * pitch, y:originY + gy * pitch });
     const chosenEdges = edgePlan.slice(0, Math.min(edgePlan.length, wallPool.length));
-    const generated: PlacedPiece[] = [];
-    const nodeKeys = new Set<string>();
-    const degree: Record<string, number> = {};
+    const origins = [1,5,9,13].flatMap((originX) => [1,6,11,16,21].map((originY) => ({ originX, originY }))).sort(() => Math.random() - .5);
+    const generatedCandidates = origins.map(({ originX, originY }) => {
+      const nodePosition = (gx: number, gy: number) => ({ x:originX + gx * pitch, y:originY + gy * pitch });
+      const generated: PlacedPiece[] = [];
+      const nodeKeys = new Set<string>();
+      const degree: Record<string, number> = {};
 
-    chosenEdges.forEach(([ax, ay, bx, by], index) => {
-      const def = wallPool[index];
-      const start = nodePosition(ax, ay);
-      const rotation: 0 | 90 = ax === bx ? 90 : 0;
-      const connectorSize = connectorDef?.width || 50 / MM_PER_IN;
-      const x = rotation === 0 ? start.x + connectorSize : start.x + (connectorSize - def.depth) / 2;
-      const y = rotation === 0 ? start.y + (connectorSize - def.depth) / 2 : start.y + connectorSize;
-      generated.push({ uid:nextUid(), defId:def.id, x, y, rotation, height:heightDefaults[def.id] });
-      const aKey = `${ax},${ay}`;
-      const bKey = `${bx},${by}`;
-      nodeKeys.add(aKey); nodeKeys.add(bKey);
-      degree[aKey] = (degree[aKey] || 0) + 1;
-      degree[bKey] = (degree[bKey] || 0) + 1;
-    });
-
-    if (connectorDef) {
-      [...nodeKeys].slice(0, limits[connectorDef.id]).forEach((key) => {
-        const [gx, gy] = key.split(",").map(Number);
-        const point = nodePosition(gx, gy);
-        generated.push({ uid:nextUid(), defId:connectorDef.id, x:point.x, y:point.y, rotation:0, height:heightDefaults[connectorDef.id] });
+      chosenEdges.forEach(([ax, ay, bx, by], index) => {
+        const def = wallPool[index];
+        const start = nodePosition(ax, ay);
+        const rotation: 0 | 90 = ax === bx ? 90 : 0;
+        const connectorSize = connectorDef?.width || 50 / MM_PER_IN;
+        const x = rotation === 0 ? start.x + connectorSize : start.x + (connectorSize - def.depth) / 2;
+        const y = rotation === 0 ? start.y + (connectorSize - def.depth) / 2 : start.y + connectorSize;
+        const wallPiece = { uid:`candidate-wall-${index}`, defId:def.id, x, y, rotation, height:heightDefaults[def.id] };
+        if (pieceIntersectsReservedZone(wallPiece)) return;
+        generated.push(wallPiece);
+        const aKey = `${ax},${ay}`;
+        const bKey = `${bx},${by}`;
+        nodeKeys.add(aKey); nodeKeys.add(bKey);
+        degree[aKey] = (degree[aKey] || 0) + 1;
+        degree[bKey] = (degree[bKey] || 0) + 1;
       });
-    }
 
-    if (endDef && connectorDef) {
-      Object.entries(degree).filter(([, count]) => count === 1).slice(0, Math.min(8, limits[endDef.id])).forEach(([key]) => {
-        const [gx, gy] = key.split(",").map(Number);
-        const point = nodePosition(gx, gy);
-        const horizontal = Math.abs(gx - 4) >= Math.abs(gy - 3);
-        const towardNegative = horizontal ? gx < 4 : gy < 3;
-        const rotation: 0 | 90 = horizontal ? 0 : 90;
-        const width = rotation === 0 ? endDef.width : endDef.depth;
-        const height = rotation === 0 ? endDef.depth : endDef.width;
-        const x = horizontal ? point.x + (towardNegative ? -width : connectorDef.width) : point.x + (connectorDef.width - width) / 2;
-        const y = horizontal ? point.y + (connectorDef.depth - height) / 2 : point.y + (towardNegative ? -height : connectorDef.depth);
-        generated.push({ uid:nextUid(), defId:endDef.id, x:clamp(x, 0, BOARD_IN - width), y:clamp(y, 0, BOARD_IN - height), rotation, height:heightDefaults[endDef.id] });
-      });
-    }
+      if (connectorDef) {
+        [...nodeKeys].slice(0, limits[connectorDef.id]).forEach((key, index) => {
+          const [gx, gy] = key.split(",").map(Number);
+          const point = nodePosition(gx, gy);
+          const connector = { uid:`candidate-connector-${index}`, defId:connectorDef.id, x:point.x, y:point.y, rotation:0 as const, height:heightDefaults[connectorDef.id] };
+          if (!pieceIntersectsReservedZone(connector)) generated.push(connector);
+        });
+      }
 
+      if (endDef && connectorDef) {
+        Object.entries(degree).filter(([, count]) => count === 1).slice(0, Math.min(8, limits[endDef.id])).forEach(([key], index) => {
+          const [gx, gy] = key.split(",").map(Number);
+          const point = nodePosition(gx, gy);
+          const horizontal = Math.abs(gx - 4) >= Math.abs(gy - 3);
+          const towardNegative = horizontal ? gx < 4 : gy < 3;
+          const rotation: 0 | 90 = horizontal ? 0 : 90;
+          const width = rotation === 0 ? endDef.width : endDef.depth;
+          const height = rotation === 0 ? endDef.depth : endDef.width;
+          const x = horizontal ? point.x + (towardNegative ? -width : connectorDef.width) : point.x + (connectorDef.width - width) / 2;
+          const y = horizontal ? point.y + (connectorDef.depth - height) / 2 : point.y + (towardNegative ? -height : connectorDef.depth);
+          const wallEnd = { uid:`candidate-end-${index}`, defId:endDef.id, x:clamp(x, 0, BOARD_IN - width), y:clamp(y, 0, BOARD_IN - height), rotation, height:heightDefaults[endDef.id] };
+          if (!pieceIntersectsReservedZone(wallEnd)) generated.push(wallEnd);
+        });
+      }
+      const wallCount = generated.filter((piece) => getDef(piece.defId).kind === "wall").length;
+      return { generated, score:wallCount * 12 + generated.length };
+    }).sort((a, b) => b.score - a.score);
+
+    const generated = generatedCandidates[0].generated.map((piece) => ({ ...piece, uid:nextUid() }));
     setPieces(generated);
     setSelected(null);
-    setMessage(`Iron Labyrinth sector generated · ${generated.length} pieces`);
+    setMessage(`Iron Labyrinth sector generated · ${generated.length} pieces${zones.length ? ` · ${zones.length} zone${zones.length === 1 ? "" : "s"} preserved` : ""}`);
   };
 
   const generateLayout = () => {
     if (activeCatalogue === "ttcombat") { generateIronLabyrinth(); return; }
-    const candidates = Array.from({ length: 16 }, (_, attempt) => {
+    const candidates = Array.from({ length: 32 }, (_, attempt) => {
       const base = RUN_LAYOUTS[(attempt + Math.floor(Math.random() * RUN_LAYOUTS.length)) % RUN_LAYOUTS.length];
-      const quarterTurns = Math.floor(Math.random() * 4);
+      const quarterTurns = attempt % 4;
+      const offsetX = ((attempt % 3) - 1) * 3;
+      const offsetY = ((Math.floor(attempt / 3) % 3) - 1) * 3;
       const pool: Record<string, number> = {};
       const generated: PlacedPiece[] = [];
       base.forEach((run) => {
@@ -310,14 +346,16 @@ export default function Home() {
           }
           const w = rotation === 90 ? def.depth : def.width;
           const h = rotation === 90 ? def.width : def.depth;
-          generated.push({ uid: `candidate-${attempt}-${generated.length}`, defId: def.id, x: quantize(clamp(x, 0, BOARD_IN - w)), y: quantize(clamp(y, 0, BOARD_IN - h)), rotation, height:heightDefaults[def.id] });
+          const candidate = { uid: `candidate-${attempt}-${generated.length}`, defId: def.id, x: quantize(clamp(x + offsetX, 0, BOARD_IN - w)), y: quantize(clamp(y + offsetY, 0, BOARD_IN - h)), rotation, height:heightDefaults[def.id] };
+          if (pieceIntersectsReservedZone(candidate)) pool[def.id] = Math.max(0, (pool[def.id] || 1) - 1);
+          else generated.push(candidate);
           if (run.rotation === 0) cursorX += def.width;
           else cursorY += def.width;
         });
       });
       const doorCount = generated.filter((piece) => getDef(piece.defId).kind === "door").length;
       const longCount = generated.filter((piece) => getDef(piece.defId).width > 5).length;
-      const score = generated.length * 4 + Math.min(doorCount, 9) * 5 + Math.min(longCount, 12) * 2 + base.length * 3 - Math.abs(8 - doorCount) * 3;
+      const score = generated.length * 7 + Math.min(doorCount, 9) * 5 + Math.min(longCount, 12) * 2 + base.length * 3 - Math.abs(8 - doorCount) * 3;
       return { generated, score };
     }).sort((a, b) => b.score - a.score)[0];
 
@@ -327,7 +365,7 @@ export default function Home() {
     if (supportDef) {
       const jointPoints = finalPieces.slice(0, Math.min(limits[supportDef.id], 12)).map((piece, index) => ({
         uid: nextUid(), defId: supportDef.id, x: clamp(piece.x - (index % 2 ? 0 : .5), 0, 47), y: clamp(piece.y - (index % 2 ? .5 : 0), 0, 47), rotation: 0 as const, height:heightDefaults[supportDef.id],
-      }));
+      })).filter((piece) => !pieceIntersectsReservedZone(piece));
       finalPieces.push(...jointPoints);
       pool[supportDef.id] = jointPoints.length;
     }
@@ -336,12 +374,12 @@ export default function Home() {
       const wallEnds = finalPieces.filter((piece) => ["wall", "door"].includes(getDef(piece.defId).kind)).filter((_, index) => index % 3 === 0).slice(0, Math.min(limits[endDef.id], activeCatalogue === "ttcombat" ? 8 : 4)).map((piece) => {
         const def = getDef(piece.defId);
         return { uid:nextUid(), defId:endDef.id, x:clamp(piece.x + (piece.rotation === 0 ? def.width : 0), 0, BOARD_IN - endDef.width), y:clamp(piece.y + (piece.rotation === 90 ? def.width : 0), 0, BOARD_IN - endDef.depth), rotation:piece.rotation, height:heightDefaults[endDef.id] };
-      });
+      }).filter((piece) => !pieceIntersectsReservedZone(piece));
       finalPieces.push(...wallEnds);
     }
     setPieces(finalPieces);
     setSelected(null);
-    setMessage(`${activeCatalogueMeta.name} sector generated · ${finalPieces.length} pieces`);
+    setMessage(`${activeCatalogueMeta.name} sector generated · ${finalPieces.length} pieces${zones.length ? ` · ${zones.length} zone${zones.length === 1 ? "" : "s"} preserved` : ""}`);
   };
 
   const exportLayoutPng = () => {
@@ -415,6 +453,26 @@ export default function Home() {
     [0, 12, 24, 36, 48].forEach((inch) => ctx.fillText(`${inch}${inch === 48 ? "″" : ""}`, boardX - 17, boardY + inch * boardScale + 5));
     ctx.textAlign = "left";
 
+    zones.forEach((zone) => {
+      const x = boardX + zone.x * boardScale;
+      const y = boardY + zone.y * boardScale;
+      const width = zone.width * boardScale;
+      const height = zone.height * boardScale;
+      ctx.fillStyle = "rgba(226,214,164,.58)";
+      ctx.fillRect(x, y, width, height);
+      ctx.save();
+      ctx.setLineDash([12, 8]);
+      ctx.strokeStyle = "#815f29";
+      ctx.lineWidth = 4;
+      ctx.strokeRect(x, y, width, height);
+      ctx.restore();
+      ctx.fillStyle = "#3c321f";
+      ctx.font = "700 17px Arial, sans-serif";
+      ctx.fillText(zone.name || "Reserved zone", x + 10, y + 26);
+      ctx.font = "13px Arial, sans-serif";
+      ctx.fillText(`${zone.width.toFixed(1)} × ${zone.height.toFixed(1)}″ CLEAR`, x + 10, y + 48);
+    });
+
     pieces.forEach((piece) => {
       const def = getDef(piece.defId);
       const widthIn = piece.rotation === 90 ? def.depth : def.width;
@@ -464,7 +522,13 @@ export default function Home() {
     ctx.fillStyle = "#68736e";
     ctx.font = "15px Arial, sans-serif";
     ctx.fillText(`${pieces.length} terrain pieces  ·  ${coverage.toFixed(1)}% footprint coverage`, manifestX + 30, boardY + 77);
-    let rowY = boardY + 118;
+    if (zones.length) {
+      ctx.fillStyle = "#815f29";
+      ctx.font = "700 13px Arial, sans-serif";
+      const zoneNames = zones.map((zone) => zone.name || "Reserved zone").join(" · ");
+      ctx.fillText(`${zones.length} RESERVED · ${zoneNames.length > 46 ? `${zoneNames.slice(0, 43)}…` : zoneNames}`, manifestX + 30, boardY + 104);
+    }
+    let rowY = boardY + (zones.length ? 142 : 118);
     cataloguesUsed.forEach((catalogueId) => {
       ctx.fillStyle = "#eef1ed";
       ctx.fillRect(manifestX + 20, rowY - 22, manifestWidth - 40, 34);
@@ -483,7 +547,7 @@ export default function Home() {
         const heightEntries = Object.entries(heightCounts).sort(([a], [b]) => Number(a) - Number(b));
         const zText = heightEntries.length === 1 ? `${heightEntries[0][0]} mm` : heightEntries.map(([height, quantity]) => `${quantity}×${height}`).join(" / ") + " mm";
         ctx.fillText(`${def.note}  ·  Z ${zText}`, manifestX + 55, rowY + 15);
-        rowY += 45;
+        rowY += 42;
       });
       rowY += 10;
     });
@@ -512,6 +576,38 @@ export default function Home() {
   const boardPoint = (clientX: number, clientY: number) => {
     const rect = boardRef.current!.getBoundingClientRect();
     return { x: (clientX - rect.left) / rect.width * BOARD_IN, y: (clientY - rect.top) / rect.height * BOARD_IN };
+  };
+
+  const beginZone = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!zoneMode || !boardRef.current) {
+      if (event.target === boardRef.current) setSelected(null);
+      return;
+    }
+    event.preventDefault();
+    try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* Pointer capture may be unavailable in embedded browsers. */ }
+    const point = boardPoint(event.clientX, event.clientY);
+    const x = clamp(quantize(point.x), 0, BOARD_IN);
+    const y = clamp(quantize(point.y), 0, BOARD_IN);
+    setSelected(null);
+    setDrag(null);
+    setZoneDraft({ startX:x, startY:y, currentX:x, currentY:y });
+    setMessage("Drag to size the reserved zone · hold Shift for a perfect square");
+  };
+
+  const finishZone = () => {
+    if (!zoneDraft) return;
+    const zone = normaliseZoneDraft(zoneDraft);
+    const minimumSize = snap ? gridSize : .5;
+    if (zone.width < minimumSize || zone.height < minimumSize) {
+      setZoneDraft(null);
+      setMessage("Drag a larger area to create a zone");
+      return;
+    }
+    const name = zoneName.trim() || `Hangar ${zones.length + 1}`;
+    setZones((current) => [...current, { uid:`zone-${Date.now()}`, name, ...zone }]);
+    setZoneDraft(null);
+    setZoneName(`Hangar ${zones.length + 2}`);
+    setMessage(`${name} reserved · ${zone.width.toFixed(1)} × ${zone.height.toFixed(1)} in`);
   };
 
   const onDrop = (event: React.DragEvent) => {
@@ -551,6 +647,20 @@ export default function Home() {
   }, [addPiece]);
 
   const onBoardPointerMove = (event: React.PointerEvent) => {
+    if (zoneDraft && boardRef.current) {
+      const point = boardPoint(event.clientX, event.clientY);
+      let currentX = clamp(quantize(point.x), 0, BOARD_IN);
+      let currentY = clamp(quantize(point.y), 0, BOARD_IN);
+      if (event.shiftKey) {
+        const dx = currentX - zoneDraft.startX;
+        const dy = currentY - zoneDraft.startY;
+        const side = Math.max(Math.abs(dx), Math.abs(dy));
+        currentX = clamp(zoneDraft.startX + (dx < 0 ? -side : side), 0, BOARD_IN);
+        currentY = clamp(zoneDraft.startY + (dy < 0 ? -side : side), 0, BOARD_IN);
+      }
+      setZoneDraft((current) => current ? { ...current, currentX, currentY } : null);
+      return;
+    }
     if (!drag || !boardRef.current) return;
     const point = boardPoint(event.clientX, event.clientY);
     setPieces((current) => current.map((piece) => {
@@ -603,19 +713,22 @@ export default function Home() {
 
         <div className="board-column">
           <div className="board-toolbar panel">
-            <div className="tool-group"><button className="tool active">Select</button><button className="tool" onClick={rotateSelected} disabled={!selected}>Rotate 90° <kbd>R</kbd></button><button className="tool danger" onClick={deleteSelected} disabled={!selected}>Delete</button></div>
+            <div className="tool-group"><button className={`tool ${!zoneMode ? "active" : ""}`} onClick={() => { setZoneMode(false); setZoneDraft(null); }}>Select</button><button className={`tool ${zoneMode ? "active zone-tool" : ""}`} onClick={() => { setZoneMode(true); setSelected(null); setMessage("Name the zone, then drag it on the board"); }}>Draw zone</button><button className="tool" onClick={rotateSelected} disabled={!selected || zoneMode}>Rotate 90° <kbd>R</kbd></button><button className="tool danger" onClick={deleteSelected} disabled={!selected || zoneMode}>Delete</button><button className="tool danger" onClick={() => { setZones([]); setZoneDraft(null); setMessage("Reserved zones cleared"); }} disabled={!zones.length}>Clear zones</button></div>
             <div className="tool-group settings">
               <label className="switch-label"><input type="checkbox" checked={snap} onChange={(event) => setSnap(event.target.checked)} /><span className="toggle" /> Snap</label>
               {snap && <select aria-label="Snap grid size" value={gridSize} onChange={(event) => setGridSize(Number(event.target.value))}><option value="1">1″ grid</option><option value="0.5">½″ grid</option></select>}
               <div className="theme-switch" aria-label="Board style">{(["industrial", "gothic", "desert"] as const).map((item) => <button key={item} className={theme === item ? "active" : ""} onClick={() => setTheme(item)}>{item}</button>)}</div>
             </div>
           </div>
+          {zoneMode && <div className="zone-designator panel"><label><span>Zone name</span><input aria-label="Zone name" value={zoneName} maxLength={32} onChange={(event) => setZoneName(event.target.value)} /></label><p>Drag on the grid to reserve a clear area. Hold <kbd>Shift</kbd> while dragging for a perfect square.</p><strong>{zones.length} saved</strong></div>}
 
           <div className="board-frame">
             <div className="ruler ruler-top"><span>0</span><span>12</span><span>24</span><span>36</span><span>48″</span></div>
             <div className="ruler ruler-left"><span>0</span><span>12</span><span>24</span><span>36</span><span>48″</span></div>
-            <div ref={boardRef} className={`board ${theme}-board ${drag ? "dragging" : ""}`} aria-label="48 by 48 inch layout board" onDragOver={(event) => event.preventDefault()} onDrop={onDrop} onPointerMove={onBoardPointerMove} onPointerUp={() => setDrag(null)} onPointerCancel={() => setDrag(null)} onPointerDown={(event) => { if (event.target === boardRef.current) setSelected(null); }}>
-              {pieces.length === 0 && <div className="board-mark"><strong>4′ × 4′</strong><span>DROP TERRAIN TO PLACE</span></div>}
+            <div ref={boardRef} className={`board ${theme}-board ${drag ? "dragging" : ""} ${zoneMode ? "zone-mode" : ""}`} aria-label="48 by 48 inch layout board" onDragOver={(event) => event.preventDefault()} onDrop={onDrop} onPointerMove={onBoardPointerMove} onPointerUp={() => { if (zoneDraft) finishZone(); setDrag(null); }} onPointerCancel={() => { setZoneDraft(null); setDrag(null); }} onPointerDown={beginZone}>
+              {pieces.length === 0 && <div className="board-mark"><strong>4′ × 4′</strong><span>{zoneMode ? "DRAG TO RESERVE A CLEAR ZONE" : "DROP TERRAIN TO PLACE"}</span></div>}
+              {zones.map((zone) => <div key={zone.uid} className="reserved-zone" style={{ left:`${zone.x / BOARD_IN * 100}%`, top:`${zone.y / BOARD_IN * 100}%`, width:`${zone.width / BOARD_IN * 100}%`, height:`${zone.height / BOARD_IN * 100}%` }}><strong>{zone.name}</strong><span>{zone.width.toFixed(1)} × {zone.height.toFixed(1)}″</span></div>)}
+              {zoneDraft && (() => { const zone = normaliseZoneDraft(zoneDraft); return <div className="reserved-zone draft" style={{ left:`${zone.x / BOARD_IN * 100}%`, top:`${zone.y / BOARD_IN * 100}%`, width:`${zone.width / BOARD_IN * 100}%`, height:`${zone.height / BOARD_IN * 100}%` }}><strong>{zoneName.trim() || "Hangar"}</strong><span>{zone.width.toFixed(1)} × {zone.height.toFixed(1)}″</span></div>; })()}
               {pieces.map((piece) => {
                 const def = getDef(piece.defId);
                 const width = piece.rotation === 90 ? def.depth : def.width;
@@ -624,7 +737,7 @@ export default function Home() {
               })}
             </div>
           </div>
-          <div className="status-line"><span>{message}</span><span>{snap ? `Snap ${gridSize}″` : "Free placement"} · R rotate · Del remove</span></div>
+          <div className="status-line"><span>{message}</span><span>{zones.length ? `${zones.length} reserved zone${zones.length === 1 ? "" : "s"} · ` : ""}{snap ? `Snap ${gridSize}″` : "Free placement"} · R rotate · Del remove</span></div>
         </div>
 
         <aside className="inspector panel">
@@ -637,10 +750,12 @@ export default function Home() {
           <div className="metric"><span>Terrain used</span><strong>{pieces.length} / {catalogueTotal}</strong></div>
           <div className="metric"><span>Active catalogue</span><strong>{activeCatalogueMeta.maker}</strong></div>
           <div className="metric"><span>Footprint coverage</span><strong>{coverage.toFixed(1)}%</strong></div><div className="meter"><i style={{ width:`${Math.min(coverage * 5, 100)}%` }} /></div>
+          <div className="metric"><span>Reserved clear space</span><strong>{zones.length} · {reservedCoverage.toFixed(1)}%</strong></div>
           <div className="metric"><span>{activeCatalogue === "boarding" ? "Operable hatchways" : "Wall modules"}</span><strong>{activeCatalogue === "boarding" ? doors : wallPieces.length}</strong></div><div className="metric"><span>Corridor loops</span><strong>{loops}</strong></div><div className="metric"><span>Open chambers</span><strong>{chambers}</strong></div>
           <div className="divider" />
-          <p className="inspector-copy">{activeCatalogue === "boarding" ? "The generator scores 16 candidates for route variety, door spacing, connected lanes and useful open negative space." : "Iron Labyrinth plans use a modular connector graph, preserving exact 50 mm nodes and 64 mm spans to form connected chambers and passage runs."}</p>
+          <p className="inspector-copy">{activeCatalogue === "boarding" ? "The generator scores 32 candidates for route variety, door spacing, connected lanes, reserved-zone clearance and useful open negative space." : "Iron Labyrinth plans search alternative modular connector placements, preserving exact 50 mm nodes and 64 mm spans while keeping reserved zones clear."}</p>
           <div className="layout-key">{activeCatalogue === "boarding" ? <><span><i className="key-wall" /> Wall</span><span><i className="key-door" /> Hatchway</span><span><i className="key-pillar" /> Pillar</span></> : <><span><i className="key-wall" /> Wall</span><span><i className="key-door" /> Wall end</span><span><i className="key-pillar" /> Connector</span></>}</div>
+          {zones.length > 0 && <div className="zone-list"><div className="zone-list-heading"><span>Reserved zones</span><button onClick={() => { setZones([]); setZoneDraft(null); setMessage("Reserved zones cleared"); }}>Clear all</button></div>{zones.map((zone) => <div className="zone-list-row" key={zone.uid}><input aria-label={`Rename ${zone.name}`} value={zone.name} maxLength={32} onChange={(event) => setZones((current) => current.map((item) => item.uid === zone.uid ? { ...item, name:event.target.value } : item))} /><span>{zone.width.toFixed(1)} × {zone.height.toFixed(1)}″</span><button aria-label={`Remove ${zone.name}`} onClick={() => setZones((current) => current.filter((item) => item.uid !== zone.uid))}>×</button></div>)}</div>}
           <button className="secondary" disabled={!pieces.length} onClick={() => { setPieces([]); setSelected(null); setMessage("Board cleared"); }}>Clear board</button>
           <p className="accuracy-note">Scale basis: 48″ square board · 25.4 mm per inch. Iron Labyrinth dimensions are manufacturer-published; Boarding Actions footprints remain physical-kit approximations. Default wall height is 60 mm in both systems.</p>
         </aside>
