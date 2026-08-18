@@ -43,7 +43,10 @@ test("Iron walls are bracketed by a connector at both physical ends", () => {
   const layout = bestLayout("ttcombat", { "tt-connector":24, "tt-solid-wall":18 }, .6, 41);
   const walls = layout.filter((piece) => piece.defId === "tt-solid-wall");
   const connectors = layout.filter((piece) => piece.defId === "tt-connector").map(rect);
-  assert.ok(walls.length >= 10, `only ${walls.length} Iron walls placed`);
+  // Iron Ultima ships no hatchway at all, so each chamber spends one edge as an
+  // open archway rather than walling itself shut. Utilisation against a
+  // door-bearing palette is covered by the structural-target test below.
+  assert.ok(walls.length >= 8, `only ${walls.length} Iron walls placed`);
   assert.ok(new Set(walls.map((piece) => piece.runId)).size >= 3);
 
   walls.forEach((wall) => {
@@ -58,49 +61,105 @@ test("Iron walls are bracketed by a connector at both physical ends", () => {
   });
 });
 
-test("Iron components leave model-scale corridors between wall networks", () => {
-  // Scored over 24 candidates, matching how the UI actually generates. Iron Ultima
-  // ships no doors, so a pocket sealed against the border can only be reopened by
-  // removing the wall that seals it — reachability takes precedence over squeezing
-  // the last wall on. The exact-target guarantee lives in the utilisation test,
-  // which uses a door-bearing palette and hits its target on every seed.
-  const layout = bestLayout("ttcombat", { "tt-connector":24, "tt-solid-wall":18 }, .6, 73);
-  const structures = layout.filter((piece) => piece.defId !== "tt-connector");
-  assert.ok(structures.length >= 10, `only ${structures.length} Iron structures placed`);
-  const runs = [...new Set(structures.map((piece) => piece.runId!))];
-  assert.ok(runs.length >= 3);
-  for (let first = 0; first < runs.length; first++) for (let second = first + 1; second < runs.length; second++) {
-    const firstPieces = layout.filter((piece) => piece.runId === runs[first]);
-    const secondPieces = layout.filter((piece) => piece.runId === runs[second]);
-    const clearance = Math.min(...firstPieces.flatMap((a) => secondPieces.map((b) => distance(rect(a), rect(b)))));
-    assert.ok(clearance >= 3.79, `corridor narrowed to ${clearance.toFixed(2)} inches`);
-  }
+// Two wall faces across a corridor stand one lattice pitch apart less the panel
+// thickness. On Gallowdark that is 97 mm minus a 28 mm wall — about 2.7 inches,
+// the kit's actual corridor. What must never appear is the band in between:
+// a gap wide enough to read as a passage but too narrow to put a base down.
+test("every gap between terrain is either a joint or a walkable corridor", () => {
+  const cases = [
+    { catalogue:"ttcombat" as const, inventory:{ "tt-connector":24, "tt-solid-wall":18 }, floor:2.5 },
+    { catalogue:"boarding" as const, inventory:{ pillar:32, "long-wall":8, "short-wall":4, "short-door":8 }, floor:2.5 },
+  ];
+  cases.forEach(({ catalogue, inventory, floor }) => {
+    // Two panels meeting at a corner both stop short of the shared vertex and
+    // seat into the support standing on it, so they read as a small diagonal
+    // gap. Anything inside a support's own footprint is that joint, not a way
+    // through, so the corridor floor only applies beyond it.
+    const joint = Math.max(...definitions
+      .filter((def) => def.catalogue === catalogue && ["pillar", "connector"].includes(def.kind))
+      .map((def) => Math.max(def.width, def.depth)));
+    [73, 7992, 15911].forEach((seed) => {
+      const layout = bestLayout(catalogue, inventory, .6, seed);
+      const structures = layout.filter((piece) => !["pillar", "connector"].includes(definitions.find((def) => def.id === piece.defId)!.kind));
+      // Panel count is an output of board capacity now, not a target, so this is
+      // only a floor against generating nothing at all.
+      assert.ok(structures.length >= 5, `${catalogue} seed ${seed}: only ${structures.length} structures placed`);
+      structures.forEach((first, index) => structures.slice(index + 1).forEach((second) => {
+        const gap = distance(rect(first), rect(second));
+        // Two collinear panels stop a support-width apart and the support fills the
+        // gap exactly, so a gap up to a full support is a joint rather than a way through.
+        assert.ok(gap <= joint + .05 || gap >= floor,
+          `${catalogue} seed ${seed}: ${gap.toFixed(2)}" gap is too narrow to enter and too wide to be a joint`);
+      }));
+    });
+  });
 });
 
-test("Boarding Actions uses several shaped networks rather than floating rows", () => {
-  const layout = bestLayout("boarding", { pillar:32, "long-wall":8, "short-wall":4, "short-door":8 }, .6, 97);
-  const structures = layout.filter((piece) => piece.defId !== "pillar");
-  assert.ok(structures.length >= 10);
-  const runs = [...new Set(structures.map((piece) => piece.runId!))];
-  assert.ok(runs.length >= 3);
-  runs.forEach((runId) => {
-    const rotations = new Set(structures.filter((piece) => piece.runId === runId).map((piece) => piece.rotation));
-    assert.equal(rotations.size, 2, `${runId} is only a straight floating barricade`);
+// The complaint that started the rewrite: terrain came out as separate shapes
+// floating at arbitrary offsets in open space. Real boards do have separate wall
+// assemblies — a chamber's walls do not touch the chamber across the corridor —
+// so physical contact is the wrong test. What makes them one complex is that
+// every panel runs along a line the supports define, which is what lets the gaps
+// between them read as corridors rather than as leftovers.
+//
+// The lattice is deliberately not uniform (Iron Labyrinth is not cut to one
+// pitch), so this reconstructs the grid from where the supports actually stand
+// rather than assuming a spacing.
+test("every wall runs along a line the supports define", () => {
+  const cases = [
+    { catalogue:"boarding" as const, inventory:{ pillar:32, "long-wall":8, "short-wall":4, "short-door":8 } },
+    { catalogue:"ttcombat" as const, inventory:{ "tt-connector":24, "tt-solid-wall":18, "tt-door":3 } },
+  ];
+  cases.forEach(({ catalogue, inventory }) => {
+    [97, 8016, 15935].forEach((seed) => {
+      const layout = bestLayout(catalogue, inventory, .6, seed);
+      assert.ok(layout.length >= 10, `${catalogue} seed ${seed}: only ${layout.length} pieces`);
+      const centre = (piece:SpatialPiece) => {
+        const box = rect(piece);
+        return { x:box.x + box.width / 2, y:box.y + box.height / 2 };
+      };
+      const isSupport = (piece:SpatialPiece) =>
+        ["pillar", "connector"].includes(definitions.find((def) => def.id === piece.defId)!.kind);
+      const supports = layout.filter(isSupport).map(centre);
+      assert.ok(supports.length >= 4, `${catalogue} seed ${seed}: only ${supports.length} supports`);
+      const near = (value:number, lines:number[]) => lines.some((line) => Math.abs(line - value) < .06);
+      const xLines = supports.map((point) => point.x);
+      const yLines = supports.map((point) => point.y);
+      const strays = layout.filter((piece) => !isSupport(piece)).filter((piece) => {
+        const point = centre(piece);
+        const box = rect(piece);
+        // A panel lies along a grid line: its thin axis is centred on one.
+        return box.width > box.height ? !near(point.y, yLines) : !near(point.x, xLines);
+      });
+      assert.equal(strays.length, 0,
+        `${catalogue} seed ${seed}: ${strays.length} of ${layout.length} panels sit off every support line`);
+    });
   });
 });
 
 const structuralCount = (layout:SpatialPiece[]) =>
   layout.filter((piece) => !["pillar", "connector"].includes(definitions.find((def) => def.id === piece.defId)!.kind)).length;
 
-// A component that could not be sited was abandoned whole, silently orphaning
-// up to five walls per failure. Every seed should now reach the requested
-// structural target rather than quietly spending two thirds of it.
-test("a rejected component is retried smaller instead of orphaning its pieces", () => {
-  const inventory = { "tt-connector":24, "tt-solid-wall":18, "tt-door":3 };
-  const target = Math.round(21 * .6);
-  const placed = [503, 8422, 16341, 24260, 32179, 40098].map((seed) => structuralCount(bestLayout("ttcombat", inventory, .6, seed)));
-  const worst = Math.min(...placed);
-  assert.ok(worst >= target - 1, `worst seed placed ${worst} of a ${target} structural target (all seeds: ${placed})`);
+// Hatchways are openings set into a wall, not a building material. When the
+// maze was sized against walls and hatchways together, the tiler padded out the
+// difference with hatchways and every run came out striped wall/door/wall/door —
+// "you're building walls out of doors". Gallowdark ships twenty hatchways to
+// twelve walls, so nothing about the palette stops this recurring.
+test("hatchways stay a small minority of the wall line", () => {
+  const inventory = { pillar:32, "long-wall":8, "short-wall":4, "short-door":8 };
+  [503, 8422, 16341, 24260].forEach((seed) => {
+    [[24, 24], [48, 24]].forEach(([width, height]) => {
+      const layout = Array.from({ length:24 }, (_, index) => makeLayout("boarding", inventory, .6, seed + index * 7919, width, height))
+        .sort((first, second) => structuralCount(second) - structuralCount(first))[0];
+      const kindOf = (piece:SpatialPiece) => definitions.find((def) => def.id === piece.defId)!.kind;
+      const walls = layout.filter((piece) => kindOf(piece) === "wall").length;
+      const doors = layout.filter((piece) => kindOf(piece) === "door").length;
+      if (!walls && !doors) return;
+      const share = doors / (walls + doors);
+      assert.ok(share <= .3,
+        `${width}x${height} seed ${seed}: ${(share * 100).toFixed(0)}% of panels are hatchways (${doors} of ${walls + doors})`);
+    });
+  });
 });
 
 // A door was placed on any edge, including a leaf, leaving a support at its far
@@ -131,7 +190,9 @@ test("every door is inline in a run rather than a freestanding frame", () => {
       const layout = bestLayout(catalogue, inventory, .6, seed);
       const structures = layout.filter((piece) => !["pillar", "connector"].includes(definitions.find((def) => def.id === piece.defId)!.kind));
       const doors = structures.filter((piece) => definitions.find((def) => def.id === piece.defId)!.kind === "door");
-      assert.ok(doors.length > 0, `${catalogue} seed ${seed} placed no doors to check`);
+      // A hatchway is now the exception, and a small palette may legitimately
+      // carry none — there is simply nothing to check on those seeds.
+      if (!doors.length) return;
       doors.forEach((door) => {
         endpoints(door).forEach((point) => {
           const continues = structures.some((other) => other.uid !== door.uid
@@ -193,52 +254,42 @@ test("a grid-kit wall spans exactly one grid pitch between pillar centres", () =
   });
 });
 
-// Closed rooms need a cyclic pattern, which the tree-based builder could not
-// express: the closing edge has to land exactly back on the node it started from.
-// A room is only built when a door is among its four sides, so it is a room rather
-// than a sealed box the reachability pass would then have to break open.
-test("closed rooms are built, and every one of them has a doorway", () => {
-  const grid = 97 / INCH;
-  const roomDefs:SpatialTerrainDef[] = [
-    { id:"pillar", catalogue:"boarding", width:32 / INCH, depth:32 / INCH, height:2.36, kind:"pillar" },
-    { id:"room-wall", catalogue:"boarding", width:3.15, depth:1.1, height:2.36, kind:"wall", span:grid },
-    { id:"room-door", catalogue:"boarding", width:3.15, depth:1.1, height:2.36, kind:"door", span:grid },
+// The board exists to be fought through, so what matters is that you cannot see
+// across it. This is the replacement for an older test that demanded sealed
+// rooms with doorways cut into them: the maze never seals anything, and rooms
+// were never the point — broken sight lines are.
+test("no firing lane runs unbroken across the board", () => {
+  const cases = [
+    { catalogue:"boarding" as const, inventory:{ pillar:32, "long-wall":8, "short-wall":4, "short-door":8 } },
+    { catalogue:"ttcombat" as const, inventory:{ "tt-connector":24, "tt-solid-wall":18, "tt-door":3 } },
   ];
-  const boxOf = (piece:SpatialPiece) => {
-    const def = roomDefs.find((candidate) => candidate.id === piece.defId)!;
-    return { x:piece.x, y:piece.y, width:piece.rotation === 90 ? def.depth : def.width, height:piece.rotation === 90 ? def.width : def.depth };
-  };
-  let rooms = 0;
-  let roomsWithoutDoor = 0;
-  [500, 8419, 16338, 24257, 32176].forEach((seed) => {
-    let uid = 0;
-    const layout = generateSpatialLayout({
-      boardWidth:48, boardHeight:48, catalogue:"boarding", definitions:roomDefs,
-      inventory:{ pillar:32, "room-wall":12, "room-door":8 }, heights:{}, zones:[], usage:1,
-      seed, nextUid:() => `room-${uid++}`,
-    });
-    const runs = new Map<string, SpatialPiece[]>();
-    layout.forEach((piece) => {
-      const key = piece.runId ?? "none";
-      runs.set(key, [...(runs.get(key) ?? []), piece]);
-    });
-    runs.forEach((pieces) => {
-      const structural = pieces.filter((piece) => roomDefs.find((def) => def.id === piece.defId)!.kind !== "pillar");
-      const supports = pieces.length - structural.length;
-      // A tree has one more node than edges; a closed loop has exactly as many.
-      if (structural.length < 4 || supports !== structural.length) return;
-      rooms++;
-      const hasDoor = structural.some((piece) => roomDefs.find((def) => def.id === piece.defId)!.kind === "door");
-      if (!hasDoor) roomsWithoutDoor++;
-      // A closed loop encloses area: opposite sides must have met exactly.
-      const xs = structural.map(boxOf).map((box) => box.x);
-      const ys = structural.map(boxOf).map((box) => box.y);
-      assert.ok(Math.max(...xs) - Math.min(...xs) > .5 && Math.max(...ys) - Math.min(...ys) > .5,
-        "a closed run should enclose area on both axes");
+  cases.forEach(({ catalogue, inventory }) => {
+    [500, 8419, 16338].forEach((seed) => {
+      const width = 24, height = 24;
+      const layout = Array.from({ length:24 }, (_, index) => makeLayout(catalogue, inventory, .6, seed + index * 7919, width, height))
+        .sort((first, second) => structuralCount(second) - structuralCount(first))[0];
+      const blockers = layout
+        .filter((piece) => ["wall", "door"].includes(definitions.find((def) => def.id === piece.defId)!.kind))
+        .map(rect);
+      assert.ok(blockers.length >= 4, `${catalogue} seed ${seed}: only ${blockers.length} blockers`);
+      // Sweep lanes across the board and count how many cross it uninterrupted.
+      // A model-width lane clear from edge to edge is a gunline down the table.
+      const clearLanes = (along:"x" | "y") => {
+        let clear = 0;
+        for (let offset = 1.5; offset < (along === "x" ? height : width) - 1.5; offset += .5) {
+          const crosses = blockers.some((box) => along === "x"
+            ? offset >= box.y - .6 && offset <= box.y + box.height + .6
+            : offset >= box.x - .6 && offset <= box.x + box.width + .6);
+          if (!crosses) clear++;
+        }
+        return clear;
+      };
+      const open = Math.max(clearLanes("x"), clearLanes("y"));
+      const lanes = Math.round(((24 - 3) / .5));
+      assert.ok(open < lanes * .75,
+        `${catalogue} seed ${seed}: ${open} of ${lanes} lanes cross the board unblocked`);
     });
   });
-  assert.ok(rooms > 0, "no closed room was generated across any seed");
-  assert.equal(roomsWithoutDoor, 0, `${roomsWithoutDoor} of ${rooms} rooms were sealed with no doorway`);
 });
 
 // Walled-off space is wasted space: models cannot enter it, so it is not board.

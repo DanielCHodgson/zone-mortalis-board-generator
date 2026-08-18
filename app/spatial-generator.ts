@@ -1,3 +1,8 @@
+import {
+  buildMaze, edgeRuns, chooseDoorways, edgeKey, meanSightLine, panelsOf,
+  type Plan, type PlanEdge,
+} from "./floorplan.ts";
+
 export type SpatialCatalogue = "boarding" | "ttcombat";
 
 export type SpatialTerrainDef = {
@@ -23,9 +28,6 @@ export type SpatialPiece = {
 
 type Zone = { x:number;y:number;width:number;height:number };
 type Rect = { x:number;y:number;width:number;height:number };
-type Direction = "east" | "south" | "west" | "north";
-type PatternEdge = { from:number; to:number; direction:Direction };
-type Point = { x:number;y:number };
 
 export type SpatialGeneratorInput = {
   boardWidth:number; boardHeight:number; catalogue:SpatialCatalogue;
@@ -36,43 +38,6 @@ export type SpatialGeneratorInput = {
    *  does not meet the border outright. */
   borderStandoff?:number;
 };
-
-const PATTERNS:PatternEdge[][] = [
-  [
-    { from:0, to:1, direction:"east" }, { from:1, to:2, direction:"east" },
-    { from:2, to:3, direction:"south" }, { from:3, to:4, direction:"west" },
-    { from:1, to:5, direction:"north" },
-  ],
-  [
-    { from:0, to:1, direction:"east" }, { from:1, to:2, direction:"east" },
-    { from:1, to:3, direction:"south" }, { from:3, to:4, direction:"south" },
-    { from:3, to:5, direction:"west" },
-  ],
-  [
-    { from:0, to:1, direction:"east" }, { from:0, to:2, direction:"south" },
-    { from:0, to:3, direction:"west" }, { from:0, to:4, direction:"north" },
-  ],
-  [
-    { from:0, to:1, direction:"east" }, { from:1, to:2, direction:"south" },
-    { from:2, to:3, direction:"south" }, { from:2, to:4, direction:"west" },
-  ],
-  [
-    { from:0, to:1, direction:"south" }, { from:1, to:2, direction:"east" },
-    { from:2, to:3, direction:"east" }, { from:3, to:4, direction:"north" },
-  ],
-  [
-    { from:0, to:1, direction:"east" }, { from:1, to:2, direction:"south" },
-    { from:1, to:3, direction:"north" },
-  ],
-  // The only cyclic pattern: a closed rectangular room. It builds solid, and the
-  // reachability pass then cuts a doorway into it, so it lands as a real room
-  // rather than a sealed box. Opposite sides must span equally to meet, which
-  // `pairForClosure` arranges.
-  [
-    { from:0, to:1, direction:"east" }, { from:1, to:2, direction:"south" },
-    { from:2, to:3, direction:"west" }, { from:3, to:0, direction:"north" },
-  ],
-];
 
 const clamp = (value:number, min:number, max:number) => Math.min(max, Math.max(min, value));
 const snap = (value:number, size = .25) => Math.round(value / size) * size;
@@ -104,184 +69,103 @@ const pieceRect = (piece:SpatialPiece, definitions:Map<string, SpatialTerrainDef
 
 const rectsOverlap = (first:Rect, second:Rect, padding = .04) => first.x < second.x + second.width + padding && first.x + first.width > second.x - padding && first.y < second.y + second.height + padding && first.y + first.height > second.y - padding;
 const hitsZone = (rect:Rect, zones:Zone[]) => zones.some((zone) => rectsOverlap(rect, zone, .08));
-const rectDistance = (first:Rect, second:Rect) => Math.hypot(
-  Math.max(0, first.x - second.x - second.width, second.x - first.x - first.width),
-  Math.max(0, first.y - second.y - second.height, second.y - first.y - first.height),
-);
 
-const rotateDirection = (direction:Direction, turns:number, mirror:boolean):Direction => {
-  const directions:Direction[] = ["east", "south", "west", "north"];
-  let transformed = direction;
-  if (mirror && (direction === "east" || direction === "west")) transformed = direction === "east" ? "west" : "east";
-  return directions[(directions.indexOf(transformed) + turns) % 4];
+
+// ---------------------------------------------------------------------------
+// The lattice
+//
+// A Zone Mortalis board is not a scatter of shapes on open floor — it is a
+// floorplan. Walls sit on the edges of an assembly lattice and supports on its
+// vertices, so "the panel is centred in its span" and "pillars stand one pitch
+// apart" hold by construction rather than being checked afterwards.
+//
+// The lattice is deliberately NOT uniform. Gallowdark is cut to a single 97 mm
+// square, but Iron Labyrinth ships 64 mm walls, 94 mm high walls and 194 mm
+// doors, and no one pitch fits them all: a cell longer than the piece standing
+// in it opens a gap at each end that the support cannot cover. So every column
+// carries its own width and every row its own height, drawn from the lengths the
+// palette actually owns — which is how you would build it on the table anyway.
+// ---------------------------------------------------------------------------
+
+/** Node-to-node length a piece occupies: its own span, or the panel plus half a
+ *  support at each end for kits that state no grid. */
+const nodeLength = (def:SpatialTerrainDef, support:number) => def.span ?? support + def.width;
+
+const LENGTH_TOLERANCE = .12;
+
+/** Pieces grouped by the node-to-node length they fill. */
+const lengthBank = (pool:SpatialTerrainDef[], support:number) => {
+  const bank = new Map<number, SpatialTerrainDef[]>();
+  pool.forEach((def) => {
+    const length = nodeLength(def, support);
+    const existing = [...bank.keys()].find((key) => Math.abs(key - length) <= LENGTH_TOLERANCE);
+    const key = existing ?? Number(length.toFixed(3));
+    bank.set(key, [...(bank.get(key) ?? []), def]);
+  });
+  return bank;
 };
 
-const componentTargets = (pieceCount:number, boardWidth:number, boardHeight:number, maximumSize = 5) => {
-  const areaScale = Math.max(1, Math.round(boardWidth * boardHeight / (24 * 24)));
-  const desired = clamp(Math.ceil(pieceCount / maximumSize), Math.min(2, pieceCount), Math.min(pieceCount, 6 * areaScale));
-  const sizes:number[] = [];
-  let remaining = pieceCount;
-  for (let index = 0; index < desired; index++) {
-    const componentsLeft = desired - index;
-    const size = clamp(Math.ceil(remaining / componentsLeft), 1, maximumSize);
-    sizes.push(size);
-    remaining -= size;
+const takeByLength = (bank:Map<number, SpatialTerrainDef[]>, length:number) => {
+  for (const [key, defs] of bank) {
+    if (Math.abs(key - length) > LENGTH_TOLERANCE || !defs.length) continue;
+    return defs.shift()!;
   }
-  while (remaining > 0) {
-    const index = sizes.findIndex((size) => size < maximumSize);
-    if (index >= 0) { sizes[index]++; remaining--; }
-    else { sizes.push(Math.min(maximumSize, remaining)); remaining -= Math.min(maximumSize, remaining); }
-  }
-  return sizes.filter(Boolean);
+  return null;
 };
 
-type LocalComponent = { pieces:SpatialPiece[]; supports:SpatialPiece[]; bounds:Rect; nodeCount:number; corners:number; deadEnds:number };
+const cloneBank = (bank:Map<number, SpatialTerrainDef[]>) => new Map([...bank].map(([key, defs]) => [key, [...defs]] as [number, SpatialTerrainDef[]]));
 
-const buildComponent = (
-  defs:SpatialTerrainDef[],
-  supportDefs:SpatialTerrainDef[],
-  pattern:PatternEdge[],
-  turns:number,
-  mirror:boolean,
-  runId:string,
-  heights:Record<string, number>,
-  nextUid:() => string,
-  definitions:Map<string, SpatialTerrainDef>,
-):LocalComponent | null => {
-  if (!defs.length) return null;
-  const usedEdges = pattern.slice(0, defs.length);
-  const nodeIds = [...new Set(usedEdges.flatMap((edge) => [edge.from, edge.to]))];
-  if (supportDefs.length < nodeIds.length) return null;
-  // Each graph node owns one support, assigned before any geometry so a wall
-  // span can be derived from the two supports that will actually bracket it.
-  // Deriving the span from a single support only holds while every support is
-  // square and identically sized.
-  const nodeSupport = new Map(nodeIds.map((nodeId, index) => [nodeId, supportDefs[index]]));
-  // A door only means anything inline in a wall run: both of its nodes must
-  // carry another structural edge. On a leaf edge the far support has nothing
-  // beyond it, so the door is a freestanding frame models simply walk around.
-  const degree = new Map<number, number>();
-  usedEdges.forEach((edge) => {
-    degree.set(edge.from, (degree.get(edge.from) ?? 0) + 1);
-    degree.set(edge.to, (degree.get(edge.to) ?? 0) + 1);
-  });
-  const inline = usedEdges.map((edge) => (degree.get(edge.from) ?? 0) >= 2 && (degree.get(edge.to) ?? 0) >= 2);
-  const doorDefs = defs.filter((def) => def.kind === "door");
-  const wallDefs = defs.filter((def) => def.kind !== "door");
-  if (doorDefs.length > inline.filter(Boolean).length) return null;
-  let doorCursor = 0;
-  let wallCursor = 0;
-  let ordered = usedEdges.map((_, index) => inline[index] && doorCursor < doorDefs.length ? doorDefs[doorCursor++] : wallDefs[wallCursor++]);
-
-  // A tree has one more node than edges. Fewer means an edge rejoins an existing
-  // node, so the shape is a cycle and its opposite sides have to span equally.
-  const cyclic = nodeIds.length <= usedEdges.length;
-  if (cyclic) {
-    const axisOf = (edge:PatternEdge) => {
-      const direction = rotateDirection(edge.direction, turns, mirror);
-      return direction === "east" || direction === "west" ? "h" : "v";
-    };
-    const spanOf = (candidate:SpatialTerrainDef) => candidate.span ?? candidate.width;
-    const perAxis = { h:[] as number[], v:[] as number[] };
-    usedEdges.forEach((edge, index) => perAxis[axisOf(edge)].push(index));
-    // Only the two-sides-per-axis case is modelled; anything else is not a
-    // rectangle and cannot be closed by pairing.
-    if (perAxis.h.length !== 2 || perAxis.v.length !== 2) return null;
-    const byLength = new Map<string, SpatialTerrainDef[]>();
-    ordered.forEach((candidate) => {
-      const key = spanOf(candidate).toFixed(3);
-      byLength.set(key, [...(byLength.get(key) ?? []), candidate]);
-    });
-    // Take as many pairs as each length can supply, not one per length — four
-    // sides of the same span is a square room, the most natural shape of all.
-    const pairs:SpatialTerrainDef[][] = [];
-    byLength.forEach((group) => {
-      for (let index = 0; index + 1 < group.length; index += 2) pairs.push([group[index], group[index + 1]]);
-    });
-    if (pairs.length < 2) return null;
-    // Build a room only when one of its four sides is a door. A sealed room is a
-    // dead zone, and the reachability pass would then have to open it by pulling
-    // a wall out — spending a wall to undo work already done. Born with a
-    // doorway, the room survives intact.
-    if (!pairs.flat().some((candidate) => candidate.kind === "door")) return null;
-    const assigned = new Array<SpatialTerrainDef | null>(usedEdges.length).fill(null);
-    perAxis.h.forEach((index, side) => { assigned[index] = pairs[0][side]; });
-    perAxis.v.forEach((index, side) => { assigned[index] = pairs[1][side]; });
-    ordered = assigned as SpatialTerrainDef[];
+/**
+ * Lay out one axis as a run of cell widths drawn from the lengths available.
+ *
+ * The commonest length dominates, because that is what the kit is mostly made of
+ * and repeating it is what keeps corridors reading as parallel. The rarer
+ * lengths still come up often enough to be spent rather than stranded.
+ */
+const axisWidths = (cells:number, boardExtent:number, lengths:{ length:number; supply:number }[], random:() => number) => {
+  const total = lengths.reduce((sum, entry) => sum + entry.supply, 0);
+  const widths:number[] = [];
+  let used = 0;
+  for (let index = 0; index < cells; index++) {
+    let roll = random() * total;
+    let pick = lengths[0];
+    for (const entry of lengths) { roll -= entry.supply; if (roll <= 0) { pick = entry; break; } }
+    if (used + pick.length > boardExtent + .01) {
+      const fits = lengths.filter((entry) => used + entry.length <= boardExtent + .01);
+      if (!fits.length) return null;
+      pick = fits[Math.floor(random() * fits.length)];
+    }
+    widths.push(pick.length);
+    used += pick.length;
   }
-  const nodes = new Map<number, Point>([[usedEdges[0].from, { x:0, y:0 }]]);
-  const pieces:SpatialPiece[] = [];
-  // A node carrying both a horizontal and a vertical edge is a corner; a node
-  // with a single edge is a dead end. Both are the interesting geometry that
-  // terrain saved from the board border should be spent on.
-  const orientationAtNode = new Map<number, Set<boolean>>(nodeIds.map((nodeId) => [nodeId, new Set<boolean>()]));
-  for (let index = 0; index < usedEdges.length; index++) {
-    const edge = usedEdges[index];
-    const parent = nodes.get(edge.from);
-    if (!parent) return null;
-    const def = ordered[index];
-    const direction = rotateDirection(edge.direction, turns, mirror);
-    const horizontal = direction === "east" || direction === "west";
-    const extent = (support:SpatialTerrainDef) => horizontal ? support.width : support.depth;
-    // A grid kit states its own node-to-node span. Everything else spans the
-    // panel plus half a support at each end.
-    const distance = def.span ?? extent(nodeSupport.get(edge.from)!) / 2 + def.width + extent(nodeSupport.get(edge.to)!) / 2;
-    const delta = direction === "east" ? { x:distance, y:0 } : direction === "west" ? { x:-distance, y:0 } : direction === "south" ? { x:0, y:distance } : { x:0, y:-distance };
-    const child = { x:parent.x + delta.x, y:parent.y + delta.y };
-    const existing = nodes.get(edge.to);
-    // A closing edge must land exactly on the node it rejoins, or this set of
-    // pieces cannot build this shape. This is what makes a sealed room possible.
-    if (existing) {
-      if (Math.abs(existing.x - child.x) > .02 || Math.abs(existing.y - child.y) > .02) return null;
-    } else nodes.set(edge.to, child);
-    const target = existing ?? child;
-    const forward = direction === "east" || direction === "south";
-    const start = forward ? parent : target;
-    // A spanned piece is centred in its grid square; a bare panel starts at the
-    // far face of the support that brackets it.
-    const startHalf = def.span !== undefined
-      ? (def.span - def.width) / 2
-      : extent(nodeSupport.get(forward ? edge.from : edge.to)!) / 2;
-    pieces.push({
-      uid:nextUid(), defId:def.id,
-      x:horizontal ? start.x + startHalf : start.x - def.depth / 2,
-      y:horizontal ? start.y - def.depth / 2 : start.y + startHalf,
-      rotation:horizontal ? 0 : 90,
-      height:heights[def.id] ?? def.height, runId, sequenceIndex:index,
-    });
-    orientationAtNode.get(edge.from)!.add(horizontal);
-    orientationAtNode.get(edge.to)!.add(horizontal);
-  }
-  // Rule 3: every network must be a shaped structure, never an isolated
-  // straight row. Shrinking a rejected component can otherwise bottom out at a
-  // single edge, which is exactly a lone barricade floating in open space.
-  if (new Set(pieces.map((piece) => piece.rotation)).size < 2) return null;
-  const componentSupports = nodeIds.map((nodeId) => {
-    const point = nodes.get(nodeId)!;
-    const def = nodeSupport.get(nodeId)!;
-    return { uid:nextUid(), defId:def.id, x:point.x - def.width / 2, y:point.y - def.depth / 2, rotation:0 as const, height:heights[def.id] ?? def.height, runId };
-  });
-  const allRects = [...pieces, ...componentSupports].map((piece) => pieceRect(piece, definitions));
-  const minX = Math.min(...allRects.map((rect) => rect.x));
-  const minY = Math.min(...allRects.map((rect) => rect.y));
-  const maxX = Math.max(...allRects.map((rect) => rect.x + rect.width));
-  const maxY = Math.max(...allRects.map((rect) => rect.y + rect.height));
-  const corners = nodeIds.filter((nodeId) => orientationAtNode.get(nodeId)!.size === 2).length;
-  const deadEnds = nodeIds.filter((nodeId) => (degree.get(nodeId) ?? 0) === 1).length;
-  return { pieces, supports:componentSupports, bounds:{ x:minX, y:minY, width:maxX - minX, height:maxY - minY }, nodeCount:nodeIds.length, corners, deadEnds };
+  return widths;
 };
 
 /** Grid resolution for reachability, in inches. A 32 mm base is ~1.26", so a
  *  quarter-inch cell resolves every gap that matters to movement. */
 const REACH_CELL = .25;
+/** Clear width of a hatchway, in inches — enough for a 32 mm base to pass. */
+const DOORWAY = 1.5;
+/**
+ * Share of the wall line given over to hatchways.
+ *
+ * A hatchway is an opening deliberately set into a wall, so it wants to be the
+ * exception — roughly one panel in eight. Left to fill whatever the wall supply
+ * could not, hatchways took over half the board and every run came out striped.
+ */
+const DOOR_SHARE = .13;
 
 /**
  * Flood the walkable space and open any pocket that walls have sealed off.
  *
- * Walls and supports are impassable, doors are passable. The largest connected
- * region is the playable board; every other region is a dead zone. For each dead
- * zone worth reclaiming, the wall separating it from the main region is replaced
- * with a same-footprint door, which is exactly the move a real board would make.
+ * Walls and supports are impassable; a door is a wall with an opening in it, so
+ * only the opening is passable. The largest connected region is the playable
+ * board; every other region is a dead zone. For each dead zone worth reclaiming,
+ * the wall separating it from the main region is replaced with a same-footprint
+ * door, which is exactly the move a real board would make.
+ *
+ * The floorplan now gives every chamber a doorway outright, so this is a safety
+ * net rather than the main event.
  */
 const openSealedPockets = ({ placed, definitions, boardWidth, boardHeight, doors, heights, nextUid }:{
   placed:SpatialPiece[]; definitions:Map<string, SpatialTerrainDef>;
@@ -292,20 +176,27 @@ const openSealedPockets = ({ placed, definitions, boardWidth, boardHeight, doors
   const rows = Math.ceil(boardHeight / REACH_CELL);
   const spareDoors = [...doors];
 
-  // Cells blocked by a given set of pieces, plus which wall owns each cell so a
-  // pocket's sealing walls can be found by adjacency instead of brute force.
   const blockedBy = (pieces:SpatialPiece[]) => {
     const blocked = new Uint8Array(columns * rows);
     const owner = new Array<string | null>(columns * rows).fill(null);
     pieces.forEach((piece) => {
       const def = definitions.get(piece.defId)!;
-      if (def.kind === "door") return;
       const rect = pieceRect(piece, definitions);
+      // A 170 mm hatchway panel is mostly wall. Treating the whole footprint as
+      // open let the flood walk through solid resin, so genuine pockets behind a
+      // long door panel were never found and never opened.
+      const opening = def.kind === "door" ? Math.min(DOORWAY, rect.width, rect.height) : 0;
+      const alongX = rect.width >= rect.height;
+      const openFrom = alongX ? rect.x + (rect.width - opening) / 2 : rect.y + (rect.height - opening) / 2;
       const fromX = Math.max(0, Math.floor(rect.x / REACH_CELL));
       const toX = Math.min(columns - 1, Math.ceil((rect.x + rect.width) / REACH_CELL) - 1);
       const fromY = Math.max(0, Math.floor(rect.y / REACH_CELL));
       const toY = Math.min(rows - 1, Math.ceil((rect.y + rect.height) / REACH_CELL) - 1);
       for (let y = fromY; y <= toY; y++) for (let x = fromX; x <= toX; x++) {
+        if (opening > 0) {
+          const centre = (alongX ? x : y) * REACH_CELL + REACH_CELL / 2;
+          if (centre >= openFrom && centre <= openFrom + opening) continue;
+        }
         const cell = y * columns + x;
         blocked[cell] = 1;
         if (def.kind === "wall") owner[cell] = piece.uid;
@@ -314,7 +205,6 @@ const openSealedPockets = ({ placed, definitions, boardWidth, boardHeight, doors
     return { blocked, owner };
   };
 
-  // Label every open cell with its connected region, four-way.
   const regionsOf = (blocked:Uint8Array) => {
     const label = new Int32Array(columns * rows).fill(-1);
     const sizes:number[] = [];
@@ -343,74 +233,210 @@ const openSealedPockets = ({ placed, definitions, boardWidth, boardHeight, doors
   // stray cells behind a wall is rounding, not a room.
   const minimumPocket = Math.ceil(1.5 / REACH_CELL / REACH_CELL);
 
-  for (let pass = 0; pass < 4; pass++) {
+  // One pocket per pass, then rebuild the flood. Opening a pocket rewrites the
+  // topology, so judging the rest of a pass against the pre-opening labels cost
+  // walls that no longer needed removing.
+  for (let pass = 0; pass < 16; pass++) {
     const { blocked, owner } = blockedBy(placed);
     const { label, sizes } = regionsOf(blocked);
     if (sizes.length < 2) break;
     const mainRegion = sizes.indexOf(Math.max(...sizes));
     const pockets = sizes.map((size, id) => ({ size, id })).filter(({ size, id }) => id !== mainRegion && size >= minimumPocket);
     if (!pockets.length) break;
+    const pocket = pockets.sort((first, second) => second.size - first.size)[0];
 
-    let openedAny = false;
-    for (const pocket of pockets) {
-      // Only a wall touching this pocket can be sealing it. Score each such wall
-      // by how much of the main region it also touches: the wall between the two
-      // is the one worth cutting a door through.
-      const touchesPocket = new Map<string, number>();
-      const touchesMain = new Map<string, number>();
-      for (let cell = 0; cell < label.length; cell++) {
-        const region = label[cell];
-        if (region !== pocket.id && region !== mainRegion) continue;
-        const x = cell % columns;
-        const y = (cell - x) / columns;
-        const side = region === pocket.id ? touchesPocket : touchesMain;
-        [x > 0 ? cell - 1 : -1, x < columns - 1 ? cell + 1 : -1, y > 0 ? cell - columns : -1, y < rows - 1 ? cell + columns : -1]
-          .forEach((neighbour) => {
-            if (neighbour < 0) return;
-            const uid = owner[neighbour];
-            if (uid) side.set(uid, (side.get(uid) ?? 0) + 1);
-          });
-      }
-      const sealing = [...touchesPocket.keys()]
-        .filter((uid) => touchesMain.has(uid))
-        .map((uid) => ({ uid, reach:Math.min(touchesPocket.get(uid)!, touchesMain.get(uid)!) }))
-        .sort((first, second) => second.reach - first.reach);
-
-      // Cutting a door is the good outcome: the terrain stays and the pocket
-      // becomes a room. Try every sealing wall for a door of matching footprint.
-      let opened = false;
-      for (const { uid } of sealing) {
-        const wall = placed.find((piece) => piece.uid === uid);
-        if (!wall) continue;
-        const wallDef = definitions.get(wall.defId)!;
-        const doorIndex = spareDoors.findIndex((door) => Math.abs(door.width - wallDef.width) < .02 && Math.abs(door.depth - wallDef.depth) < .02);
-        if (doorIndex < 0) continue;
-        const door = spareDoors.splice(doorIndex, 1)[0];
-        placed[placed.indexOf(wall)] = { ...wall, uid:nextUid(), defId:door.id, height:heights[door.id] ?? door.height };
-        opened = true;
-        break;
-      }
-      // No door of the right size left — Iron in particular owns very few. Then
-      // pull the sealing wall out altogether: one unplaced wall costs far less
-      // than a sealed chunk of board nobody can reach or play in.
-      if (!opened && sealing.length) {
-        const wall = placed.find((piece) => piece.uid === sealing[0].uid);
-        if (wall) { placed.splice(placed.indexOf(wall), 1); opened = true; }
-      }
-      openedAny = openedAny || opened;
+    const touchesPocket = new Map<string, number>();
+    const touchesMain = new Map<string, number>();
+    for (let cell = 0; cell < label.length; cell++) {
+      const region = label[cell];
+      if (region !== pocket.id && region !== mainRegion) continue;
+      const x = cell % columns;
+      const y = (cell - x) / columns;
+      const side = region === pocket.id ? touchesPocket : touchesMain;
+      [x > 0 ? cell - 1 : -1, x < columns - 1 ? cell + 1 : -1, y > 0 ? cell - columns : -1, y < rows - 1 ? cell + columns : -1]
+        .forEach((neighbour) => {
+          if (neighbour < 0) return;
+          const uid = owner[neighbour];
+          if (uid) side.set(uid, (side.get(uid) ?? 0) + 1);
+        });
     }
-    if (!openedAny) break;
+    const sealing = [...touchesPocket.keys()]
+      .filter((uid) => touchesMain.has(uid))
+      .map((uid) => ({ uid, reach:Math.min(touchesPocket.get(uid)!, touchesMain.get(uid)!) }))
+      .sort((first, second) => second.reach - first.reach);
+
+    let opened = false;
+    for (const { uid } of sealing) {
+      const wall = placed.find((piece) => piece.uid === uid);
+      if (!wall) continue;
+      const wallDef = definitions.get(wall.defId)!;
+      const doorIndex = spareDoors.findIndex((door) => Math.abs(door.width - wallDef.width) < .02 && Math.abs(door.depth - wallDef.depth) < .02);
+      if (doorIndex < 0) continue;
+      const door = spareDoors.splice(doorIndex, 1)[0];
+      placed[placed.indexOf(wall)] = { ...wall, uid:nextUid(), defId:door.id, height:heights[door.id] ?? door.height };
+      opened = true;
+      break;
+    }
+    // No door of the right size left — pull the sealing wall out instead. One
+    // unplaced wall costs far less than a sealed chunk of board.
+    if (!opened && sealing.length) {
+      const wall = placed.find((piece) => piece.uid === sealing[0].uid);
+      if (wall) { placed.splice(placed.indexOf(wall), 1); opened = true; }
+    }
+    if (!opened) break;
   }
 
-  // Removing a wall can strand a support with nothing attached to it, which
-  // rule 3 forbids. Drop any support that no longer touches a structural piece.
+  // Removing a wall can strand a support with nothing attached to it. Drop any
+  // support or cap that no longer touches a structural piece.
   const structuralRects = placed.filter((piece) => ["wall", "door"].includes(definitions.get(piece.defId)!.kind)).map((piece) => pieceRect(piece, definitions));
   for (let index = placed.length - 1; index >= 0; index--) {
     const def = definitions.get(placed[index].defId)!;
-    if (!["pillar", "connector"].includes(def.kind)) continue;
+    if (!["pillar", "connector", "end"].includes(def.kind)) continue;
     const rect = pieceRect(placed[index], definitions);
     if (!structuralRects.some((other) => rectsOverlap(rect, other, .12))) placed.splice(index, 1);
   }
+};
+
+type Banks = {
+  wall:Map<number, SpatialTerrainDef[]>;
+  door:Map<number, SpatialTerrainDef[]>;
+  support:SpatialTerrainDef[];
+  end:SpatialTerrainDef[];
+};
+
+type Realised = { pieces:SpatialPiece[]; structural:number; unsupported:number };
+
+/**
+ * Turn a floorplan into actual kit pieces.
+ *
+ * Pure enough to be run inside the plan search, so a candidate is scored on the
+ * terrain it genuinely places rather than on an estimate. That matters because
+ * whether a run can be tiled depends on which lengths are still in the tray, and
+ * no cheap formula predicts it.
+ */
+const realise = (
+  plan:Plan, colWidth:number[], rowHeight:number[],
+  originX:number, originY:number, banks:Banks, seed:number, doorShare:number,
+  doorQuota:number, heights:Record<string, number>, nextUid:() => string,
+):Realised => {
+  const edges = panelsOf(plan);
+  if (!edges.length) return { pieces:[], structural:0, unsupported:0 };
+  const random = randomFactory(seed);
+  const doorways = chooseDoorways(plan, doorShare, random);
+  const runs = edgeRuns(edges);
+
+  const gridX:number[] = [originX];
+  colWidth.forEach((width) => gridX.push(gridX[gridX.length - 1] + width));
+  const gridY:number[] = [originY];
+  rowHeight.forEach((height) => gridY.push(gridY[gridY.length - 1] + height));
+
+  const pieces:SpatialPiece[] = [];
+  const vertices = new Map<string, { x:number; y:number; horizontal:boolean; count:number }>();
+  const touch = (col:number, row:number, horizontal:boolean) => {
+    const key = `${col},${row}`;
+    const existing = vertices.get(key);
+    if (existing) { existing.count++; return; }
+    vertices.set(key, { x:gridX[col], y:gridY[row], horizontal, count:1 });
+  };
+
+  let structural = 0;
+  // Hard ceiling on hatchways. Without it the tiler reaches for a door whenever
+  // the exact wall LENGTH it needs has run out — Gallowdark ships four short
+  // walls against twelve short hatchways — and a run comes out as alternating
+  // wall, door, wall, door.
+  let doorsPlaced = 0;
+  // Tile the runs in a shuffled order. Tiling them as listed let one orientation
+  // drain the wall bank dry and left the other with nothing but hatchways — a
+  // board whose every upright was a door. The mix has to be spread across
+  // orientations, not handed out in whatever order the plan produced them.
+  shuffle(runs, random).forEach((run, runIndex) => {
+    const runId = `complex-${seed}-${runIndex}`;
+    const horizontal = run[0].axis === "h";
+    const extent = (edge:PlanEdge) => horizontal ? colWidth[edge.col] : rowHeight[edge.row];
+    let index = 0;
+    let sequence = 0;
+    while (index < run.length) {
+      const edge = run[index];
+      const isDoor = doorways.has(edgeKey(edge));
+      let def:SpatialTerrainDef | null = null;
+      let cells = 1;
+      const doorsLeft = doorsPlaced < doorQuota;
+      if (isDoor && doorsLeft) {
+        // Nothing of this length in the tray — Iron Ultima ships no hatchway at
+        // all. Leave it as an open passage rather than walling it up.
+        def = takeByLength(banks.door, extent(edge));
+        if (def) doorsPlaced++;
+      } else {
+        // A long panel is preferred wherever two plain cells run on. It is the
+        // long unbroken wall a real board is built from, and it skips the pillar
+        // a pair of short panels would need between them.
+        const next = run[index + 1];
+        if (next && !doorways.has(edgeKey(next))) {
+          const pair = extent(edge) + extent(next);
+          def = takeByLength(banks.wall, pair);
+          if (!def && doorsLeft) { def = takeByLength(banks.door, pair); if (def) doorsPlaced++; }
+          if (def) cells = 2;
+        }
+        if (!def) def = takeByLength(banks.wall, extent(edge));
+        // A hatchway standing in for a wall is spent against the same quota, so
+        // a short-wall shortage can never stripe the run with doors.
+        if (!def && doorsLeft) { def = takeByLength(banks.door, extent(edge)); if (def) doorsPlaced++; }
+      }
+      // Nothing in the tray fits this cell. Skip it and carry on down the run:
+      // one gap reads as an opening, whereas abandoning the run leaves the
+      // chamber behind it standing on two and a half sides.
+      if (!def) { index++; continue; }
+
+      const fromCol = edge.col;
+      const fromRow = edge.row;
+      const toCol = horizontal ? fromCol + cells : fromCol;
+      const toRow = horizontal ? fromRow : fromRow + cells;
+      const centreX = horizontal ? (gridX[fromCol] + gridX[toCol]) / 2 : gridX[fromCol];
+      const centreY = horizontal ? gridY[fromRow] : (gridY[fromRow] + gridY[toRow]) / 2;
+      pieces.push({
+        uid:nextUid(), defId:def.id,
+        x:horizontal ? centreX - def.width / 2 : centreX - def.depth / 2,
+        y:horizontal ? centreY - def.depth / 2 : centreY - def.width / 2,
+        rotation:horizontal ? 0 : 90,
+        height:heights[def.id] ?? def.height, runId, sequenceIndex:sequence++,
+      });
+      structural++;
+      touch(fromCol, fromRow, horizontal);
+      touch(toCol, toRow, horizontal);
+      index += cells;
+    }
+  });
+
+  // Supports at every vertex a panel actually reaches. A vertex with a single
+  // panel arriving is a run terminus and takes a cap where the kit ships one —
+  // that is what Iron Labyrinth's wall ends are for, and it frees a connector
+  // for a real junction.
+  let unsupported = 0;
+  vertices.forEach((vertex) => {
+    const cap = vertex.count === 1 ? banks.end.shift() : undefined;
+    const def = cap ?? banks.support.shift();
+    // A panel standing on a missing pillar has an unsupported end, which is the
+    // one joint the kit cannot actually build. The caller rejects the whole
+    // candidate rather than shipping it.
+    if (!def) { unsupported++; return; }
+    if (cap) {
+      // The cap plate lies across the run, so its width spans the panel's
+      // thickness and its depth runs along the axis.
+      pieces.push({
+        uid:nextUid(), defId:def.id,
+        x:vertex.x - (vertex.horizontal ? def.depth : def.width) / 2,
+        y:vertex.y - (vertex.horizontal ? def.width : def.depth) / 2,
+        rotation:vertex.horizontal ? 90 : 0, height:heights[def.id] ?? def.height,
+      });
+      return;
+    }
+    pieces.push({
+      uid:nextUid(), defId:def.id, x:vertex.x - def.width / 2, y:vertex.y - def.depth / 2,
+      rotation:0, height:heights[def.id] ?? def.height,
+    });
+  });
+
+  return { pieces, structural, unsupported };
 };
 
 export const generateSpatialLayout = (input:SpatialGeneratorInput):SpatialPiece[] => {
@@ -419,191 +445,174 @@ export const generateSpatialLayout = (input:SpatialGeneratorInput):SpatialPiece[
   const random = randomFactory(input.seed);
   const systemDefs = input.definitions.filter((def) => def.catalogue === catalogue && (inventory[def.id] || 0) > 0);
   const expanded = (kinds:SpatialTerrainDef["kind"][]) => shuffle(systemDefs.filter((def) => kinds.includes(def.kind)).flatMap((def) => Array.from({ length:inventory[def.id] || 0 }, () => def)), random);
-  const walls = expanded(["wall"]);
-  const doors = expanded(["door"]);
+  const usage = clamp(input.usage, .05, 1);
+  const share = (pool:SpatialTerrainDef[]) => pool.slice(0, Math.max(pool.length ? 1 : 0, Math.round(pool.length * usage)));
+  const walls = share(expanded(["wall"]));
+  const doors = share(expanded(["door"]));
   const supports = expanded(catalogue === "boarding" ? ["pillar"] : ["connector"]);
+  const ends = expanded(["end"]);
   const accessories = expanded(["floor", "stair"]);
-  const availableStructural = walls.length + doors.length;
-  if (!availableStructural) return [];
+  if ((!walls.length && !doors.length) || !supports.length) return [];
 
-  const structuralTarget = clamp(Math.round(availableStructural * input.usage), Math.min(availableStructural, 3), availableStructural);
-  const desiredDoors = walls.length >= 2 ? Math.min(doors.length, Math.max(0, Math.floor(structuralTarget / 5))) : 0;
-  const selectedWalls = walls.slice(0, Math.min(walls.length, structuralTarget - desiredDoors));
-  const selectedDoors = doors.slice(0, desiredDoors);
-  const structuralDefs:SpatialTerrainDef[] = [];
-  let wallIndex = 0;
-  let doorIndex = 0;
-  while (structuralDefs.length < structuralTarget && (wallIndex < selectedWalls.length || doorIndex < selectedDoors.length)) {
-    const wantsDoor = structuralDefs.length % 5 === 2 && doorIndex < selectedDoors.length;
-    if (wantsDoor) structuralDefs.push(selectedDoors[doorIndex++]);
-    else if (wallIndex < selectedWalls.length) structuralDefs.push(selectedWalls[wallIndex++]);
-    else structuralDefs.push(selectedDoors[doorIndex++]);
-  }
+  const supportExtent = Math.max(...supports.map((def) => Math.max(def.width, def.depth)));
+  const wallBank = lengthBank(walls, supportExtent);
+  const doorBank = lengthBank(doors, supportExtent);
 
-  const maximumComponentSize = catalogue === "boarding" ? 4 : 5;
-  // Every component is a tree, so it needs one support per node: edges + 1.
-  // Trim the structural budget until the whole plan fits the supports actually
-  // owned. Merging components instead would demand a single cluster far larger
-  // than any pattern can build, which silently zeroed the trailing components.
-  let structuralBudget = structuralDefs.length;
-  let targets = componentTargets(structuralBudget, boardWidth, boardHeight, maximumComponentSize);
-  while (structuralBudget > 0 && structuralBudget + targets.length > supports.length) {
-    structuralBudget--;
-    targets = componentTargets(structuralBudget, boardWidth, boardHeight, maximumComponentSize);
-  }
-  structuralDefs.length = structuralBudget;
+  // Cell widths are only drawn from lengths a wall can fill. A cell sized to a
+  // door alone would have to stay a doorway forever, and there are never enough
+  // doors for that.
+  const supplied = [...lengthBank([...walls, ...doors], supportExtent)]
+    .map(([length, defs]) => ({ length, supply:defs.filter((def) => def.kind === "wall").length }))
+    .filter((entry) => entry.supply > 0)
+    .sort((first, second) => first.length - second.length);
+  if (!supplied.length) return [];
+  // A length that is a whole multiple of a shorter one is not a cell width — it
+  // is a panel that spans that many cells. Gallowdark's long wall is exactly two
+  // 97 mm squares, and offering it as a cell of its own put the whole board on a
+  // 7.6" pitch: half as many cells, chambers that could not subdivide, and the
+  // short walls left with nothing to fill. Dropping it here keeps the grid on the
+  // kit's real square, and the run tiler still reaches for it two cells at a time.
+  const lengths = supplied
+    .filter((entry, index) => !supplied.slice(0, index).some((shorter) => {
+      const ratio = entry.length / shorter.length;
+      return ratio >= 1.8 && Math.abs(ratio - Math.round(ratio)) * shorter.length <= LENGTH_TOLERANCE;
+    }))
+    .sort((first, second) => second.supply - first.supply);
+  if (!lengths.length) return [];
 
-  // Rule 9: the board border IS a wall. A piece may either meet it, in which
-  // case the border terminates the run exactly as a wall would, or stand a full
-  // lane clear of it. The sliver in between is board nobody can use or play in.
-  //
-  // Orientation decides which options are open. A piece running PERPENDICULAR to
-  // an edge may butt against it — that is a legitimate corner or dead end
-  // against the board wall. A piece running PARALLEL to an edge must always keep
-  // the lane, because laying terrain along the border merely duplicates a wall
-  // the board already provides and seals a strip of dead space behind it.
-  // A corridor wide enough for based models to pass, per the same reasoning that
-  // sets the inter-network clearance.
   const lane = input.borderStandoff ?? 2.75;
-  // Below this a gap at the border is dead space rather than a lane: a 32 mm base
-  // is 1.26in, so anything narrower cannot be entered at all.
-  const deadGap = 1.5;
-  const edgeFault = (rect:Rect, structural:boolean) => {
-    // Supports and perpendicular arms may reach the border freely — that is how
-    // a run legitimately terminates against it. Only a piece lying ALONGSIDE the
-    // border is at fault, and only then because it walls off a dead strip.
-    if (!structural) return false;
-    const horizontal = rect.width > rect.height;
-    // `alongX` marks the two edges that a horizontal piece lies parallel to.
-    return ([
-      { gap:rect.x, alongX:false },
-      { gap:boardWidth - (rect.x + rect.width), alongX:false },
-      { gap:rect.y, alongX:true },
-      { gap:boardHeight - (rect.y + rect.height), alongX:true },
-    ]).some(({ gap, alongX }) => horizontal === alongX && gap < lane - .01);
-  };
-  const placed:SpatialPiece[] = [];
-  const placedComponents:Rect[] = [];
-  const anchors = [
-    { x:.5, y:.18 }, { x:.2, y:.66 }, { x:.8, y:.78 },
-    { x:.82, y:.28 }, { x:.18, y:.22 }, { x:.5, y:.82 },
-  ];
-  const anchorRotation = input.seed % anchors.length;
-  let defCursor = 0;
-  let supportCursor = 0;
 
-  const tryPlaceComponent = (edgeCount:number, componentIndex:number) => {
-    if (edgeCount <= 0) return false;
-    const defs = structuralDefs.slice(defCursor, defCursor + edgeCount);
-    const supportDefs = supports.slice(supportCursor, supportCursor + edgeCount + 1);
-    if (supportDefs.length < edgeCount + 1) return false;
-    const anchor = anchors[(componentIndex + anchorRotation) % anchors.length];
-    // Jitter the anchor once per component, not per attempt, so the target
-    // stays a fixed point while candidates are compared against it.
-    const anchorX = boardWidth * clamp(anchor.x + (random() - .5) * .18, .12, .88);
-    const anchorY = boardHeight * clamp(anchor.y + (random() - .5) * .18, .12, .88);
-    // Filter the shapes this component could actually build before spending
-    // attempts on them. A room needs a door among its pieces, so offering the
-    // cyclic pattern to a door-less Iron palette would burn a seventh of the
-    // attempt budget on a shape that can never succeed.
-    const usablePatterns = PATTERNS.filter((pattern) => {
-      if (pattern.length < edgeCount) return false;
-      const used = pattern.slice(0, edgeCount);
-      const nodeCount = new Set(used.flatMap((edge) => [edge.from, edge.to])).size;
-      if (nodeCount > edgeCount) return true;
-      return defs.some((candidate) => candidate.kind === "door");
+  // -------------------------------------------------------------------------
+  // Size the complex to the terrain, not to the table.
+  //
+  // A kit populates a fixed area at real board density. Stretching it over a
+  // larger table only thins the corridors out, so the complex is built at the
+  // size its own terrain supports and the rest of the board is left as open
+  // deck — hangar floor, exterior, somewhere for a tank to sit.
+  // -------------------------------------------------------------------------
+  let best:{ pieces:SpatialPiece[]; structural:number } | null = null;
+  let bestScore = -Infinity;
+
+  // How thick a panel is, measured across the run. A wall centred on a grid line
+  // sticks out half its depth past the complex origin, so the hull needs that on
+  // top of the corridor lane or the panel face ends up inside the border strip.
+  const shortest = Math.min(...lengths.map((entry) => entry.length));
+  const cellCap = (extent:number) => Math.max(2, Math.floor((extent + .01) / shortest));
+
+  // A board is laid out in tiles about the size of one terrain box, so a four
+  // foot table is four two-foot tiles. Corridor lanes are then chosen across the
+  // whole board with one on every seam, which is what stops the tiles reading as
+  // four unrelated squares: a corridor runs straight through from one into the
+  // next, and only the room subdivision inside them varies.
+  const commonest = lengths[0].length;
+  // How many lattice cells of wall the palette can build, counting a long panel
+  // as the two cells it covers.
+  //
+  // Sized from the WALLS, not from walls and hatchways together. Counting both
+  // laid out a maze half again bigger than the solid panels could fill, and the
+  // tiler padded the difference with hatchways — which is how a board ends up
+  // with a door every other panel and wall runs that read as dashed lines. A
+  // hatchway is a deliberate opening in a wall, so it gets a small explicit
+  // allowance on top and a hard quota below, rather than being whatever is left
+  // in the tray when the walls run out.
+  const cellsOf = (pool:SpatialTerrainDef[]) =>
+    pool.reduce((sum, def) => sum + Math.max(1, Math.round(nodeLength(def, supportExtent) / commonest)), 0);
+  const solidCells = cellsOf(walls);
+  const doorAllowance = Math.min(cellsOf(doors), Math.max(1, Math.round(solidCells * DOOR_SHARE)));
+  const wallCellBudget = solidCells + doorAllowance;
+
+  // A grid of c x r cells has exactly (c-1)(r-1) edges spare once a connected
+  // maze has taken its passages, so the size that the terrain can actually fill
+  // is solvable rather than searchable. Spreading one kit over a whole four-foot
+  // table instead gives a scatter of fragments; the maze is built at the size it
+  // can be built densely, and the rest of the board is open deck.
+  const aspect = boardWidth / boardHeight;
+  const idealCols = Math.round(Math.sqrt(wallCellBudget * aspect)) + 1;
+  const idealRows = Math.round(Math.sqrt(wallCellBudget / aspect)) + 1;
+
+  for (let attempt = 0; attempt < 70; attempt++) {
+    const half = supportExtent / 2;
+    const usableWidth = boardWidth - half;
+    const usableHeight = boardHeight - half;
+    const cols = Math.max(3, Math.min(idealCols, cellCap(usableWidth)));
+    const rows = Math.max(3, Math.min(idealRows, cellCap(usableHeight)));
+    const colWidth = axisWidths(cols, usableWidth, lengths, random);
+    const rowHeight = axisWidths(rows, usableHeight, lengths, random);
+    if (!colWidth || !rowHeight) continue;
+    const gridWidth = colWidth.reduce((sum, width) => sum + width, 0);
+    const gridHeight = rowHeight.reduce((sum, height) => sum + height, 0);
+    if (gridWidth > usableWidth + .01 || gridHeight > usableHeight + .01) continue;
+
+    // Where the maze sits. Filling the table it is simply centred, and the board
+    // edge is its outer wall on all four sides. Smaller than the table it is
+    // pushed into a corner, so two of its sides still use the board edge and the
+    // open ground gathers on one side as deck rather than as a margin all round.
+    const slackX = boardWidth - gridWidth - supportExtent;
+    const slackY = boardHeight - gridHeight - supportExtent;
+    const place = (slack:number) => slack < lane ? half + slack / 2 : (random() < .5 ? half : half + slack);
+    const originX = place(Math.max(0, slackX));
+    const originY = place(Math.max(0, slackY));
+
+    const plan = buildMaze(colWidth.length, rowHeight.length, wallCellBudget, 0, random);
+    if (!plan.walls.length) continue;
+
+    const banks:Banks = { wall:cloneBank(wallBank), door:cloneBank(doorBank), support:[...supports], end:[...ends] };
+    const trial = realise(plan, colWidth, rowHeight, originX, originY, banks, input.seed + attempt, DOOR_SHARE, doorAllowance, heights, nextUid);
+    if (!trial.structural || trial.unsupported) continue;
+
+    // A labyrinth is judged on how far you can see down it, not on how much
+    // terrain got used. Chasing piece count is what produced sealed boxes: past a
+    // point the only place left to put a wall is around something. Sight line is
+    // the number that separates a corridor network from rectangles in a field.
+    const sight = meanSightLine(plan);
+    const score = -sight * 12 + trial.structural * 2 + plan.chambers * 6 + random();
+    if (score > bestScore) { bestScore = score; best = trial; }
+  }
+  if (!best) return [];
+
+  const placed = best.pieces;
+
+  // A complex sitting flush against a border puts lattice vertices on the board
+  // edge itself, and a support centred on one would hang half its width over the
+  // side. Slide those back inside — the vertex stays covered and the pillar sits
+  // hard against the edge, as it would on a real board. Panels are centred in
+  // cells well inside the grid and never need this.
+  // A hatchway needs terrain continuing past both of its ends, or it is a
+  // freestanding frame models simply walk around. The plan only ever sites one
+  // inline, but a run that ran out of panels mid-way can leave the neighbour it
+  // was counting on unbuilt. Pull those: an open archway is a legitimate way into
+  // a chamber, a door frame standing in space is not.
+  const reach = supportExtent + .2;
+  const endsOf = (piece:SpatialPiece) => {
+    const box = pieceRect(piece, definitions);
+    return box.width > box.height
+      ? [{ x:box.x, y:box.y + box.height / 2 }, { x:box.x + box.width, y:box.y + box.height / 2 }]
+      : [{ x:box.x + box.width / 2, y:box.y }, { x:box.x + box.width / 2, y:box.y + box.height }];
+  };
+  for (let index = placed.length - 1; index >= 0; index--) {
+    if (definitions.get(placed[index].defId)!.kind !== "door") continue;
+    const open = endsOf(placed[index]).some((point) => {
+      // Per rule 9 the board border is itself a wall, so an end that reaches it
+      // is terminated just as validly as one meeting more terrain.
+      if (point.x <= reach || point.y <= reach || point.x >= boardWidth - reach || point.y >= boardHeight - reach) return false;
+      return !placed.some((other) => other.uid !== placed[index].uid
+        && ["wall", "door"].includes(definitions.get(other.defId)!.kind)
+        && endsOf(other).some((candidate) => Math.hypot(point.x - candidate.x, point.y - candidate.y) <= reach));
     });
-    if (!usablePatterns.length) return false;
-    let accepted:{ component:LocalComponent; dx:number;dy:number } | null = null;
-    let bestScore = -Infinity;
-    for (let attempt = 0; attempt < 180; attempt++) {
-      const pattern = usablePatterns[(componentIndex + attempt) % usablePatterns.length];
-      // Advance rotation on a different stride to the pattern, otherwise the
-      // two stay correlated and only half the shape/orientation pairs occur.
-      const turns = (componentIndex + Math.floor(attempt / usablePatterns.length)) % 4;
-      const component = buildComponent(defs, supportDefs, pattern, turns, (input.seed + attempt) % 2 === 0, `network-${input.seed}-${componentIndex}`, heights, nextUid, definitions);
-      if (!component || component.bounds.width > boardWidth || component.bounds.height > boardHeight) continue;
-      // Sampling spans the whole board, right up to the border, because meeting
-      // the border is a legal placement. `edgeFault` below rejects only the
-      // unusable middle ground.
-      const looseX = snap(-component.bounds.x + random() * Math.max(0, boardWidth - component.bounds.width));
-      const looseY = snap(-component.bounds.y + random() * Math.max(0, boardHeight - component.bounds.height));
-      // A run that stops just short of the border leaves a sliver nobody can
-      // enter — the gap has no play value and reads as a mistake. If an
-      // extremity already reaches into the border lane, slide the component the
-      // rest of the way so its end piece actually meets the edge. Anything that
-      // does not reach the lane stays a full lane clear of it.
-      // Snap only across a gap too narrow to walk down. A wider gap is already a
-      // usable lane, and dragging a component flush to close it is how a
-      // U-shaped network ends up sealing a pocket against the border — which
-      // then costs a wall to reopen, because Iron has no spare doors.
-      const snapAxis = (loose:number, boundsStart:number, extent:number, boardExtent:number) => {
-        const start = boundsStart + loose;
-        if (start > .01 && start < deadGap) return loose - start;
-        const endGap = boardExtent - (start + extent);
-        if (endGap > .01 && endGap < deadGap) return loose + endGap;
-        return loose;
-      };
-      const dx = snapAxis(looseX, component.bounds.x, component.bounds.width, boardWidth);
-      const dy = snapAxis(looseY, component.bounds.y, component.bounds.height, boardHeight);
-      const moved = [...component.pieces, ...component.supports].map((piece) => ({ ...piece, x:piece.x + dx, y:piece.y + dy }));
-      const rects = moved.map((piece) => pieceRect(piece, definitions));
-      if (rects.some((rect) => rect.x < -.01 || rect.y < -.01 || rect.x + rect.width > boardWidth + .01 || rect.y + rect.height > boardHeight + .01 || hitsZone(rect, zones))) continue;
-      // Structural pieces come first in `moved`, then the supports.
-      if (rects.some((rect, rectIndex) => edgeFault(rect, rectIndex < component.pieces.length))) continue;
-      // Gallowdark walls are substantially longer than Iron modules. A 2.75"
-      // hard minimum still admits 32 mm bases and a model, while the anchor
-      // score naturally leaves most lanes in the 4–7" range.
-      const clearance = catalogue === "boarding" ? 2.75 : 3.8;
-      if (rects.some((rect) => placed.some((piece) => rectDistance(rect, pieceRect(piece, definitions)) < clearance))) continue;
-      const movedBounds = { x:component.bounds.x + dx, y:component.bounds.y + dy, width:component.bounds.width, height:component.bounds.height };
-      const centreX = movedBounds.x + movedBounds.width / 2;
-      const centreY = movedBounds.y + movedBounds.height / 2;
-      const separation = placedComponents.length ? Math.min(...placedComponents.map((other) => rectDistance(movedBounds, other))) : 8;
-      const anchorDistance = Math.hypot(centreX - anchorX, centreY - anchorY);
-      // Terrain no longer spent duplicating the board border is spent on shape
-      // instead: corners and dead ends are what make a lane worth walking down.
-      // Anchor pull stays deliberately weaker than the separation reward — at
-      // its original weight it dominated every other term, pinning components
-      // to a fixed table of spots and banding the board into regular stripes.
-      const score = Math.min(separation, 8) * 3 + component.corners * 3 + component.deadEnds * 1.5 - anchorDistance * .55 + random();
-      if (score > bestScore) { bestScore = score; accepted = { component, dx, dy }; }
-    }
-    if (!accepted) return false;
-    const moved = [...accepted.component.pieces, ...accepted.component.supports].map((piece) => ({ ...piece, x:piece.x + accepted!.dx, y:piece.y + accepted!.dy }));
-    placed.push(...moved);
-    placedComponents.push({ x:accepted.component.bounds.x + accepted.dx, y:accepted.component.bounds.y + accepted.dy, width:accepted.component.bounds.width, height:accepted.component.bounds.height });
-    defCursor += edgeCount;
-    supportCursor += accepted.component.nodeCount;
-    return true;
-  };
-
-  // A component that cannot be sited anywhere is retried smaller before its
-  // pieces are abandoned, so one crowded board does not orphan four walls.
-  const placeWithShrink = (requestedEdges:number, componentIndex:number) => {
-    let edgeCount = Math.min(requestedEdges, structuralDefs.length - defCursor, supports.length - supportCursor - 1);
-    // Two edges is the floor: a single edge can only ever be a straight row.
-    while (edgeCount >= 2) {
-      if (tryPlaceComponent(edgeCount, componentIndex)) return true;
-      edgeCount--;
-    }
-    return false;
-  };
-
-  targets.forEach((requestedEdges, componentIndex) => { placeWithShrink(requestedEdges, componentIndex); });
-
-  // Pieces left over by shrunk or rejected components get their own smaller
-  // networks, so a crowded board still spends as much of the kit as it can.
-  for (let componentIndex = targets.length; defCursor < structuralDefs.length && supportCursor + 1 < supports.length; componentIndex++) {
-    if (!placeWithShrink(maximumComponentSize, componentIndex)) break;
+    if (open) placed.splice(index, 1);
   }
 
-  // A wall that seals a pocket off from the rest of the board wastes whatever it
-  // encloses: models cannot enter, so the space is not playable. Flood the open
-  // space, find the pockets, and cut a door through the wall that seals each one.
-  openSealedPockets({ placed, definitions, boardWidth, boardHeight, doors:doors.slice(desiredDoors), heights, nextUid });
+  // A reserved zone is clear space by definition, so anything the plan dropped
+  // inside one comes straight back out.
+  for (let index = placed.length - 1; index >= 0; index--) {
+    if (hitsZone(pieceRect(placed[index], definitions), zones)) placed.splice(index, 1);
+  }
 
-  accessories.slice(0, Math.round(accessories.length * input.usage)).forEach((def, index) => {
+  const spareDoors = doors.filter((def) => !placed.some((piece) => piece.defId === def.id));
+  openSealedPockets({ placed, definitions, boardWidth, boardHeight, doors:spareDoors, heights, nextUid });
+
+  // Accessories dress the open deck around and inside the complex.
+  accessories.slice(0, Math.round(accessories.length * usage)).forEach((def, index) => {
     let accepted:SpatialPiece | null = null;
     for (let attempt = 0; attempt < 60 && !accepted; attempt++) {
       const rotation:(0 | 90) = (attempt + index) % 2 ? 90 : 0;

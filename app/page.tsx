@@ -57,12 +57,23 @@ type ReservedZone = {
 type ZoneCorner = "nw" | "ne" | "sw" | "se";
 
 const MM_PER_IN = 25.4;
-// Gallowdark is built on a fixed assembly grid: the boxed board is 70.3 x 60.7 cm
-// laid out as 7 x 6 squares of 9.7 x 9.7 cm (Tale of Painters review, Sep 2022).
-// A short wall occupies one square, a long wall two, so this pitch — not the
-// measured panel length — is what governs where pillars land.
-const GALLOWDARK_GRID = 97/25.4;
+// Gallowdark lays out as a grid of squares — the killzone board is 6 x 7 of them
+// — with each square one wall panel on a side and a pillar straddling every
+// corner, overlapping equally into both squares.
+//
+// The square is the CLEAR FLOOR, so this pitch is the panel plus its pillar, not
+// the bare panel. Taking the 97 mm panel as the pitch put the pillar inside the
+// square and left every corridor 2.7" wide, which is visibly too tight on the
+// table; at this pitch a one-square corridor measures 3.8" clear, which is what
+// it plays like. Approximate pending a caliper measurement — but it is the
+// spacing, not the panel length, that governs where pillars land, so a long
+// panel still spans exactly two squares and the grid stays regular.
+const GALLOWDARK_GRID = 125/25.4;
 const BOARD_SIZES = {
+  // The real Gallowdark killzone: a 6 x 7 grid of squares, each one wall panel
+  // on a side with a pillar straddling every corner. Listed first because it is
+  // the board the kit is cut for, and the one the generator is tuned against.
+  "30x22": { width:30, height:22, label:"30″ × 22″ · Gallowdark" },
   "24x24": { width:24, height:24, label:"2′ × 2′" },
   "48x24": { width:48, height:24, label:"4′ × 2′" },
   "48x48": { width:48, height:48, label:"4′ × 4′" },
@@ -146,7 +157,7 @@ export default function Home() {
   const [generationPercent, setGenerationPercent] = useState(60);
   const [gridSize, setGridSize] = useState(1);
   const [theme, setTheme] = useState<"industrial" | "gothic" | "desert">("industrial");
-  const [boardPreset, setBoardPreset] = useState<BoardPreset>("48x48");
+  const [boardPreset, setBoardPreset] = useState<BoardPreset>("30x22");
   const [boardReady, setBoardReady] = useState(false);
   const [enabled, setEnabled] = useState<Record<string, boolean>>(() => Object.fromEntries(TERRAIN.map((item) => [item.id, Boolean(BOARDING_INVENTORY[item.id])])));
   const [limits, setLimits] = useState<Record<string, number>>(() => Object.fromEntries(TERRAIN.map((item) => [item.id, BOARDING_INVENTORY[item.id] || 0])));
