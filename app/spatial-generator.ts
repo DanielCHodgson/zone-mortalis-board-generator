@@ -4,12 +4,16 @@ export type SpatialTerrainDef = {
   id:string; catalogue:SpatialCatalogue; width:number; depth:number; height:number;
   kind:"wall" | "door" | "pillar" | "connector" | "end" | "floor" | "stair";
   /**
-   * True for kit pieces whose stated width is measured pillar-centreline to
-   * pillar-centreline rather than as a bare panel, because the piece carries
-   * half a pillar moulded on each end. Such a width is already a node-to-node
-   * span, so adding a further pillar width to it over-spaces the run.
+   * Node-to-node span in inches, for kits built on a fixed assembly grid.
+   *
+   * Gallowdark is such a kit: its board is 7 × 6 squares of 9.7 cm, so a short
+   * wall occupies one 97 mm square and a long wall two. When a span is given it
+   * is authoritative for spacing and the piece is drawn centred inside it, with
+   * the supports at each end covering the joint. Pieces without a span sit
+   * between two supports, so their span is the panel plus half a support at each
+   * end — which is how Iron Labyrinth works.
    */
-  bringsPillars?:boolean;
+  span?:number;
 };
 
 export type SpatialPiece = {
@@ -59,6 +63,14 @@ const PATTERNS:PatternEdge[][] = [
   [
     { from:0, to:1, direction:"east" }, { from:1, to:2, direction:"south" },
     { from:1, to:3, direction:"north" },
+  ],
+  // The only cyclic pattern: a closed rectangular room. It builds solid, and the
+  // reachability pass then cuts a doorway into it, so it lands as a real room
+  // rather than a sealed box. Opposite sides must span equally to meet, which
+  // `pairForClosure` arranges.
+  [
+    { from:0, to:1, direction:"east" }, { from:1, to:2, direction:"south" },
+    { from:2, to:3, direction:"west" }, { from:3, to:0, direction:"north" },
   ],
 ];
 
@@ -159,7 +171,44 @@ const buildComponent = (
   if (doorDefs.length > inline.filter(Boolean).length) return null;
   let doorCursor = 0;
   let wallCursor = 0;
-  const ordered = usedEdges.map((_, index) => inline[index] && doorCursor < doorDefs.length ? doorDefs[doorCursor++] : wallDefs[wallCursor++]);
+  let ordered = usedEdges.map((_, index) => inline[index] && doorCursor < doorDefs.length ? doorDefs[doorCursor++] : wallDefs[wallCursor++]);
+
+  // A tree has one more node than edges. Fewer means an edge rejoins an existing
+  // node, so the shape is a cycle and its opposite sides have to span equally.
+  const cyclic = nodeIds.length <= usedEdges.length;
+  if (cyclic) {
+    const axisOf = (edge:PatternEdge) => {
+      const direction = rotateDirection(edge.direction, turns, mirror);
+      return direction === "east" || direction === "west" ? "h" : "v";
+    };
+    const spanOf = (candidate:SpatialTerrainDef) => candidate.span ?? candidate.width;
+    const perAxis = { h:[] as number[], v:[] as number[] };
+    usedEdges.forEach((edge, index) => perAxis[axisOf(edge)].push(index));
+    // Only the two-sides-per-axis case is modelled; anything else is not a
+    // rectangle and cannot be closed by pairing.
+    if (perAxis.h.length !== 2 || perAxis.v.length !== 2) return null;
+    const byLength = new Map<string, SpatialTerrainDef[]>();
+    ordered.forEach((candidate) => {
+      const key = spanOf(candidate).toFixed(3);
+      byLength.set(key, [...(byLength.get(key) ?? []), candidate]);
+    });
+    // Take as many pairs as each length can supply, not one per length — four
+    // sides of the same span is a square room, the most natural shape of all.
+    const pairs:SpatialTerrainDef[][] = [];
+    byLength.forEach((group) => {
+      for (let index = 0; index + 1 < group.length; index += 2) pairs.push([group[index], group[index + 1]]);
+    });
+    if (pairs.length < 2) return null;
+    // Build a room only when one of its four sides is a door. A sealed room is a
+    // dead zone, and the reachability pass would then have to open it by pulling
+    // a wall out — spending a wall to undo work already done. Born with a
+    // doorway, the room survives intact.
+    if (!pairs.flat().some((candidate) => candidate.kind === "door")) return null;
+    const assigned = new Array<SpatialTerrainDef | null>(usedEdges.length).fill(null);
+    perAxis.h.forEach((index, side) => { assigned[index] = pairs[0][side]; });
+    perAxis.v.forEach((index, side) => { assigned[index] = pairs[1][side]; });
+    ordered = assigned as SpatialTerrainDef[];
+  }
   const nodes = new Map<number, Point>([[usedEdges[0].from, { x:0, y:0 }]]);
   const pieces:SpatialPiece[] = [];
   // A node carrying both a horizontal and a vertical edge is a corner; a node
@@ -174,20 +223,25 @@ const buildComponent = (
     const direction = rotateDirection(edge.direction, turns, mirror);
     const horizontal = direction === "east" || direction === "west";
     const extent = (support:SpatialTerrainDef) => horizontal ? support.width : support.depth;
-    // A piece that carries its own half-pillars is already measured node centre
-    // to node centre, so its width IS the span. A bare panel sits between two
-    // supports, so the span is the panel plus half a support at each end.
-    const distance = def.bringsPillars
-      ? def.width
-      : extent(nodeSupport.get(edge.from)!) / 2 + def.width + extent(nodeSupport.get(edge.to)!) / 2;
+    // A grid kit states its own node-to-node span. Everything else spans the
+    // panel plus half a support at each end.
+    const distance = def.span ?? extent(nodeSupport.get(edge.from)!) / 2 + def.width + extent(nodeSupport.get(edge.to)!) / 2;
     const delta = direction === "east" ? { x:distance, y:0 } : direction === "west" ? { x:-distance, y:0 } : direction === "south" ? { x:0, y:distance } : { x:0, y:-distance };
     const child = { x:parent.x + delta.x, y:parent.y + delta.y };
-    nodes.set(edge.to, child);
+    const existing = nodes.get(edge.to);
+    // A closing edge must land exactly on the node it rejoins, or this set of
+    // pieces cannot build this shape. This is what makes a sealed room possible.
+    if (existing) {
+      if (Math.abs(existing.x - child.x) > .02 || Math.abs(existing.y - child.y) > .02) return null;
+    } else nodes.set(edge.to, child);
+    const target = existing ?? child;
     const forward = direction === "east" || direction === "south";
-    const start = forward ? parent : child;
-    // Bare panels start at the far face of their support; self-supporting pieces
-    // start at the node centre, because their own half-pillar covers that end.
-    const startHalf = def.bringsPillars ? 0 : extent(nodeSupport.get(forward ? edge.from : edge.to)!) / 2;
+    const start = forward ? parent : target;
+    // A spanned piece is centred in its grid square; a bare panel starts at the
+    // far face of the support that brackets it.
+    const startHalf = def.span !== undefined
+      ? (def.span - def.width) / 2
+      : extent(nodeSupport.get(forward ? edge.from : edge.to)!) / 2;
     pieces.push({
       uid:nextUid(), defId:def.id,
       x:horizontal ? start.x + startHalf : start.x - def.depth / 2,
@@ -411,6 +465,9 @@ export const generateSpatialLayout = (input:SpatialGeneratorInput):SpatialPiece[
   // A corridor wide enough for based models to pass, per the same reasoning that
   // sets the inter-network clearance.
   const lane = input.borderStandoff ?? 2.75;
+  // Below this a gap at the border is dead space rather than a lane: a 32 mm base
+  // is 1.26in, so anything narrower cannot be entered at all.
+  const deadGap = 1.5;
   const edgeFault = (rect:Rect, structural:boolean) => {
     // Supports and perpendicular arms may reach the border freely — that is how
     // a run legitimately terminates against it. Only a piece lying ALONGSIDE the
@@ -445,14 +502,25 @@ export const generateSpatialLayout = (input:SpatialGeneratorInput):SpatialPiece[
     // stays a fixed point while candidates are compared against it.
     const anchorX = boardWidth * clamp(anchor.x + (random() - .5) * .18, .12, .88);
     const anchorY = boardHeight * clamp(anchor.y + (random() - .5) * .18, .12, .88);
+    // Filter the shapes this component could actually build before spending
+    // attempts on them. A room needs a door among its pieces, so offering the
+    // cyclic pattern to a door-less Iron palette would burn a seventh of the
+    // attempt budget on a shape that can never succeed.
+    const usablePatterns = PATTERNS.filter((pattern) => {
+      if (pattern.length < edgeCount) return false;
+      const used = pattern.slice(0, edgeCount);
+      const nodeCount = new Set(used.flatMap((edge) => [edge.from, edge.to])).size;
+      if (nodeCount > edgeCount) return true;
+      return defs.some((candidate) => candidate.kind === "door");
+    });
+    if (!usablePatterns.length) return false;
     let accepted:{ component:LocalComponent; dx:number;dy:number } | null = null;
     let bestScore = -Infinity;
     for (let attempt = 0; attempt < 180; attempt++) {
-      const pattern = PATTERNS[(componentIndex + attempt) % PATTERNS.length];
-      if (pattern.length < edgeCount) continue;
+      const pattern = usablePatterns[(componentIndex + attempt) % usablePatterns.length];
       // Advance rotation on a different stride to the pattern, otherwise the
       // two stay correlated and only half the shape/orientation pairs occur.
-      const turns = (componentIndex + Math.floor(attempt / PATTERNS.length)) % 4;
+      const turns = (componentIndex + Math.floor(attempt / usablePatterns.length)) % 4;
       const component = buildComponent(defs, supportDefs, pattern, turns, (input.seed + attempt) % 2 === 0, `network-${input.seed}-${componentIndex}`, heights, nextUid, definitions);
       if (!component || component.bounds.width > boardWidth || component.bounds.height > boardHeight) continue;
       // Sampling spans the whole board, right up to the border, because meeting
@@ -465,11 +533,15 @@ export const generateSpatialLayout = (input:SpatialGeneratorInput):SpatialPiece[
       // extremity already reaches into the border lane, slide the component the
       // rest of the way so its end piece actually meets the edge. Anything that
       // does not reach the lane stays a full lane clear of it.
+      // Snap only across a gap too narrow to walk down. A wider gap is already a
+      // usable lane, and dragging a component flush to close it is how a
+      // U-shaped network ends up sealing a pocket against the border — which
+      // then costs a wall to reopen, because Iron has no spare doors.
       const snapAxis = (loose:number, boundsStart:number, extent:number, boardExtent:number) => {
         const start = boundsStart + loose;
-        if (start < lane) return loose - start;
+        if (start > .01 && start < deadGap) return loose - start;
         const endGap = boardExtent - (start + extent);
-        if (endGap < lane) return loose + endGap;
+        if (endGap > .01 && endGap < deadGap) return loose + endGap;
         return loose;
       };
       const dx = snapAxis(looseX, component.bounds.x, component.bounds.width, boardWidth);

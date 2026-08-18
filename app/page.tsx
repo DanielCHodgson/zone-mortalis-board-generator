@@ -13,9 +13,9 @@ type TerrainDef = {
   height: number;
   limit: number;
   kind: "wall" | "door" | "pillar" | "connector" | "end" | "floor" | "stair";
-  /** Stated width is pillar-centreline to pillar-centreline, not a bare panel:
-   *  the piece carries half a pillar on each end. */
-  bringsPillars?: boolean;
+  /** Node-to-node span for kits on a fixed assembly grid. Authoritative for
+   *  spacing; the piece is drawn centred inside it. */
+  span?: number;
   visual?: "solid" | "grid" | "pipe" | "vertical-pipe" | "reinforced" | "fan" | "floor" | "stair" | "door";
   note: string;
 };
@@ -57,6 +57,11 @@ type ReservedZone = {
 type ZoneCorner = "nw" | "ne" | "sw" | "se";
 
 const MM_PER_IN = 25.4;
+// Gallowdark is built on a fixed assembly grid: the boxed board is 70.3 x 60.7 cm
+// laid out as 7 x 6 squares of 9.7 x 9.7 cm (Tale of Painters review, Sep 2022).
+// A short wall occupies one square, a long wall two, so this pitch — not the
+// measured panel length — is what governs where pillars land.
+const GALLOWDARK_GRID = 97/25.4;
 const BOARD_SIZES = {
   "24x24": { width:24, height:24, label:"2′ × 2′" },
   "48x24": { width:48, height:24, label:"4′ × 2′" },
@@ -74,14 +79,14 @@ const MANUFACTURERS: Record<CatalogueId, { name:string; range:string }> = {
 // Approximate assembled footprints based on the 97 mm Gallowdark board grid
 // and published physical measurements of ~170 mm / ~80 mm wall sections.
 const TERRAIN: TerrainDef[] = [
-  { id:"short-door-pillars-a", catalogue:"boarding", name:"Short hatchway + pillars A", shortName:"Hatch A", width:3.82, depth:1.1, height:60/MM_PER_IN, limit:4, kind:"door", bringsPillars:true, note:"97 × 28 mm" },
-  { id:"short-door-pillars-b", catalogue:"boarding", name:"Short hatchway + pillars B", shortName:"Hatch B", width:3.82, depth:1.1, height:60/MM_PER_IN, limit:4, kind:"door", bringsPillars:true, note:"97 × 28 mm" },
-  { id:"short-door", catalogue:"boarding", name:"Short wall with hatchway", shortName:"Short hatch", width:3.15, depth:1.1, height:60/MM_PER_IN, limit:4, kind:"door", note:"80 × 28 mm" },
-  { id:"long-door-pillars", catalogue:"boarding", name:"Long hatchway + pillars", shortName:"Long hatch +", width:7.2, depth:1.1, height:60/MM_PER_IN, limit:4, kind:"door", bringsPillars:true, note:"183 × 28 mm" },
-  { id:"long-door", catalogue:"boarding", name:"Long wall with hatchway", shortName:"Long hatch", width:6.69, depth:1.1, height:60/MM_PER_IN, limit:4, kind:"door", note:"170 × 28 mm" },
-  { id:"long-wall-pillars", catalogue:"boarding", name:"Long wall + pillars", shortName:"Long wall +", width:7.2, depth:1.1, height:60/MM_PER_IN, limit:4, kind:"wall", bringsPillars:true, note:"183 × 28 mm" },
-  { id:"long-wall", catalogue:"boarding", name:"Long wall", shortName:"Long wall", width:6.69, depth:1.1, height:60/MM_PER_IN, limit:4, kind:"wall", note:"170 × 28 mm" },
-  { id:"short-wall", catalogue:"boarding", name:"Short wall", shortName:"Short wall", width:3.15, depth:1.1, height:60/MM_PER_IN, limit:4, kind:"wall", note:"80 × 28 mm" },
+  { id:"short-door-pillars-a", catalogue:"boarding", name:"Short hatchway + pillars A", shortName:"Hatch A", width:3.82, depth:1.1, height:60/MM_PER_IN, limit:4, kind:"door", span:GALLOWDARK_GRID, note:"97 × 28 mm" },
+  { id:"short-door-pillars-b", catalogue:"boarding", name:"Short hatchway + pillars B", shortName:"Hatch B", width:3.82, depth:1.1, height:60/MM_PER_IN, limit:4, kind:"door", span:GALLOWDARK_GRID, note:"97 × 28 mm" },
+  { id:"short-door", catalogue:"boarding", name:"Short wall with hatchway", shortName:"Short hatch", width:3.15, depth:1.1, height:60/MM_PER_IN, limit:4, kind:"door", span:GALLOWDARK_GRID, note:"80 × 28 mm" },
+  { id:"long-door-pillars", catalogue:"boarding", name:"Long hatchway + pillars", shortName:"Long hatch +", width:7.2, depth:1.1, height:60/MM_PER_IN, limit:4, kind:"door", span:GALLOWDARK_GRID*2, note:"183 × 28 mm" },
+  { id:"long-door", catalogue:"boarding", name:"Long wall with hatchway", shortName:"Long hatch", width:6.69, depth:1.1, height:60/MM_PER_IN, limit:4, kind:"door", span:GALLOWDARK_GRID*2, note:"170 × 28 mm" },
+  { id:"long-wall-pillars", catalogue:"boarding", name:"Long wall + pillars", shortName:"Long wall +", width:7.2, depth:1.1, height:60/MM_PER_IN, limit:4, kind:"wall", span:GALLOWDARK_GRID*2, note:"183 × 28 mm" },
+  { id:"long-wall", catalogue:"boarding", name:"Long wall", shortName:"Long wall", width:6.69, depth:1.1, height:60/MM_PER_IN, limit:4, kind:"wall", span:GALLOWDARK_GRID*2, note:"170 × 28 mm" },
+  { id:"short-wall", catalogue:"boarding", name:"Short wall", shortName:"Short wall", width:3.15, depth:1.1, height:60/MM_PER_IN, limit:4, kind:"wall", span:GALLOWDARK_GRID, note:"80 × 28 mm" },
   // Gallowdark pillars are chunky columns that the wall panels clip into, so the
   // pillar footprint is wider than the 28 mm wall thickness. At the previous
   // 25 mm the walls overhung the pillars by 0.06" a side, which read as a

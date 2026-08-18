@@ -38,11 +38,22 @@ Board presets:
 - 48 × 48 inches: test with approximately four kits.
 
 Iron Labyrinth measurements use TTCombat-published dimensions. The principal
-module sizes are 50 × 50 mm connectors and 64 × 33 mm standard walls. Boarding
-Actions footprints are physical-kit approximations based on the 97 mm assembly
-grid and approximately 170/80 mm wall lengths — and they are probably wrong in a
-way that affects joint spacing and pillar consumption. See the Boarding
-dimensions entry under known limitations before trusting them.
+module sizes are 50 × 50 mm connectors and 64 × 33 mm standard walls.
+
+**Gallowdark is a grid kit, and the grid is the authority.** The boxed board is
+70.3 × 60.7 cm laid out as 7 × 6 squares of 9.7 × 9.7 cm, and each element is
+6 cm tall ([Tale of Painters review, September
+2022](https://taleofpainters.com/2022/09/review-kill-team-into-the-dark-part-1-terrain-rules/)).
+So a short wall occupies one 97 mm square and a long wall two, and every
+Boarding structural piece carries an explicit `span` of `GALLOWDARK_GRID` or
+`GALLOWDARK_GRID * 2`. That span — not the measured panel length — decides where
+pillars land; the panel is drawn centred inside it and the pillars cover the
+joints. Generated boards measure 3.82″ and 7.64″ between pillar centres, which is
+97 mm and 194 mm exactly.
+
+The panel widths themselves (80/170 mm bare, 97/183 mm with pillars) and the
+32 mm pillar remain approximations. They only affect how a piece is *drawn*
+inside its square, not the topology, so they are cosmetic until measured.
 
 The Boarding Actions Terrain Set entry represents one complete palette entry,
 not a UI kit labelled “×2”.
@@ -122,9 +133,23 @@ Properties of the placement loop that matter and are easy to regress:
   corners (nodes carrying both a horizontal and a vertical edge) and dead ends.
 - T-junctions are legal and desirable in both catalogues — a support may carry
   three structural ends. Nothing should ever restrict node degree to two.
-- A run that stops just short of the border is snapped the rest of the way, so
-  an end piece meets the edge instead of leaving a gap with no play value. The
-  snap moves the whole component, so relative geometry is preserved.
+- A run that stops just short of the border is snapped the rest of the way, so an
+  end piece meets the edge instead of leaving a gap with no play value. The snap
+  moves the whole component, so relative geometry is preserved. It only fires
+  across a gap under `deadGap` (1.5 in — narrower than a 32 mm base can enter).
+  Snapping across the full lane instead was measured and rejected: it dragged
+  U-shaped components flush against the border, sealing pockets that then cost a
+  wall each to reopen, and pinned door-less Iron to exactly 10 walls on every
+  seed. Widening the threshold again will quietly cost Iron walls.
+- `PATTERNS` holds one cyclic shape, a rectangular room. `buildComponent` accepts
+  a closing edge only when it lands back on its origin node within 0.02 in, and
+  `pairForClosure` arranges the pieces so opposite sides span equally — including
+  taking two pairs from a single span length, which is what makes a square room
+  possible at all. A room is built only when a door is among its sides, so it is
+  born enterable rather than as a sealed box the flood pass must break open.
+- Patterns a component cannot build are filtered out *before* the attempt loop.
+  Leaving the room pattern in for a door-less palette burned a seventh of the
+  attempt budget on a shape that could never succeed.
 - `openSealedPockets` floods the walkable space after placement — doors passable,
   walls and supports solid — and finds every region that is not the main one.
   For each pocket it converts the sealing wall into a same-footprint door, or,
@@ -194,7 +219,8 @@ Automated assertions verify:
 - no wall lies alongside the board border inside a corridor width,
 - no walled-off dead zone survives anywhere in the walkable space,
 - a support is never narrower than the walls it brackets,
-- a self-supporting wall spans exactly centreline to centreline, and
+- a grid-kit wall spans exactly one grid pitch between pillar centres,
+- closed rooms are built and every one of them has a doorway, and
 - a tight support budget still yields several networks, not one sparse cluster.
 
 The last three fail against the pre-fix generator with `placed 9 of a 13
@@ -204,7 +230,7 @@ behaviour. When checking a door assertion by hand, remember that neighbouring
 structural pieces are separated by exactly one support, so a proximity
 tolerance below the support width makes every door look isolated.
 
-At this checkpoint, `npm run lint` and all thirteen `npm test` checks pass.
+At this checkpoint, `npm run lint` and all fourteen `npm test` checks pass.
 
 Measured effect of the placement fixes, best of 24 candidates, averaged over
 seeds. Structural pieces placed:
