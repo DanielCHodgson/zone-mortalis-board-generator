@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { generateSpatialLayout } from "./spatial-generator";
 
 type TerrainDef = {
   id: string;
@@ -65,7 +66,14 @@ type GeneratorRun = { x: number; y: number; rotation: 0 | 90; sequence: RunToken
 
 const BOARD_IN = 48;
 const MM_PER_IN = 25.4;
-const PALETTE_STORAGE_KEY = "mortalis-architect-terrain-palette-v1";
+const BOARD_SIZES = {
+  "24x24": { width:24, height:24, label:"2′ × 2′" },
+  "48x24": { width:48, height:24, label:"4′ × 2′" },
+  "48x48": { width:48, height:48, label:"4′ × 4′" },
+} as const;
+type BoardPreset = keyof typeof BOARD_SIZES;
+const PALETTE_STORAGE_KEY = "mortalis-architect-terrain-palette-v4";
+const BOARD_STORAGE_KEY = "mortalis-architect-board-size-v1";
 
 const MANUFACTURERS: Record<CatalogueId, { name:string; range:string }> = {
   boarding: { name:"Games Workshop", range:"Boarding Actions" },
@@ -127,28 +135,28 @@ const TERRAIN_KITS: TerrainKit[] = [
 // runs are intentional corridors, while door tokens preserve traversal.
 const RUN_LAYOUTS: GeneratorRun[][] = [
   [
-    { x: 2, y: 7, rotation: 0, sequence: ["wall-long", "door-long", "wall-short"] },
-    { x: 27, y: 7, rotation: 0, sequence: ["wall-long", "door-short", "wall-long"] },
-    { x: 2, y: 24, rotation: 0, sequence: ["wall-long", "door-long", "wall-short"] },
-    { x: 27, y: 24, rotation: 0, sequence: ["wall-long", "door-short", "wall-long"] },
-    { x: 12, y: 29, rotation: 90, sequence: ["wall-long", "door-long", "wall-short"] },
-    { x: 36, y: 29, rotation: 90, sequence: ["wall-long", "door-short", "wall-short"] },
+    { x: 0, y: 9, rotation: 0, sequence: ["wall-long", "door-long", "wall-short"] },
+    { x: 25, y: 9, rotation: 0, sequence: ["wall-long", "door-short", "wall-long"] },
+    { x: 16, y: 0, rotation: 90, sequence: ["wall-long", "door-long", "wall-short"] },
+    { x: 31, y: 24, rotation: 90, sequence: ["wall-long", "door-short", "wall-short"] },
+    { x: 0, y: 26, rotation: 0, sequence: ["wall-long", "door-long", "wall-short"] },
+    { x: 23, y: 38, rotation: 0, sequence: ["wall-short", "door-long", "wall-long"] },
   ],
   [
-    { x: 7, y: 2, rotation: 90, sequence: ["wall-long", "door-long", "wall-short"] },
-    { x: 24, y: 2, rotation: 90, sequence: ["wall-long", "door-long", "wall-long"] },
-    { x: 41, y: 2, rotation: 90, sequence: ["wall-long", "door-long", "wall-short"] },
-    { x: 2, y: 29, rotation: 0, sequence: ["wall-short", "door-long", "wall-long"] },
-    { x: 25, y: 29, rotation: 0, sequence: ["wall-long", "door-long", "wall-short"] },
-    { x: 14, y: 44, rotation: 0, sequence: ["wall-long", "door-long", "wall-long"] },
+    { x: 7, y: 0, rotation: 90, sequence: ["wall-long", "door-long", "wall-short"] },
+    { x: 24, y: 13, rotation: 90, sequence: ["wall-long", "door-long", "wall-long"] },
+    { x: 40, y: 0, rotation: 90, sequence: ["wall-long", "door-long", "wall-short"] },
+    { x: 0, y: 25, rotation: 0, sequence: ["wall-short", "door-long", "wall-long"] },
+    { x: 22, y: 34, rotation: 0, sequence: ["wall-long", "door-long", "wall-short"] },
+    { x: 7, y: 42, rotation: 0, sequence: ["wall-long", "door-long", "wall-long"] },
   ],
   [
-    { x: 2, y: 25, rotation: 0, sequence: ["wall-long", "door-long", "wall-short"] },
-    { x: 27, y: 25, rotation: 0, sequence: ["wall-long", "door-long", "wall-short"] },
-    { x: 24, y: 1, rotation: 90, sequence: ["wall-long", "door-long", "wall-short"] },
-    { x: 14, y: 44, rotation: 0, sequence: ["wall-long", "door-long", "wall-long"] },
-    { x: 12, y: 29, rotation: 90, sequence: ["wall-short", "door-long", "wall-long"] },
-    { x: 36, y: 26, rotation: 90, sequence: ["wall-long", "door-short", "wall-long"] },
+    { x: 0, y: 16, rotation: 0, sequence: ["wall-long", "door-long", "wall-short"] },
+    { x: 25, y: 16, rotation: 0, sequence: ["wall-long", "door-long", "wall-short"] },
+    { x: 12, y: 0, rotation: 90, sequence: ["wall-long", "door-long", "wall-short"] },
+    { x: 34, y: 29, rotation: 90, sequence: ["wall-long", "door-long", "wall-long"] },
+    { x: 0, y: 34, rotation: 0, sequence: ["wall-short", "door-long", "wall-long"] },
+    { x: 22, y: 39, rotation: 0, sequence: ["wall-long", "door-short", "wall-long"] },
   ],
 ];
 
@@ -164,8 +172,11 @@ export default function Home() {
   const [activeKitId, setActiveKitId] = useState("boarding-actions");
   const [snap, setSnap] = useState(true);
   const [smartFit, setSmartFit] = useState(true);
+  const [generationPercent, setGenerationPercent] = useState(60);
   const [gridSize, setGridSize] = useState(1);
   const [theme, setTheme] = useState<"industrial" | "gothic" | "desert">("industrial");
+  const [boardPreset, setBoardPreset] = useState<BoardPreset>("48x48");
+  const [boardReady, setBoardReady] = useState(false);
   const [enabled, setEnabled] = useState<Record<string, boolean>>(() => Object.fromEntries(TERRAIN.map((item) => [item.id, Boolean(BOARDING_INVENTORY[item.id])])));
   const [limits, setLimits] = useState<Record<string, number>>(() => Object.fromEntries(TERRAIN.map((item) => [item.id, BOARDING_INVENTORY[item.id] || 0])));
   const [kitAddAmounts, setKitAddAmounts] = useState<Record<string, number>>({});
@@ -184,6 +195,8 @@ export default function Home() {
   const paletteDragRef = useRef<{ defId: string; x: number; y: number } | null>(null);
   const [message, setMessage] = useState("Ready to build");
   const uidRef = useRef(0);
+  const generationInventoryRef = useRef<Record<string, number> | null>(null);
+  const { width:boardWidth, height:boardHeight } = BOARD_SIZES[boardPreset];
 
   const manufacturerKits = useMemo(() => TERRAIN_KITS.filter((kit) => kit.catalogue === activeCatalogue), [activeCatalogue]);
   const activeCatalogueMeta = TERRAIN_KITS.find((kit) => kit.id === activeKitId) || TERRAIN_KITS[0];
@@ -191,6 +204,12 @@ export default function Home() {
   const paletteCatalogues = useMemo(() => ([...new Set(TERRAIN.filter((item) => (limits[item.id] || 0) > 0).map((item) => item.catalogue))]), [limits]);
   const catalogueTerrain = useMemo(() => TERRAIN.filter((item) => (limits[item.id] || 0) > 0), [limits]);
   const catalogueTotal = catalogueTerrain.reduce((sum, item) => sum + (limits[item.id] || 0), 0);
+  const generationLimit = useCallback((defId: string) => {
+    const override = generationInventoryRef.current;
+    const available = override ? override[defId] || 0 : limits[defId] || 0;
+    return override || getDef(defId).catalogue === "boarding" ? available : Math.ceil(available * generationPercent / 100);
+  }, [generationPercent, limits]);
+  const generationEnabled = useCallback((defId: string) => generationInventoryRef.current ? generationLimit(defId) > 0 : enabled[defId], [enabled, generationLimit]);
   const activeKitTotal = kitTerrain.reduce((sum, item) => sum + (activeCatalogueMeta.inventory[item.id] || 0), 0);
   const paletteMaker = paletteCatalogues.length ? paletteCatalogues.map((catalogue) => MANUFACTURERS[catalogue].name).join(" + ") : null;
   const paletteLabel = paletteCatalogues.length > 1 ? "Mixed terrain palette" : paletteCatalogues[0] === "boarding" ? "Boarding Actions palette" : paletteCatalogues[0] === "ttcombat" ? "Iron Labyrinth palette" : "Empty palette";
@@ -199,7 +218,7 @@ export default function Home() {
   const used = useMemo(() => pieces.reduce<Record<string, number>>((acc, piece) => ({ ...acc, [piece.defId]: (acc[piece.defId] || 0) + 1 }), {}), [pieces]);
   const paletteUsed = catalogueTerrain.reduce((sum, def) => sum + Math.min(used[def.id] || 0, limits[def.id] || 0), 0);
   const wallPieces = pieces.filter((piece) => ["wall", "door"].includes(getDef(piece.defId).kind));
-  const coverage = Math.min(100, pieces.reduce((sum, piece) => { const def = getDef(piece.defId); return sum + def.width * def.depth; }, 0) / (BOARD_IN * BOARD_IN) * 100);
+  const coverage = Math.min(100, pieces.reduce((sum, piece) => { const def = getDef(piece.defId); return sum + def.width * def.depth; }, 0) / (boardWidth * boardHeight) * 100);
   const doors = pieces.filter((piece) => getDef(piece.defId).kind === "door").length;
   const loops = Math.max(0, Math.min(6, Math.floor(wallPieces.length / 5) - 1));
   const chambers = Math.max(0, Math.min(7, Math.floor(wallPieces.length / 4)));
@@ -237,6 +256,22 @@ export default function Home() {
     if (!paletteReady) return;
     try { window.localStorage.setItem(PALETTE_STORAGE_KEY, JSON.stringify(limits)); } catch { /* Persistence is a convenience, not a requirement. */ }
   }, [limits, paletteReady]);
+
+  useEffect(() => {
+    const restoreTimer = window.setTimeout(() => {
+      try {
+        const saved = window.localStorage.getItem(BOARD_STORAGE_KEY) as BoardPreset | null;
+        if (saved && saved in BOARD_SIZES) setBoardPreset(saved);
+      } catch { /* Board size persistence is optional. */ }
+      setBoardReady(true);
+    }, 0);
+    return () => window.clearTimeout(restoreTimer);
+  }, []);
+
+  useEffect(() => {
+    if (!boardReady) return;
+    try { window.localStorage.setItem(BOARD_STORAGE_KEY, boardPreset); } catch { /* Board size persistence is optional. */ }
+  }, [boardPreset, boardReady]);
 
   const setPaletteQuantity = (defId: string, quantity: number) => {
     const nextQuantity = clamp(Math.round(quantity || 0), 0, 999);
@@ -282,10 +317,25 @@ export default function Home() {
     const height = piece.rotation === 90 ? def.width : def.depth;
     return zones.some((zone) => piece.x < zone.x + zone.width + padding && piece.x + width > zone.x - padding && piece.y < zone.y + zone.height + padding && piece.y + height > zone.y - padding);
   };
-  const reservedCoverage = zones.reduce((sum, zone) => sum + zone.width * zone.height, 0) / (BOARD_IN * BOARD_IN) * 100;
+  const reservedCoverage = zones.reduce((sum, zone) => sum + zone.width * zone.height, 0) / (boardWidth * boardHeight) * 100;
   const pieceRect = (piece: PlacedPiece) => {
     const def = getDef(piece.defId);
     return { x:piece.x, y:piece.y, width:piece.rotation === 90 ? def.depth : def.width, height:piece.rotation === 90 ? def.width : def.depth };
+  };
+  const changeBoardSize = (preset: BoardPreset) => {
+    const next = BOARD_SIZES[preset];
+    setBoardPreset(preset);
+    setPieces((current) => current.map((piece) => {
+      const rect = pieceRect(piece);
+      return { ...piece, x:clamp(piece.x, 0, Math.max(0, next.width - rect.width)), y:clamp(piece.y, 0, Math.max(0, next.height - rect.height)) };
+    }));
+    setZones((current) => current.map((zone) => {
+      const width = Math.min(zone.width, next.width);
+      const height = Math.min(zone.height, next.height);
+      return { ...zone, width, height, x:clamp(zone.x, 0, next.width - width), y:clamp(zone.y, 0, next.height - height) };
+    }));
+    selectOnly(null);
+    setMessage(`Board changed to ${next.label} · existing terrain kept within bounds`);
   };
   const pieceCentre = (piece: PlacedPiece) => { const rect = pieceRect(piece); return { x:rect.x + rect.width / 2, y:rect.y + rect.height / 2 }; };
   const structuralEndpoints = (piece: PlacedPiece) => {
@@ -350,16 +400,16 @@ export default function Home() {
     const framePieces: PlacedPiece[] = [];
     const frameJointPoints: Array<{ x:number; y:number }> = [];
     const supportKinds = new Set(["pillar", "connector"]);
-    const systemTerrain = catalogueTerrain.filter((def) => def.catalogue === catalogue);
-    const frameWalls = systemTerrain.filter((def) => def.kind === "wall" && enabled[def.id] && limits[def.id] > 0);
-    const frameDoors = systemTerrain.filter((def) => def.kind === "door" && enabled[def.id] && limits[def.id] > 0);
-    const frameSupport = systemTerrain.find((def) => supportKinds.has(def.kind) && enabled[def.id] && limits[def.id] > 0);
+    const systemTerrain = TERRAIN.filter((def) => def.catalogue === catalogue && generationLimit(def.id) > 0);
+    const frameWalls = systemTerrain.filter((def) => def.kind === "wall" && generationEnabled(def.id));
+    const frameDoors = systemTerrain.filter((def) => def.kind === "door" && generationEnabled(def.id));
+    const frameSupport = systemTerrain.find((def) => supportKinds.has(def.kind) && generationEnabled(def.id));
     const moduleGap = catalogue === "ttcombat" ? frameSupport?.width || 0 : 0;
     const frameClearanceDepth = Math.max(...frameWalls.map((def) => def.depth), catalogue === "ttcombat" ? frameSupport?.depth || 0 : 0);
 
     const takeDefinition = (kind: "wall" | "door", maximumWidth: number, preferLongest = true) => {
       const source = kind === "wall" ? frameWalls : frameDoors;
-      const candidates = source.filter((def) => def.width <= maximumWidth + .01 && (counts[def.id] || 0) < limits[def.id]).sort((a, b) => preferLongest ? b.width - a.width : a.width - b.width);
+      const candidates = source.filter((def) => def.width <= maximumWidth + .01 && (counts[def.id] || 0) < generationLimit(def.id)).sort((a, b) => preferLongest ? b.width - a.width : a.width - b.width);
       const chosen = candidates[0];
       if (chosen) counts[chosen.id] = (counts[chosen.id] || 0) + 1;
       return chosen;
@@ -370,7 +420,7 @@ export default function Home() {
       const framedDoorOptions = frameDoors.flatMap((door) => frameWalls.flatMap((firstWall) => frameWalls.map((secondWall) => ({ door, firstWall, secondWall, total:firstWall.width + door.width + secondWall.width })))).filter((option) => {
         if (option.total > span + .01) return false;
         const required = [option.door, option.firstWall, option.secondWall].reduce<Record<string, number>>((acc, def) => ({ ...acc, [def.id]:(acc[def.id] || 0) + 1 }), {});
-        return Object.entries(required).every(([defId, quantity]) => (counts[defId] || 0) + quantity <= limits[defId]);
+        return Object.entries(required).every(([defId, quantity]) => (counts[defId] || 0) + quantity <= generationLimit(defId));
       }).sort((a, b) => b.total - a.total);
       const framedDoor = framedDoorOptions[0];
       if (framedDoor) {
@@ -464,7 +514,7 @@ export default function Home() {
         return structuralEndpointsFor(candidate).some((wallEndpoint) => Math.abs(wallEndpoint.x - endpoint.x) < .12 && Math.abs(wallEndpoint.y - endpoint.y) < .12);
       })));
       const groupCounts = group.reduce<Record<string, number>>((acc, piece) => ({ ...acc, [piece.defId]:(acc[piece.defId] || 0) + 1 }), {});
-      const inventoryAvailable = Object.entries(groupCounts).every(([defId, quantity]) => enabled[defId] && (counts[defId] || 0) + quantity <= limits[defId]);
+      const inventoryAvailable = Object.entries(groupCounts).every(([defId, quantity]) => generationEnabled(defId) && (counts[defId] || 0) + quantity <= generationLimit(defId));
       const existingStructures = result.filter((piece) => ["wall", "door"].includes(getDef(piece.defId).kind));
       const connectedExistingRuns = new Set(existingStructures.filter((existing) => group.some((piece) => piecesShareEndpoint(existing, piece))).map((piece) => piece.runId || piece.uid));
       const overlapsExisting = group.some((piece) => existingStructures.some((existing) => piecesOverlap(existing, piece, -.03) && !piecesShareEndpoint(existing, piece)));
@@ -489,9 +539,9 @@ export default function Home() {
     const endpointIsShared = (point: typeof endpointRecords[number], index: number) => endpointRecords.some((candidate, candidateIndex) => candidateIndex !== index && candidate.piece.uid !== point.piece.uid && Math.abs(candidate.x - point.x) < .2 && Math.abs(candidate.y - point.y) < .2);
     const cappedPoints: Array<{ x:number; y:number }> = [];
     if (catalogue === "boarding") {
-      const endDef = systemTerrain.find((def) => def.kind === "end" && enabled[def.id] && limits[def.id] > 0);
+      const endDef = systemTerrain.find((def) => def.kind === "end" && generationEnabled(def.id));
       endpointRecords.forEach((point, index) => {
-        if (!endDef || (counts[endDef.id] || 0) >= limits[endDef.id] || getDef(point.piece.defId).kind !== "wall" || endpointIsShared(point, index)) return;
+        if (!endDef || (counts[endDef.id] || 0) >= generationLimit(endDef.id) || getDef(point.piece.defId).kind !== "wall" || endpointIsShared(point, index)) return;
         const rotation: 0 | 90 = point.piece.rotation === 0 ? 90 : 0;
         const width = rotation === 0 ? endDef.width : endDef.depth;
         const height = rotation === 0 ? endDef.depth : endDef.width;
@@ -507,14 +557,14 @@ export default function Home() {
       });
     }
 
-    const supportDef = systemTerrain.find((def) => supportKinds.has(def.kind) && enabled[def.id] && limits[def.id] > 0);
+    const supportDef = systemTerrain.find((def) => supportKinds.has(def.kind) && generationEnabled(def.id));
     if (supportDef) {
       const doorPoints = endpointRecords.filter((point) => getDef(point.piece.defId).kind === "door");
       const uncappedPoints = endpointRecords.filter((point) => !cappedPoints.some((capped) => Math.abs(capped.x - point.x) < .2 && Math.abs(capped.y - point.y) < .2));
       const requiredPoints: Array<{ x:number; y:number }> = catalogue === "boarding" ? [...doorPoints, ...uncappedPoints] : [...frameJointPoints];
       const uniquePoints = requiredPoints.filter((point, index, points) => points.findIndex((candidate) => Math.abs(candidate.x - point.x) < .2 && Math.abs(candidate.y - point.y) < .2) === index);
       uniquePoints.forEach((point) => {
-        if ((counts[supportDef.id] || 0) >= limits[supportDef.id]) return;
+        if ((counts[supportDef.id] || 0) >= generationLimit(supportDef.id)) return;
         const support = { uid:nextUid(), defId:supportDef.id, x:clamp(point.x - supportDef.width / 2, 0, BOARD_IN - supportDef.width), y:clamp(point.y - supportDef.depth / 2, 0, BOARD_IN - supportDef.depth), rotation:0 as const, height:heightDefaults[supportDef.id] };
         if (pieceIntersectsReservedZone(support)) return;
         counts[supportDef.id] = (counts[supportDef.id] || 0) + 1;
@@ -524,7 +574,7 @@ export default function Home() {
 
     supportBase.forEach((piece) => {
       if (catalogue !== "ttcombat") return;
-      if ((counts[piece.defId] || 0) >= limits[piece.defId] || pieceIntersectsReservedZone(piece)) return;
+      if ((counts[piece.defId] || 0) >= generationLimit(piece.defId) || pieceIntersectsReservedZone(piece)) return;
       if (!endpointRecords.some((point) => pointTouchesPiece(point, piece))) return;
       if (result.some((existing) => supportKinds.has(getDef(existing.defId).kind) && Math.abs(existing.x - piece.x) < .25 && Math.abs(existing.y - piece.y) < .25)) return;
       counts[piece.defId] = (counts[piece.defId] || 0) + 1;
@@ -533,7 +583,7 @@ export default function Home() {
     if (catalogue === "ttcombat") {
       const validSupports = result.filter((piece) => supportKinds.has(getDef(piece.defId).kind));
       endBase.forEach((piece) => {
-        if ((counts[piece.defId] || 0) >= limits[piece.defId] || pieceIntersectsReservedZone(piece) || !validSupports.some((support) => piecesOverlap(support, piece, .03))) return;
+        if ((counts[piece.defId] || 0) >= generationLimit(piece.defId) || pieceIntersectsReservedZone(piece) || !validSupports.some((support) => piecesOverlap(support, piece, .03))) return;
         counts[piece.defId] = (counts[piece.defId] || 0) + 1;
         result.push(piece);
       });
@@ -562,17 +612,17 @@ export default function Home() {
     setMessage(`${selectedIds.length === 1 ? "Selected piece" : `${selectedIds.length} selected pieces`} height set to ${Math.round(nextHeight * MM_PER_IN)} mm`);
   };
 
-  const addPiece = useCallback((defId: string, x = 24, y = 24, rotation: 0 | 90 = 0) => {
+  const addPiece = useCallback((defId: string, x = boardWidth / 2, y = boardHeight / 2, rotation: 0 | 90 = 0) => {
     const def = getDef(defId);
     const current = pieces.filter((piece) => piece.defId === defId).length;
     if (!enabled[defId] || current >= limits[defId]) { setMessage("No more of that piece available"); return; }
     const w = rotation === 90 ? def.depth : def.width;
     const h = rotation === 90 ? def.width : def.depth;
-    const piece = { uid: nextUid(), defId, x: quantize(clamp(x - w / 2, 0, BOARD_IN - w)), y: quantize(clamp(y - h / 2, 0, BOARD_IN - h)), rotation, height:heightDefaults[defId] };
+    const piece = { uid: nextUid(), defId, x: quantize(clamp(x - w / 2, 0, boardWidth - w)), y: quantize(clamp(y - h / 2, 0, boardHeight - h)), rotation, height:heightDefaults[defId] };
     setPieces((currentPieces) => [...currentPieces, piece]);
     selectOnly(piece.uid);
     setMessage(`${def.shortName} placed`);
-  }, [enabled, heightDefaults, limits, pieces, quantize, selectOnly]);
+  }, [boardHeight, boardWidth, enabled, heightDefaults, limits, pieces, quantize, selectOnly]);
 
   const rotatePiece = useCallback((uid: string) => {
     setPieces((current) => current.map((piece) => {
@@ -581,16 +631,66 @@ export default function Home() {
       const rotation = piece.rotation === 0 ? 90 : 0;
       const w = rotation === 90 ? def.depth : def.width;
       const h = rotation === 90 ? def.width : def.depth;
-      return { ...piece, rotation, x: quantize(clamp(piece.x, 0, BOARD_IN - w)), y: quantize(clamp(piece.y, 0, BOARD_IN - h)) };
+      return { ...piece, rotation, x: quantize(clamp(piece.x, 0, boardWidth - w)), y: quantize(clamp(piece.y, 0, boardHeight - h)) };
     }));
     setMessage("Piece rotated 90°");
-  }, [quantize, setMessage]);
+  }, [boardHeight, boardWidth, quantize, setMessage]);
 
   const rotateSelected = useCallback(() => {
     if (!selectedIds.length) return;
-    selectedIds.forEach((uid) => rotatePiece(uid));
-    setMessage(`${selectedIds.length === 1 ? "Piece" : `${selectedIds.length} pieces`} rotated 90°`);
-  }, [rotatePiece, selectedIds, setMessage]);
+    if (selectedIds.length === 1) {
+      rotatePiece(selectedIds[0]);
+      return;
+    }
+
+    const selectedSet = new Set(selectedIds);
+    setPieces((current) => {
+      const selection = current.filter((piece) => selectedSet.has(piece.uid));
+      if (selection.length < 2) return current;
+
+      const rects = selection.map((piece) => {
+        const def = getDef(piece.defId);
+        const width = piece.rotation === 90 ? def.depth : def.width;
+        const height = piece.rotation === 90 ? def.width : def.depth;
+        return { piece, width, height };
+      });
+      const minX = Math.min(...rects.map(({ piece }) => piece.x));
+      const minY = Math.min(...rects.map(({ piece }) => piece.y));
+      const maxX = Math.max(...rects.map(({ piece, width }) => piece.x + width));
+      const maxY = Math.max(...rects.map(({ piece, height }) => piece.y + height));
+      const centreX = (minX + maxX) / 2;
+      const centreY = (minY + maxY) / 2;
+
+      const rotated = rects.map(({ piece, width, height }) => {
+        const pieceCentreX = piece.x + width / 2;
+        const pieceCentreY = piece.y + height / 2;
+        const rotation: 0 | 90 = piece.rotation === 0 ? 90 : 0;
+        const nextWidth = height;
+        const nextHeight = width;
+        const nextCentreX = centreX - (pieceCentreY - centreY);
+        const nextCentreY = centreY + (pieceCentreX - centreX);
+        return {
+          piece:{ ...piece, rotation, x:nextCentreX - nextWidth / 2, y:nextCentreY - nextHeight / 2 },
+          width:nextWidth,
+          height:nextHeight,
+        };
+      });
+
+      const rotatedMinX = Math.min(...rotated.map(({ piece }) => piece.x));
+      const rotatedMinY = Math.min(...rotated.map(({ piece }) => piece.y));
+      const rotatedMaxX = Math.max(...rotated.map(({ piece, width }) => piece.x + width));
+      const rotatedMaxY = Math.max(...rotated.map(({ piece, height }) => piece.y + height));
+      const shiftX = rotatedMinX < 0 ? -rotatedMinX : rotatedMaxX > boardWidth ? boardWidth - rotatedMaxX : 0;
+      const shiftY = rotatedMinY < 0 ? -rotatedMinY : rotatedMaxY > boardHeight ? boardHeight - rotatedMaxY : 0;
+      const rotatedById = new Map(rotated.map(({ piece }) => [
+        piece.uid,
+        { ...piece, x:Math.round((piece.x + shiftX) * 1000) / 1000, y:Math.round((piece.y + shiftY) * 1000) / 1000 },
+      ]));
+
+      return current.map((piece) => rotatedById.get(piece.uid) || piece);
+    });
+    setMessage(`${selectedIds.length} pieces rotated as a group 90°`);
+  }, [boardHeight, boardWidth, rotatePiece, selectedIds, setMessage]);
 
   const deleteSelected = useCallback(() => {
     if (!selectedIds.length) return;
@@ -610,14 +710,14 @@ export default function Home() {
     const minY = Math.min(...sources.map((piece) => piece.y));
     const maxX = Math.max(...sources.map((piece) => { const rect = pieceRect(piece); return rect.x + rect.width; }));
     const maxY = Math.max(...sources.map((piece) => { const rect = pieceRect(piece); return rect.y + rect.height; }));
-    const deltaX = clamp(offset, -minX, BOARD_IN - maxX);
-    const deltaY = clamp(offset, -minY, BOARD_IN - maxY);
+    const deltaX = clamp(offset, -minX, boardWidth - maxX);
+    const deltaY = clamp(offset, -minY, boardHeight - maxY);
     const duplicates = sources.map((source) => ({ ...source, uid:nextUid(), x:quantize(source.x + deltaX), y:quantize(source.y + deltaY), runId:undefined, sequenceIndex:undefined }));
     setPieces((current) => [...current, ...duplicates]);
     setSelectedIds(duplicates.map((piece) => piece.uid));
     setSelected(duplicates[0].uid);
     setMessage(`${duplicates.length} piece${duplicates.length === 1 ? "" : "s"} duplicated`);
-  }, [gridSize, limits, pieces, quantize, selectedIds, snap]);
+  }, [boardHeight, boardWidth, gridSize, limits, pieces, quantize, selectedIds, snap]);
 
   const copySelected = useCallback(() => {
     const sources = pieces.filter((piece) => selectedIds.includes(piece.uid));
@@ -636,15 +736,15 @@ export default function Home() {
     const minY = Math.min(...copyBuffer.pieces.map((piece) => piece.y));
     const maxX = Math.max(...copyBuffer.pieces.map((piece) => { const rect = pieceRect(piece); return rect.x + rect.width; }));
     const maxY = Math.max(...copyBuffer.pieces.map((piece) => { const rect = pieceRect(piece); return rect.y + rect.height; }));
-    const deltaX = clamp(step, -minX, BOARD_IN - maxX);
-    const deltaY = clamp(step, -minY, BOARD_IN - maxY);
+    const deltaX = clamp(step, -minX, boardWidth - maxX);
+    const deltaY = clamp(step, -minY, boardHeight - maxY);
     const pasted = copyBuffer.pieces.map((source) => ({ ...source, uid:nextUid(), x:quantize(source.x + deltaX), y:quantize(source.y + deltaY), runId:undefined, sequenceIndex:undefined }));
     setPieces((current) => [...current, ...pasted]);
     setCopyBuffer((current) => current ? { ...current, pasteCount:current.pasteCount + 1 } : current);
     setSelectedIds(pasted.map((piece) => piece.uid));
     setSelected(pasted[0].uid);
     setMessage(`${pasted.length} piece${pasted.length === 1 ? "" : "s"} pasted`);
-  }, [copyBuffer, gridSize, limits, pieces, quantize, snap]);
+  }, [boardHeight, boardWidth, copyBuffer, gridSize, limits, pieces, quantize, snap]);
 
   const moveSelected = useCallback((deltaX: number, deltaY: number) => {
     if (!selectedIds.length) return;
@@ -655,14 +755,14 @@ export default function Home() {
     const maxY = Math.max(...sources.map((piece) => { const rect = pieceRect(piece); return rect.y + rect.height; }));
     const requestedX = deltaX * gridSize;
     const requestedY = deltaY * gridSize;
-    const allowedX = clamp(requestedX, -minX, BOARD_IN - maxX);
-    const allowedY = clamp(requestedY, -minY, BOARD_IN - maxY);
+    const allowedX = clamp(requestedX, -minX, boardWidth - maxX);
+    const allowedY = clamp(requestedY, -minY, boardHeight - maxY);
     setPieces((current) => current.map((piece) => {
       if (!selectedIds.includes(piece.uid)) return piece;
       return { ...piece, x:Math.round((piece.x + allowedX) * 100) / 100, y:Math.round((piece.y + allowedY) * 100) / 100 };
     }));
     setMessage(`${selectedIds.length === 1 ? "Piece" : `${selectedIds.length} pieces`} moved ${gridSize}″`);
-  }, [gridSize, pieces, selectedIds]);
+  }, [boardHeight, boardWidth, gridSize, pieces, selectedIds]);
 
   const clearTerrain = useCallback(() => {
     setPieces([]);
@@ -687,10 +787,10 @@ export default function Home() {
   }, [copySelected, deleteSelected, duplicateSelected, moveSelected, pasteCopied, rotateSelected, selectOnly, selectedIds]);
 
   const chooseDefinition = (slot: GeneratorSlot, pool: Record<string, number>, catalogue: CatalogueId) => {
-    const hasEnabledDoors = TERRAIN.some((def) => def.catalogue === catalogue && def.kind === "door" && enabled[def.id] && limits[def.id] > 0);
+    const hasEnabledDoors = TERRAIN.some((def) => def.catalogue === catalogue && def.kind === "door" && generationEnabled(def.id) && generationLimit(def.id) > 0);
     const candidates = TERRAIN.filter((def) => {
       if (def.catalogue !== catalogue) return false;
-      if (!enabled[def.id] || (pool[def.id] || 0) >= limits[def.id]) return false;
+      if (!generationEnabled(def.id) || (pool[def.id] || 0) >= generationLimit(def.id)) return false;
       if (slot.door && hasEnabledDoors && def.kind !== "door") return false;
       if (slot.door && !hasEnabledDoors && def.kind !== "wall") return false;
       if (!slot.door && def.kind !== "wall") return false;
@@ -708,11 +808,11 @@ export default function Home() {
     const directions: Direction[] = ["right", "down", "left", "up"];
     const opposite: Record<Direction, Direction> = { right:"left", left:"right", up:"down", down:"up" };
     const shuffle = <T,>(values: T[]) => [...values].sort(() => Math.random() - .5);
-    const ironTerrain = catalogueTerrain.filter((def) => def.catalogue === "ttcombat");
-    const structuralPool = ironTerrain.filter((def) => ["wall", "door"].includes(def.kind) && enabled[def.id] && limits[def.id] > 0).flatMap((def) => Array.from({ length:limits[def.id] }, () => def));
-    const accessoryPool = ironTerrain.filter((def) => ["floor", "stair"].includes(def.kind) && enabled[def.id] && limits[def.id] > 0).flatMap((def) => Array.from({ length:limits[def.id] }, () => def));
-    const connectorDef = ironTerrain.find((def) => def.kind === "connector" && enabled[def.id] && limits[def.id] > 0);
-    const endDef = ironTerrain.find((def) => def.kind === "end" && enabled[def.id] && limits[def.id] > 0);
+    const ironTerrain = TERRAIN.filter((def) => def.catalogue === "ttcombat" && generationLimit(def.id) > 0);
+    const structuralPool = ironTerrain.filter((def) => ["wall", "door"].includes(def.kind) && generationEnabled(def.id)).flatMap((def) => Array.from({ length:generationLimit(def.id) }, () => def));
+    const accessoryPool = ironTerrain.filter((def) => ["floor", "stair"].includes(def.kind) && generationEnabled(def.id)).flatMap((def) => Array.from({ length:generationLimit(def.id) }, () => def));
+    const connectorDef = ironTerrain.find((def) => def.kind === "connector" && generationEnabled(def.id));
+    const endDef = ironTerrain.find((def) => def.kind === "end" && generationEnabled(def.id));
     const clearance = (first: PlacedPiece, second: PlacedPiece) => {
       const a = pieceRect(first);
       const b = pieceRect(second);
@@ -756,7 +856,7 @@ export default function Home() {
       if (!connectorDef || !structuralPool.length) return placeStandaloneSet(attempt);
       const generated: PlacedPiece[] = [];
       const nodes: NetworkNode[] = [];
-      const connectorLimit = limits[connectorDef.id];
+      const connectorLimit = generationLimit(connectorDef.id);
       const connectorWidth = connectorDef.width;
       const connectorDepth = connectorDef.depth;
       const connectorSlack = connectorLimit - structuralPool.length;
@@ -823,8 +923,8 @@ export default function Home() {
         }
       });
 
-      if (endDef && enabled[endDef.id]) {
-        nodes.filter((node) => node.links.length === 1).slice(0, limits[endDef.id]).forEach((node, index) => {
+      if (endDef && generationEnabled(endDef.id)) {
+        nodes.filter((node) => node.links.length === 1).slice(0, generationLimit(endDef.id)).forEach((node, index) => {
           const direction = opposite[node.links[0]];
           const horizontal = direction === "left" || direction === "right";
           const rotation: 0 | 90 = horizontal ? 0 : 90;
@@ -855,6 +955,100 @@ export default function Home() {
     const chosen = shortlist[Math.floor(Math.random() * shortlist.length)] || { generated:[], score:0 };
     const finalized = chosen.generated.map((piece) => ({ ...piece, uid:nextUid() }));
     return finalized;
+  };
+
+  const generateBoardingNetwork = () => {
+    type Direction = "right" | "down" | "left" | "up";
+    const runCount = generationPercent >= 50 ? 12 : generationPercent >= 30 ? 9 : 6;
+    const attempts = Array.from({ length:48 }, (_, attempt) => {
+      const pool: Record<string, number> = {};
+      const generated: PlacedPiece[] = [];
+      const chooseNetworkDefinition = (token: RunToken) => {
+        const wantsDoor = token.startsWith("door");
+        const wantsLong = token.endsWith("long");
+        const candidates = TERRAIN.filter((def) => def.catalogue === "boarding" && generationEnabled(def.id) && (pool[def.id] || 0) < generationLimit(def.id) && (wantsDoor ? def.kind === "door" : def.kind === "wall") && (wantsLong ? def.width > 5 : def.width <= 5));
+        candidates.sort((a, b) => ((pool[a.id] || 0) / Math.max(1, generationLimit(a.id))) - ((pool[b.id] || 0) / Math.max(1, generationLimit(b.id))) || Math.random() - .5);
+        const chosen = candidates[0];
+        if (chosen) pool[chosen.id] = (pool[chosen.id] || 0) + 1;
+        return chosen;
+      };
+      const placeRun = (start: {x:number;y:number}, direction: Direction, runIndex: number) => {
+        const horizontal = direction === "right" || direction === "left";
+        const tokens: RunToken[] = runIndex % 2 === 0
+          ? ["wall-long", (attempt + runIndex) % 3 === 0 ? "door-short" : "door-long", "wall-short"]
+          : ["wall-long"];
+        const defs: TerrainDef[] = [];
+        for (const token of tokens) {
+          const def = chooseNetworkDefinition(token);
+          if (!def) return start;
+          defs.push(def);
+        }
+        let cursor = { ...start };
+        const piecesForRun = defs.map((def, sequenceIndex) => {
+          const rotation: 0 | 90 = horizontal ? 0 : 90;
+          const x = direction === "right" ? cursor.x : direction === "left" ? cursor.x - def.width : cursor.x - def.depth / 2;
+          const y = direction === "down" ? cursor.y : direction === "up" ? cursor.y - def.width : cursor.y - def.depth / 2;
+          cursor = direction === "right" ? {x:cursor.x + def.width,y:cursor.y} : direction === "left" ? {x:cursor.x - def.width,y:cursor.y} : direction === "down" ? {x:cursor.x,y:cursor.y + def.width} : {x:cursor.x,y:cursor.y - def.width};
+          return { uid:`network-${attempt}-${runIndex}-${sequenceIndex}`, defId:def.id, x, y, rotation, height:heightDefaults[def.id], runId:`network-run-${attempt}-${runIndex}`, sequenceIndex };
+        });
+        const invalid = piecesForRun.some((piece) => { const rect = pieceRect(piece); return rect.x < 0 || rect.y < 0 || rect.x + rect.width > BOARD_IN || rect.y + rect.height > BOARD_IN || pieceIntersectsReservedZone(piece); });
+        if (invalid) return start;
+        generated.push(...piecesForRun);
+        return cursor;
+      };
+      type PathPlan = { start:{x:number;y:number}; directions:Direction[] };
+      const offset = ((attempt % 5) - 2) * .35;
+      const motifSets: PathPlan[][] = [
+        [
+          { start:{x:0,y:7.5 + offset}, directions:["right","down"] },
+          { start:{x:BOARD_IN,y:8.5 - offset}, directions:["left","down","right"] },
+          { start:{x:17,y:37 + offset}, directions:["right"] },
+          { start:{x:0,y:33.5 - offset}, directions:["right","down","left"] },
+          { start:{x:24 + offset,y:20}, directions:["down"] },
+          { start:{x:27,y:28 + offset}, directions:["right"] },
+          { start:{x:8,y:45 - offset}, directions:["right"] },
+        ],
+        [
+          { start:{x:7.5 + offset,y:0}, directions:["down","right","up"] },
+          { start:{x:BOARD_IN,y:28 + offset}, directions:["left","down"] },
+          { start:{x:15,y:35 - offset}, directions:["right"] },
+          { start:{x:0,y:33 + offset}, directions:["right","down"] },
+          { start:{x:24 - offset,y:0}, directions:["down"] },
+          { start:{x:30,y:22 + offset}, directions:["right"] },
+          { start:{x:4,y:20 - offset}, directions:["right"] },
+          { start:{x:30,y:44}, directions:["right"] },
+        ],
+        [
+          { start:{x:0,y:14 + offset}, directions:["right","down","left"] },
+          { start:{x:31 - offset,y:0}, directions:["down","right"] },
+          { start:{x:20 + offset,y:31}, directions:["down"] },
+          { start:{x:10,y:BOARD_IN}, directions:["up","right","down"] },
+          { start:{x:18,y:24 + offset}, directions:["right"] },
+          { start:{x:4,y:39 - offset}, directions:["right"] },
+          { start:{x:35 + offset,y:17}, directions:["down"] },
+        ],
+      ];
+      let runIndex = 0;
+      for (const path of motifSets[attempt % motifSets.length]) {
+        let cursor = path.start;
+        for (const direction of path.directions) {
+          if (runIndex >= runCount) break;
+          cursor = placeRun(cursor, direction, runIndex++);
+        }
+      }
+      const quarterTurns = Math.floor(attempt / motifSets.length) % 4;
+      const transformed = generated.map((piece) => {
+        let next = { ...piece };
+        for (let turn = 0; turn < quarterTurns; turn++) {
+          const def = getDef(next.defId);
+          const height = next.rotation === 90 ? def.width : def.depth;
+          next = { ...next, x:BOARD_IN - next.y - height, y:next.x, rotation:next.rotation === 0 ? 90 : 0 };
+        }
+        return next;
+      });
+      return { generated:transformed, score:transformed.length * 20 + Math.random() * 3 };
+    }).sort((a, b) => b.score - a.score)[0];
+    return finalizeGeneratedLayout(attempts.generated.map((piece) => ({ ...piece, uid:nextUid() })), "boarding");
   };
 
   const generateBoardingLayout = () => {
@@ -893,7 +1087,6 @@ export default function Home() {
           cursorX = targetPiece.x - runDefs[0].depth / 2;
           cursorY = targetPiece.y + targetDef.depth / 2 - totalLength;
         }
-
         const runPieces: PlacedPiece[] = [];
         runDefs.forEach((def, sequenceIndex) => {
           let x = cursorX;
@@ -928,6 +1121,11 @@ export default function Home() {
     const finalPieces = candidates.generated.map((piece) => ({ ...piece, uid:nextUid() }));
     return finalizeGeneratedLayout(finalPieces, "boarding");
   };
+
+  // Superseded generators remain temporarily available for migration comparisons only.
+  void generateIronLabyrinth;
+  void generateBoardingNetwork;
+  void generateBoardingLayout;
 
   const mergeGeneratedSystems = (layouts: PlacedPiece[][]) => {
     const orderedLayouts = layouts.filter((layout) => layout.length).sort((a, b) => b.length - a.length);
@@ -964,7 +1162,7 @@ export default function Home() {
     const transform = (component: PlacedPiece[], dx: number, dy: number) => component.map((piece) => ({ ...piece, x:piece.x + dx, y:piece.y + dy }));
     const candidateFits = (component: PlacedPiece[]) => component.every((piece) => {
       const rect = pieceRect(piece);
-      if (rect.x < 0 || rect.y < 0 || rect.x + rect.width > BOARD_IN || rect.y + rect.height > BOARD_IN || pieceIntersectsReservedZone(piece)) return false;
+      if (rect.x < 0 || rect.y < 0 || rect.x + rect.width > boardWidth || rect.y + rect.height > boardHeight || pieceIntersectsReservedZone(piece)) return false;
       return accepted.every((fixed) => {
         if (piecesOverlap(piece, fixed, -.04)) return false;
         if (rectClearance(piece, fixed) >= .45) return true;
@@ -990,18 +1188,83 @@ export default function Home() {
     return accepted.map((piece) => ({ ...piece, uid:nextUid() }));
   };
 
-  const generateLayout = () => {
+  const generateSpatialSystem = (catalogue: CatalogueId) => {
+    const override = generationInventoryRef.current;
+    const inventory = Object.fromEntries(TERRAIN.map((def) => [def.id, override ? override[def.id] || 0 : limits[def.id] || 0]));
+    const baseSeed = (Date.now() + uidRef.current * 2654435761 + boardWidth * 101 + boardHeight * 211 + (catalogue === "boarding" ? 17 : 53)) >>> 0;
+    const attempts = Array.from({ length:24 }, (_, attempt) => {
+      const generated = generateSpatialLayout({
+        boardWidth,
+        boardHeight,
+        catalogue,
+        definitions:TERRAIN,
+        inventory,
+        heights:heightDefaults,
+        zones,
+        usage:override ? 1 : generationPercent / 100,
+        seed:(baseSeed + attempt * 2246822519) >>> 0,
+        nextUid,
+      });
+      const structures = generated.filter((piece) => ["wall", "door"].includes(getDef(piece.defId).kind));
+      if (!structures.length) return { generated, score:-Infinity };
+      const rects = structures.map(pieceRect);
+      const bounds = rects.reduce<{ minX:number;minY:number;maxX:number;maxY:number }>((acc, rect) => ({ minX:Math.min(acc.minX, rect.x), minY:Math.min(acc.minY, rect.y), maxX:Math.max(acc.maxX, rect.x + rect.width), maxY:Math.max(acc.maxY, rect.y + rect.height) }), { minX:boardWidth, minY:boardHeight, maxX:0, maxY:0 });
+      const span = ((bounds.maxX - bounds.minX) / boardWidth + (bounds.maxY - bounds.minY) / boardHeight) / 2;
+      const quadrants = new Set(structures.map((piece) => { const centre = pieceCentre(piece); return `${centre.x < boardWidth / 2 ? 0 : 1}-${centre.y < boardHeight / 2 ? 0 : 1}`; })).size;
+      const endpoints = (piece: PlacedPiece) => structuralEndpoints(piece);
+      const junctions = structures.reduce((count, piece, index) => count + structures.slice(index + 1).filter((other) => piece.rotation !== other.rotation && endpoints(piece).some((point) => endpoints(other).some((candidate) => Math.hypot(point.x - candidate.x, point.y - candidate.y) < .18))).length, 0);
+      const doorsUsed = structures.filter((piece) => getDef(piece.defId).kind === "door").length;
+      const score = structures.length * 50 + span * 45 + quadrants * 12 + junctions * 22 + doorsUsed * 10;
+      return { generated, score };
+    });
+    attempts.sort((first, second) => second.score - first.score);
+    return attempts[0].generated;
+  };
+
+  const generateFromPalette = () => {
     if (!catalogueTotal) { setMessage("Add terrain to the current palette before generating"); return; }
     if (!catalogueTerrain.some((def) => ["wall", "door", "floor", "stair"].includes(def.kind))) { setMessage("Add at least one wall, door, floor, or stair piece before generating"); return; }
     const layouts: PlacedPiece[][] = [];
-    if (paletteCatalogues.includes("boarding")) layouts.push(generateBoardingLayout());
-    if (paletteCatalogues.includes("ttcombat")) layouts.push(generateIronLabyrinth());
-    const finalized = mergeGeneratedSystems(layouts);
+    if (paletteCatalogues.includes("boarding")) layouts.push(generateSpatialSystem("boarding"));
+    if (paletteCatalogues.includes("ttcombat")) layouts.push(generateSpatialSystem("ttcombat"));
+    const finalized = layouts.length === 1 ? layouts[0] : mergeGeneratedSystems(layouts);
     if (!finalized.length) { setMessage("That palette cannot form a supported layout · add compatible walls or connectors"); return; }
     setPieces(finalized);
     selectOnly(null);
     const joined = paletteCatalogues.length > 1 ? " · compatible cross-kit wall joins enabled" : "";
     setMessage(`${paletteLabel} generated · ${finalized.length} pieces${zones.length ? ` · ${zones.length} zone${zones.length === 1 ? "" : "s"} respected` : ""}${joined}`);
+  };
+
+  const generateLayout = () => {
+    if (!pieces.length) { setMessage("Place terrain on the board before generating a new layout"); return; }
+    const inventory = pieces.reduce<Record<string, number>>((counts, piece) => ({ ...counts, [piece.defId]:(counts[piece.defId] || 0) + 1 }), {});
+    const sourceHeights = pieces.reduce<Record<string, number[]>>((heights, piece) => ({ ...heights, [piece.defId]:[...(heights[piece.defId] || []), piece.height] }), {});
+    const catalogues = [...new Set(pieces.map((piece) => getDef(piece.defId).catalogue))];
+    generationInventoryRef.current = inventory;
+    try {
+      const layouts: PlacedPiece[][] = [];
+      if (catalogues.includes("boarding")) layouts.push(generateSpatialSystem("boarding"));
+      if (catalogues.includes("ttcombat")) layouts.push(generateSpatialSystem("ttcombat"));
+      const generated = layouts.length === 1 ? layouts[0] : mergeGeneratedSystems(layouts);
+      const generatedCounts = generated.reduce<Record<string, number>>((counts, piece) => ({ ...counts, [piece.defId]:(counts[piece.defId] || 0) + 1 }), {});
+      const usedEverything = Object.entries(inventory).every(([defId, quantity]) => generatedCounts[defId] === quantity) && generated.length === pieces.length;
+      const heightQueues = Object.fromEntries(Object.entries(sourceHeights).map(([defId, heights]) => [defId, [...heights]]));
+      const remixSource = (flipX: boolean, flipY: boolean) => pieces.map((source) => {
+        const rect = pieceRect(source);
+        return { ...source, uid:nextUid(), x:flipX ? boardWidth - source.x - rect.width : source.x, y:flipY ? boardHeight - source.y - rect.height : source.y };
+      });
+      const variants = [{ flipX:true, flipY:false }, { flipX:false, flipY:true }, { flipX:true, flipY:true }];
+      const losslessRemix = variants.map(({ flipX, flipY }) => remixSource(flipX, flipY)).find((candidate) => candidate.every((piece) => !pieceIntersectsReservedZone(piece)));
+      const finalized = usedEverything
+        ? generated.map((piece) => ({ ...piece, height:heightQueues[piece.defId].shift() ?? piece.height }))
+        : losslessRemix;
+      if (!finalized) { setMessage("The placed layout cannot be remixed without entering a reserved zone"); return; }
+      setPieces(finalized);
+      selectOnly(null);
+      setMessage(`Layout regenerated from all ${finalized.length} placed pieces`);
+    } finally {
+      generationInventoryRef.current = null;
+    }
   };
 
   const exportLayoutPng = () => {
@@ -1015,8 +1278,10 @@ export default function Home() {
 
     const boardX = 70;
     const boardY = 160;
-    const boardSize = 1080;
-    const boardScale = boardSize / BOARD_IN;
+    const boardScale = Math.min(1080 / boardWidth, 1080 / boardHeight);
+    const boardPixelWidth = boardWidth * boardScale;
+    const boardPixelHeight = boardHeight * boardScale;
+    const exportPanelHeight = 1080;
     const manifestX = 1200;
     const manifestWidth = 530;
     const themeColours = {
@@ -1044,7 +1309,7 @@ export default function Home() {
     ctx.fillText("HORUS HERESY LAYOUT SHEET", 72, 102);
     ctx.textAlign = "right";
     ctx.font = "700 17px Arial, sans-serif";
-    ctx.fillText("BOARD 48 × 48 IN  ·  SCALE 1:1 DATA", 1730, 76);
+    ctx.fillText(`BOARD ${boardWidth} × ${boardHeight} IN  ·  SCALE 1:1 DATA`, 1730, 76);
     ctx.font = "15px Arial, sans-serif";
     const exportSource = cataloguesUsed.length === 1
       ? `${MANUFACTURERS[cataloguesUsed[0]].name} · ${MANUFACTURERS[cataloguesUsed[0]].range}`
@@ -1053,29 +1318,33 @@ export default function Home() {
     ctx.textAlign = "left";
 
     ctx.fillStyle = themeColours.board;
-    ctx.fillRect(boardX, boardY, boardSize, boardSize);
-    for (let inch = 0; inch <= BOARD_IN; inch++) {
+    ctx.fillRect(boardX, boardY, boardPixelWidth, boardPixelHeight);
+    for (let inch = 0; inch <= boardWidth; inch++) {
       const position = boardX + inch * boardScale;
       ctx.beginPath();
       ctx.strokeStyle = inch % 12 === 0 ? themeColours.major : themeColours.minor;
       ctx.lineWidth = inch % 12 === 0 ? 3 : 1;
       ctx.moveTo(position, boardY);
-      ctx.lineTo(position, boardY + boardSize);
+      ctx.lineTo(position, boardY + boardPixelHeight);
       ctx.stroke();
+    }
+    for (let inch = 0; inch <= boardHeight; inch++) {
       ctx.beginPath();
+      ctx.strokeStyle = inch % 12 === 0 ? themeColours.major : themeColours.minor;
+      ctx.lineWidth = inch % 12 === 0 ? 3 : 1;
       ctx.moveTo(boardX, boardY + inch * boardScale);
-      ctx.lineTo(boardX + boardSize, boardY + inch * boardScale);
+      ctx.lineTo(boardX + boardPixelWidth, boardY + inch * boardScale);
       ctx.stroke();
     }
     ctx.strokeStyle = "#17201e";
     ctx.lineWidth = 5;
-    ctx.strokeRect(boardX, boardY, boardSize, boardSize);
+    ctx.strokeRect(boardX, boardY, boardPixelWidth, boardPixelHeight);
     ctx.fillStyle = "#5f6965";
     ctx.font = "13px Arial, sans-serif";
     ctx.textAlign = "center";
-    [0, 12, 24, 36, 48].forEach((inch) => ctx.fillText(`${inch}${inch === 48 ? "″" : ""}`, boardX + inch * boardScale, boardY - 17));
+    Array.from({ length:boardWidth / 12 + 1 }, (_, index) => index * 12).forEach((inch) => ctx.fillText(`${inch}${inch === boardWidth ? "″" : ""}`, boardX + inch * boardScale, boardY - 17));
     ctx.textAlign = "right";
-    [0, 12, 24, 36, 48].forEach((inch) => ctx.fillText(`${inch}${inch === 48 ? "″" : ""}`, boardX - 17, boardY + inch * boardScale + 5));
+    Array.from({ length:boardHeight / 12 + 1 }, (_, index) => index * 12).forEach((inch) => ctx.fillText(`${inch}${inch === boardHeight ? "″" : ""}`, boardX - 17, boardY + inch * boardScale + 5));
     ctx.textAlign = "left";
 
     zones.forEach((zone) => {
@@ -1137,10 +1406,10 @@ export default function Home() {
     });
 
     ctx.fillStyle = "#fafbf9";
-    ctx.fillRect(manifestX, boardY, manifestWidth, boardSize);
+    ctx.fillRect(manifestX, boardY, manifestWidth, exportPanelHeight);
     ctx.strokeStyle = "#d0d6d2";
     ctx.lineWidth = 2;
-    ctx.strokeRect(manifestX, boardY, manifestWidth, boardSize);
+    ctx.strokeRect(manifestX, boardY, manifestWidth, exportPanelHeight);
     ctx.fillStyle = "#17201e";
     ctx.font = "700 25px Arial, sans-serif";
     ctx.fillText("PIECES USED", manifestX + 30, boardY + 48);
@@ -1178,7 +1447,7 @@ export default function Home() {
     });
     ctx.fillStyle = "#68736e";
     ctx.font = "13px Arial, sans-serif";
-    ctx.fillText("Bird's-eye placement diagram · dimensions shown at real-world scale", manifestX + 30, boardY + boardSize - 35);
+    ctx.fillText("Bird's-eye placement diagram · dimensions shown at real-world scale", manifestX + 30, boardY + exportPanelHeight - 35);
     ctx.fillText("Generated with Mortalis Architect", 70, 1286);
     ctx.textAlign = "right";
     ctx.fillText(new Date().toLocaleDateString(undefined, { year:"numeric", month:"short", day:"numeric" }), 1730, 1286);
@@ -1198,10 +1467,10 @@ export default function Home() {
     }, "image/png");
   };
 
-  const boardPoint = (clientX: number, clientY: number) => {
+  const boardPoint = useCallback((clientX: number, clientY: number) => {
     const rect = boardRef.current!.getBoundingClientRect();
-    return { x: (clientX - rect.left) / rect.width * BOARD_IN, y: (clientY - rect.top) / rect.height * BOARD_IN };
-  };
+    return { x: (clientX - rect.left) / rect.width * boardWidth, y: (clientY - rect.top) / rect.height * boardHeight };
+  }, [boardHeight, boardWidth]);
 
   const beginZone = (event: React.PointerEvent<HTMLDivElement>) => {
     if (!zoneMode || !boardRef.current) {
@@ -1220,8 +1489,8 @@ export default function Home() {
     event.preventDefault();
     try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* Pointer capture may be unavailable in embedded browsers. */ }
     const point = boardPoint(event.clientX, event.clientY);
-    const x = clamp(quantize(point.x), 0, BOARD_IN);
-    const y = clamp(quantize(point.y), 0, BOARD_IN);
+    const x = clamp(quantize(point.x), 0, boardWidth);
+    const y = clamp(quantize(point.y), 0, boardHeight);
     selectOnly(null);
     setDrag(null);
     setZoneDraft({ startX:x, startY:y, currentX:x, currentY:y });
@@ -1326,7 +1595,7 @@ export default function Home() {
       window.removeEventListener("pointerup", onPaletteUp);
       window.removeEventListener("pointercancel", onPaletteUp);
     };
-  }, [addPiece]);
+  }, [addPiece, boardPoint]);
 
   const onBoardPointerMove = (event: React.PointerEvent) => {
     if (zoneResize && boardRef.current) {
@@ -1334,14 +1603,14 @@ export default function Home() {
       const minimumSize = snap ? gridSize : .5;
       const directionX = zoneResize.corner.endsWith("w") ? -1 : 1;
       const directionY = zoneResize.corner.startsWith("n") ? -1 : 1;
-      let currentX = clamp(quantize(point.x), 0, BOARD_IN);
-      let currentY = clamp(quantize(point.y), 0, BOARD_IN);
+      let currentX = clamp(quantize(point.x), 0, boardWidth);
+      let currentY = clamp(quantize(point.y), 0, boardHeight);
       currentX = directionX > 0 ? Math.max(currentX, zoneResize.anchorX + minimumSize) : Math.min(currentX, zoneResize.anchorX - minimumSize);
       currentY = directionY > 0 ? Math.max(currentY, zoneResize.anchorY + minimumSize) : Math.min(currentY, zoneResize.anchorY - minimumSize);
-      currentX = clamp(currentX, 0, BOARD_IN);
-      currentY = clamp(currentY, 0, BOARD_IN);
+      currentX = clamp(currentX, 0, boardWidth);
+      currentY = clamp(currentY, 0, boardHeight);
       if (event.shiftKey) {
-        const maximumSide = Math.min(directionX > 0 ? BOARD_IN - zoneResize.anchorX : zoneResize.anchorX, directionY > 0 ? BOARD_IN - zoneResize.anchorY : zoneResize.anchorY);
+        const maximumSide = Math.min(directionX > 0 ? boardWidth - zoneResize.anchorX : zoneResize.anchorX, directionY > 0 ? boardHeight - zoneResize.anchorY : zoneResize.anchorY);
         const side = clamp(Math.max(Math.abs(currentX - zoneResize.anchorX), Math.abs(currentY - zoneResize.anchorY)), minimumSize, maximumSide);
         currentX = zoneResize.anchorX + directionX * side;
         currentY = zoneResize.anchorY + directionY * side;
@@ -1355,21 +1624,21 @@ export default function Home() {
     }
     if (zoneDraft && boardRef.current) {
       const point = boardPoint(event.clientX, event.clientY);
-      let currentX = clamp(quantize(point.x), 0, BOARD_IN);
-      let currentY = clamp(quantize(point.y), 0, BOARD_IN);
+      let currentX = clamp(quantize(point.x), 0, boardWidth);
+      let currentY = clamp(quantize(point.y), 0, boardHeight);
       if (event.shiftKey) {
         const dx = currentX - zoneDraft.startX;
         const dy = currentY - zoneDraft.startY;
         const side = Math.max(Math.abs(dx), Math.abs(dy));
-        currentX = clamp(zoneDraft.startX + (dx < 0 ? -side : side), 0, BOARD_IN);
-        currentY = clamp(zoneDraft.startY + (dy < 0 ? -side : side), 0, BOARD_IN);
+        currentX = clamp(zoneDraft.startX + (dx < 0 ? -side : side), 0, boardWidth);
+        currentY = clamp(zoneDraft.startY + (dy < 0 ? -side : side), 0, boardHeight);
       }
       setZoneDraft((current) => current ? { ...current, currentX, currentY } : null);
       return;
     }
     if (marquee && boardRef.current) {
       const point = boardPoint(event.clientX, event.clientY);
-      setMarquee((current) => current ? { ...current, currentX:clamp(point.x, 0, BOARD_IN), currentY:clamp(point.y, 0, BOARD_IN) } : null);
+      setMarquee((current) => current ? { ...current, currentX:clamp(point.x, 0, boardWidth), currentY:clamp(point.y, 0, boardHeight) } : null);
       return;
     }
     if (!drag || !boardRef.current) return;
@@ -1383,8 +1652,8 @@ export default function Home() {
     const minY = Math.min(...draggedPieces.map((piece) => drag.origins[piece.uid].y));
     const maxX = Math.max(...draggedPieces.map((piece) => { const rect = pieceRect({ ...piece, ...drag.origins[piece.uid] }); return rect.x + rect.width; }));
     const maxY = Math.max(...draggedPieces.map((piece) => { const rect = pieceRect({ ...piece, ...drag.origins[piece.uid] }); return rect.y + rect.height; }));
-    let allowedX = clamp(requestedX, -minX, BOARD_IN - maxX);
-    let allowedY = clamp(requestedY, -minY, BOARD_IN - maxY);
+    let allowedX = clamp(requestedX, -minX, boardWidth - maxX);
+    let allowedY = clamp(requestedY, -minY, boardHeight - maxY);
     const fixedPieces = pieces.filter((piece) => !drag.uids.includes(piece.uid));
     let rotationOverride: { uid:string; rotation:0|90 } | null = null;
     if (smartFit) {
@@ -1393,8 +1662,8 @@ export default function Home() {
       fitCandidates.sort((a, b) => a.distance - b.distance);
       const bestFit = fitCandidates[0];
       if (bestFit) {
-        allowedX = clamp(allowedX + bestFit.dx, -minX, BOARD_IN - maxX);
-        allowedY = clamp(allowedY + bestFit.dy, -minY, BOARD_IN - maxY);
+        allowedX = clamp(allowedX + bestFit.dx, -minX, boardWidth - maxX);
+        allowedY = clamp(allowedY + bestFit.dy, -minY, boardHeight - maxY);
         if (bestFit.rotation !== undefined) rotationOverride = { uid:bestFit.uid, rotation:bestFit.rotation };
       }
     }
@@ -1410,7 +1679,7 @@ export default function Home() {
     });
     const invalidPlacement = smartFit && tentativePieces.some((moving) => {
       const rect = pieceRect(moving);
-      if (rect.x < 0 || rect.y < 0 || rect.x + rect.width > BOARD_IN || rect.y + rect.height > BOARD_IN) return true;
+      if (rect.x < 0 || rect.y < 0 || rect.x + rect.width > boardWidth || rect.y + rect.height > boardHeight) return true;
       return fixedPieces.some((fixed) => {
         if (!piecesOverlap(moving, fixed, -.03)) return false;
         return !connectionCandidates(moving, fixed).some((candidate) => Math.abs(candidate.dx) < .18 && Math.abs(candidate.dy) < .18);
@@ -1426,7 +1695,7 @@ export default function Home() {
       <a className="skip-link" href="#layout-board">Skip to layout board</a>
       <header className="topbar">
         <div><p className="eyebrow">Horus Heresy layout utility</p><h1>Mortalis Architect</h1></div>
-        <div className="top-actions"><span className="board-chip">BOARD 48 × 48 IN</span><button className="export-action" onClick={exportLayoutPng} disabled={!pieces.length} aria-label="Export layout and piece manifest as PNG">Export PNG</button><button className="primary" onClick={generateLayout} disabled={!catalogueTotal} aria-label="Generate layout from current terrain palette">Generate from palette</button></div>
+        <div className="top-actions"><label className="board-size-control"><span>Board</span><select aria-label="Board size" value={boardPreset} onChange={(event) => changeBoardSize(event.target.value as BoardPreset)}>{(Object.entries(BOARD_SIZES) as Array<[BoardPreset, typeof BOARD_SIZES[BoardPreset]]>).map(([value, size]) => <option key={value} value={value}>{size.label}</option>)}</select></label><span className="board-chip">{boardWidth} × {boardHeight} IN</span><button className="export-action" onClick={exportLayoutPng} disabled={!pieces.length} aria-label="Export layout and piece manifest as PNG">Export PNG</button><button className="primary" onClick={generateLayout} disabled={!pieces.length} aria-label="Generate a new layout using every piece currently on the board">Generate layout</button></div>
       </header>
 
       <section className="workspace">
@@ -1461,6 +1730,7 @@ export default function Home() {
               <div><p className="eyebrow">Layout inventory</p><h2 id="generator-palette-heading">Current generator palette</h2></div>
               <div className="section-actions"><span className="count">{catalogueTotal} pcs</span><button className="text-action danger" onClick={clearPalette} disabled={!catalogueTotal}>Clear</button></div>
             </div>
+            {catalogueTotal > 0 && <div className="palette-generation-controls"><label className="generation-target palette-generation-target" title="Sets the maximum share of the available terrain the generator may use, preserving only supported joins"><span>Footprint <strong>{generationPercent}%</strong></span><input type="range" min="10" max="60" step="5" value={generationPercent} onChange={(event) => setGenerationPercent(Number(event.target.value))} aria-label="Footprint coverage target" /></label><button className="primary palette-generate" onClick={generateFromPalette} aria-label="Generate layout from current terrain palette">Generate from palette</button></div>}
             {catalogueTotal > 0 && <div className="palette-range"><span>{paletteMaker}</span><strong>{paletteLabel}</strong><em>{Math.max(0, catalogueTotal - paletteUsed)} unplaced</em></div>}
             <div className="palette-list" aria-label="Current generator terrain palette">
               {!catalogueTotal && <div className="palette-empty"><strong>Your palette is empty</strong><span>Add individual pieces or a full kit below.</span></div>}
@@ -1494,20 +1764,20 @@ export default function Home() {
           </div>
           {zoneMode && <div className="zone-designator panel"><label><span>Zone name</span><input aria-label="Zone name" value={zoneName} maxLength={32} onChange={(event) => setZoneName(event.target.value)} /></label><p>Drag on the grid to reserve a clear area. Hold <kbd>Shift</kbd> while dragging for a perfect square.</p><strong>{zones.length} saved</strong></div>}
 
-          <div className="board-area"><div className="board-frame">
-            <div className="ruler ruler-top"><span>0</span><span>12</span><span>24</span><span>36</span><span>48″</span></div>
-            <div className="ruler ruler-left"><span>0</span><span>12</span><span>24</span><span>36</span><span>48″</span></div>
-            <div id="layout-board" ref={boardRef} className={`board ${theme}-board ${drag ? "dragging" : ""} ${marquee ? "selecting" : ""} ${zoneMode ? "zone-mode" : ""} ${zoneResize ? "resizing-zone" : ""}`} aria-label="48 by 48 inch layout board" aria-describedby="board-help" onDragOver={(event) => event.preventDefault()} onDrop={onDrop} onPointerMove={onBoardPointerMove} onPointerUp={() => { if (zoneDraft) finishZone(); if (marquee) finishMarquee(); if (zoneResize) { const zone = zones.find((item) => item.uid === zoneResize.uid); if (zone) setMessage(`${zone.name} resized · ${zone.width.toFixed(1)} × ${zone.height.toFixed(1)} in`); setZoneResize(null); } setDrag(null); }} onPointerCancel={() => { setZoneDraft(null); setZoneResize(null); setMarquee(null); setDrag(null); }} onPointerDown={beginZone}>
-              {pieces.length === 0 && <div className="board-mark"><strong>4′ × 4′</strong><span>{zoneMode ? "DRAG TO RESERVE A CLEAR ZONE" : "DROP TERRAIN TO PLACE"}</span></div>}
-              {zones.map((zone) => <div key={zone.uid} role="group" tabIndex={zoneMode ? -1 : 0} aria-label={`${zone.name}, reserved zone ${zone.width.toFixed(1)} by ${zone.height.toFixed(1)} inches`} className={`reserved-zone ${focusedZone === zone.uid ? "focused" : ""} ${zoneResize?.uid === zone.uid ? "resizing" : ""}`} style={{ left:`${zone.x / BOARD_IN * 100}%`, top:`${zone.y / BOARD_IN * 100}%`, width:`${zone.width / BOARD_IN * 100}%`, height:`${zone.height / BOARD_IN * 100}%` }} onPointerDown={(event) => { if (zoneMode) return; event.stopPropagation(); setFocusedZone(zone.uid); selectOnly(null); setMessage(`${zone.name} selected · drag a corner to resize`); }} onFocus={() => setFocusedZone(zone.uid)}><strong>{zone.name}</strong><span>{zone.width.toFixed(1)} × {zone.height.toFixed(1)}″</span>{!zoneMode && (["nw","ne","sw","se"] as ZoneCorner[]).map((corner) => <button key={corner} className={`zone-handle ${corner}`} aria-label={`Resize ${zone.name} from ${corner} corner`} title="Drag to resize" onPointerDown={(event) => beginZoneResize(event, zone, corner)} />)}</div>)}
-              {zoneDraft && (() => { const zone = normaliseZoneDraft(zoneDraft); return <div className="reserved-zone draft" style={{ left:`${zone.x / BOARD_IN * 100}%`, top:`${zone.y / BOARD_IN * 100}%`, width:`${zone.width / BOARD_IN * 100}%`, height:`${zone.height / BOARD_IN * 100}%` }}><strong>{zoneName.trim() || "Hangar"}</strong><span>{zone.width.toFixed(1)} × {zone.height.toFixed(1)}″</span></div>; })()}
-              {marquee && (() => { const left = Math.min(marquee.startX, marquee.currentX); const top = Math.min(marquee.startY, marquee.currentY); return <div className="selection-marquee" aria-hidden="true" style={{ left:`${left / BOARD_IN * 100}%`, top:`${top / BOARD_IN * 100}%`, width:`${Math.abs(marquee.currentX - marquee.startX) / BOARD_IN * 100}%`, height:`${Math.abs(marquee.currentY - marquee.startY) / BOARD_IN * 100}%` }} />; })()}
+          <div className="board-area"><div className="board-frame" style={{ "--board-ratio":boardWidth / boardHeight } as CSSProperties}>
+            <div className="ruler ruler-top">{Array.from({ length:boardWidth / 12 + 1 }, (_, index) => index * 12).map((inch) => <span key={inch}>{inch}{inch === boardWidth ? "″" : ""}</span>)}</div>
+            <div className="ruler ruler-left">{Array.from({ length:boardHeight / 12 + 1 }, (_, index) => index * 12).map((inch) => <span key={inch}>{inch}{inch === boardHeight ? "″" : ""}</span>)}</div>
+            <div id="layout-board" ref={boardRef} style={{ "--minor-x":`${100 / boardWidth}%`, "--minor-y":`${100 / boardHeight}%`, "--major-x":`${1200 / boardWidth}%`, "--major-y":`${1200 / boardHeight}%` } as CSSProperties} className={`board ${theme}-board ${drag ? "dragging" : ""} ${marquee ? "selecting" : ""} ${zoneMode ? "zone-mode" : ""} ${zoneResize ? "resizing-zone" : ""}`} aria-label={`${boardWidth} by ${boardHeight} inch layout board`} aria-describedby="board-help" onDragOver={(event) => event.preventDefault()} onDrop={onDrop} onPointerMove={onBoardPointerMove} onPointerUp={() => { if (zoneDraft) finishZone(); if (marquee) finishMarquee(); if (zoneResize) { const zone = zones.find((item) => item.uid === zoneResize.uid); if (zone) setMessage(`${zone.name} resized · ${zone.width.toFixed(1)} × ${zone.height.toFixed(1)} in`); setZoneResize(null); } setDrag(null); }} onPointerCancel={() => { setZoneDraft(null); setZoneResize(null); setMarquee(null); setDrag(null); }} onPointerDown={beginZone}>
+              {pieces.length === 0 && <div className="board-mark"><strong>{BOARD_SIZES[boardPreset].label}</strong><span>{zoneMode ? "DRAG TO RESERVE A CLEAR ZONE" : "DROP TERRAIN TO PLACE"}</span></div>}
+              {zones.map((zone) => <div key={zone.uid} role="group" tabIndex={zoneMode ? -1 : 0} aria-label={`${zone.name}, reserved zone ${zone.width.toFixed(1)} by ${zone.height.toFixed(1)} inches`} className={`reserved-zone ${focusedZone === zone.uid ? "focused" : ""} ${zoneResize?.uid === zone.uid ? "resizing" : ""}`} style={{ left:`${zone.x / boardWidth * 100}%`, top:`${zone.y / boardHeight * 100}%`, width:`${zone.width / boardWidth * 100}%`, height:`${zone.height / boardHeight * 100}%` }} onPointerDown={(event) => { if (zoneMode) return; event.stopPropagation(); setFocusedZone(zone.uid); selectOnly(null); setMessage(`${zone.name} selected · drag a corner to resize`); }} onFocus={() => setFocusedZone(zone.uid)}><strong>{zone.name}</strong><span>{zone.width.toFixed(1)} × {zone.height.toFixed(1)}″</span>{!zoneMode && (["nw","ne","sw","se"] as ZoneCorner[]).map((corner) => <button key={corner} className={`zone-handle ${corner}`} aria-label={`Resize ${zone.name} from ${corner} corner`} title="Drag to resize" onPointerDown={(event) => beginZoneResize(event, zone, corner)} />)}</div>)}
+              {zoneDraft && (() => { const zone = normaliseZoneDraft(zoneDraft); return <div className="reserved-zone draft" style={{ left:`${zone.x / boardWidth * 100}%`, top:`${zone.y / boardHeight * 100}%`, width:`${zone.width / boardWidth * 100}%`, height:`${zone.height / boardHeight * 100}%` }}><strong>{zoneName.trim() || "Hangar"}</strong><span>{zone.width.toFixed(1)} × {zone.height.toFixed(1)}″</span></div>; })()}
+              {marquee && (() => { const left = Math.min(marquee.startX, marquee.currentX); const top = Math.min(marquee.startY, marquee.currentY); return <div className="selection-marquee" aria-hidden="true" style={{ left:`${left / boardWidth * 100}%`, top:`${top / boardHeight * 100}%`, width:`${Math.abs(marquee.currentX - marquee.startX) / boardWidth * 100}%`, height:`${Math.abs(marquee.currentY - marquee.startY) / boardHeight * 100}%` }} />; })()}
               {pieces.map((piece) => {
                 const def = getDef(piece.defId);
                 const width = piece.rotation === 90 ? def.depth : def.width;
                 const height = piece.rotation === 90 ? def.width : def.depth;
                 const isSelected = selectedIds.includes(piece.uid);
-                return <button key={piece.uid} title={`${def.name} · ${def.note} × ${Math.round(piece.height * MM_PER_IN)} mm high`} aria-label={`${def.name}, ${Math.round(piece.height * MM_PER_IN)} millimetres high${isSelected ? ", selected" : ""}`} aria-pressed={isSelected} className={`placed-piece ${def.kind} ${def.visual ? `visual-${def.visual}` : ""} ${piece.rotation === 90 ? "rotated" : ""} ${isSelected ? "selected" : ""}`} style={{ left:`${piece.x / BOARD_IN * 100}%`, top:`${piece.y / BOARD_IN * 100}%`, width:`${width / BOARD_IN * 100}%`, height:`${height / BOARD_IN * 100}%` }} onDoubleClick={() => rotatePiece(piece.uid)} onContextMenu={(event) => { event.preventDefault(); setFocusedZone(null); selectOnly(piece.uid); rotatePiece(piece.uid); }} onPointerDown={(event) => beginPieceDrag(event, piece)}><span className="terrain-detail" /></button>;
+                return <button key={piece.uid} title={`${def.name} · ${def.note} × ${Math.round(piece.height * MM_PER_IN)} mm high`} aria-label={`${def.name}, ${Math.round(piece.height * MM_PER_IN)} millimetres high${isSelected ? ", selected" : ""}`} aria-pressed={isSelected} className={`placed-piece ${def.kind} ${def.visual ? `visual-${def.visual}` : ""} ${piece.rotation === 90 ? "rotated" : ""} ${isSelected ? "selected" : ""}`} style={{ left:`${piece.x / boardWidth * 100}%`, top:`${piece.y / boardHeight * 100}%`, width:`${width / boardWidth * 100}%`, height:`${height / boardHeight * 100}%` }} onDoubleClick={() => rotatePiece(piece.uid)} onContextMenu={(event) => { event.preventDefault(); setFocusedZone(null); selectOnly(piece.uid); rotatePiece(piece.uid); }} onPointerDown={(event) => beginPieceDrag(event, piece)}><span className="terrain-detail" /></button>;
               })}
             </div>
           </div></div>
@@ -1528,7 +1798,7 @@ export default function Home() {
           <div className="metric"><span>Reserved clear space</span><strong>{zones.length} · {reservedCoverage.toFixed(1)}%</strong></div>
           <div className="metric"><span>{paletteCatalogues.length > 1 ? "Walls + hatchways" : generationCatalogue === "boarding" ? "Operable hatchways" : "Wall modules"}</span><strong>{paletteCatalogues.length > 1 ? wallPieces.length : generationCatalogue === "boarding" ? doors : wallPieces.length}</strong></div><div className="metric"><span>Corridor loops</span><strong>{loops}</strong></div><div className="metric"><span>Open chambers</span><strong>{chambers}</strong></div>
           <div className="divider" />
-          <p className="inspector-copy">{paletteCatalogues.length > 1 ? "Each terrain system keeps its physical assembly rules, then compatible ordinary wall faces are aligned across kits. Special pipes, floors, stairs, caps, and proprietary connectors remain system-specific." : generationCatalogue === "boarding" ? "The generator scores 32 candidates, requires every hatch between collinear walls, rejects sub-3-inch near misses, and builds either exact junctions or consistent room-scale passages." : "Iron Labyrinth generation grows varied connector networks, keeps doors supported, rejects cramped near-misses, and favours turns, branches, corridors, and reserved-zone framing."}</p>
+          <p className="inspector-copy">{paletteCatalogues.length > 1 ? "Each terrain system keeps its physical assembly rules, then compatible ordinary wall faces are aligned across kits. Special pipes, floors, stairs, caps, and proprietary connectors remain system-specific." : generationCatalogue === "boarding" ? "The planner scores 24 connector-node layouts, builds hooked chambers and branching junctions, and keeps separate wall networks at least 2.75 inches apart so the board retains long playable lanes." : "The planner scores 24 connector-node layouts. Every Iron Labyrinth wall is generated as a connector-to-connector edge, while separate networks retain at least 3.8 inches of walkable clearance."}</p>
           <div className="layout-key">{paletteCatalogues.length > 1 ? <><span><i className="key-wall" /> Compatible wall</span><span><i className="key-door" /> Door / hatch</span><span><i className="key-pillar" /> System support</span></> : generationCatalogue === "boarding" ? <><span><i className="key-wall" /> Wall</span><span><i className="key-door" /> Hatchway</span><span><i className="key-pillar" /> Pillar</span></> : <><span><i className="key-wall" /> Wall</span><span><i className="key-door" /> Wall end</span><span><i className="key-pillar" /> Connector</span></>}</div>
           {catalogueTotal > 0 && <details className="height-settings inspector-height">
             <summary><span><strong>Advanced dimensions</strong><small>3D and export height defaults</small></span><em>Z axis · mm</em></summary>
@@ -1540,7 +1810,7 @@ export default function Home() {
             </div>
           </details>}
           {zones.length > 0 && <div className="zone-list"><div className="zone-list-heading"><span>Reserved zones</span><button onClick={() => { setZones([]); setFocusedZone(null); setZoneDraft(null); setZoneResize(null); setMessage("Reserved zones cleared"); }}>Clear all</button></div><small className="zone-list-hint">Hover a zone for temporary handles, or click it to keep them active.</small>{zones.map((zone) => <div className={`zone-list-row ${focusedZone === zone.uid ? "active" : ""}`} key={zone.uid} onPointerDown={() => setFocusedZone(zone.uid)}><input aria-label={`Rename ${zone.name}`} value={zone.name} maxLength={32} onFocus={() => setFocusedZone(zone.uid)} onChange={(event) => setZones((current) => current.map((item) => item.uid === zone.uid ? { ...item, name:event.target.value } : item))} /><span>{zone.width.toFixed(1)} × {zone.height.toFixed(1)}″</span><button aria-label={`Remove ${zone.name}`} onClick={() => { setZones((current) => current.filter((item) => item.uid !== zone.uid)); if (focusedZone === zone.uid) setFocusedZone(null); if (zoneResize?.uid === zone.uid) setZoneResize(null); }}>×</button></div>)}</div>}
-          <p className="accuracy-note">Scale basis: 48″ square board · 25.4 mm per inch. Iron Labyrinth dimensions are manufacturer-published; Boarding Actions footprints remain physical-kit approximations. Default wall height is 60 mm in both systems.</p>
+          <p className="accuracy-note">Scale basis: {boardWidth} × {boardHeight}″ board · 25.4 mm per inch. Iron Labyrinth dimensions are manufacturer-published; Boarding Actions footprints remain physical-kit approximations. Default wall height is 60 mm in both systems.</p>
         </aside>
       </section>
       {paletteDrag && <div className="drag-preview" style={{ left:paletteDrag.x, top:paletteDrag.y }}><span className={`piece-icon ${getDef(paletteDrag.defId).kind} ${getDef(paletteDrag.defId).width > 5 ? "long" : "short"} ${getDef(paletteDrag.defId).visual ? `visual-${getDef(paletteDrag.defId).visual}` : ""}`}><i /></span><small>{getDef(paletteDrag.defId).shortName}</small></div>}
