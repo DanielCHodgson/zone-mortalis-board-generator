@@ -22,7 +22,9 @@ editing, procedural layout generation, layout analysis, and PNG export.
 The active generator lives in
 `app/spatial-generator.ts`. It builds a small number of connector-node graphs
 using hooked chamber walls, T-junctions, crosses, partial U-shapes, turns, and
-dead ends. Twenty-four candidates are generated and scored by the UI.
+dead ends. Twenty-four candidates are generated and scored by the UI. A
+component that cannot be sited is retried smaller rather than abandoned, so a
+crowded board still spends as much of the kit as its clearance lanes allow.
 
 Important physical invariants:
 

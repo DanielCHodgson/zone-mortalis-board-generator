@@ -96,7 +96,7 @@ h2 { font-size:15px; letter-spacing:-.02em; }
 .piece-icon.short { width:21px; }
 .piece-icon.door { height:12px; background:#a26750; }
 .piece-icon.door i { position:absolute; inset:2px 28% 2px; background:#28322f; border-left:1px solid #c5805f; border-right:1px solid #c5805f; }
-.piece-icon.pillar { width:11px; height:11px; transform:rotate(45deg); }
+.piece-icon.pillar { width:11px; height:11px; }
 .piece-icon.connector { width:14px; height:14px; background:#525f5a; }
 .piece-icon.end { width:7px; height:11px; }
 .piece-icon.floor,.placed-piece.floor { background-color:#6f7a75; background-image:repeating-linear-gradient(45deg,rgba(235,240,236,.22) 0 1px,transparent 1px 5px); }
@@ -175,13 +175,16 @@ kbd { padding-left:4px; color:#69736f; font:10px var(--font-geist-mono),monospac
 .ruler-left { left:0; top:16px; bottom:0; flex-direction:column; }
 .placed-piece { position:absolute; z-index:2; min-width:3px; min-height:3px; padding:0; border:1px solid #222b28; border-radius:1px; background:var(--wall); box-shadow:0 1px 2px rgba(15,20,18,.36),inset 0 0 0 1px rgba(255,255,255,.12); cursor:grab; transition:box-shadow .1s,filter .1s; }
 .placed-piece:hover { filter:brightness(1.1); }
-.placed-piece.selected { z-index:3; box-shadow:0 0 0 2px #e8e3ce,0 0 0 4px var(--accent),0 2px 5px rgba(0,0,0,.35); }
+.placed-piece.selected { z-index:4; box-shadow:0 0 0 2px #e8e3ce,0 0 0 4px var(--accent),0 2px 5px rgba(0,0,0,.35); }
 .placed-piece.door { background:#7d4b39; }
 .placed-piece.door .terrain-detail { position:absolute; background:#252d2a; box-shadow:inset 0 0 0 1px #bd7152; }
 .placed-piece.door .terrain-detail { inset:1px 30%; }
 .placed-piece.door.rotated .terrain-detail { inset:30% 1px; }
 .placed-piece.wall .terrain-detail { position:absolute; inset:22%; border:1px solid rgba(220,225,220,.18); }
-.placed-piece.pillar { transform:rotate(45deg); background:#26302c; border-color:#d1d5cf; }
+/* Supports are square in the real kits, and they are the tallest thing on the
+   board: walls slot between them, so they draw above every wall and door. */
+.placed-piece.pillar,.placed-piece.connector { z-index:3; }
+.placed-piece.pillar { background:#26302c; border-color:#d1d5cf; }
 .placed-piece.connector { background:#34413c; border-color:#cbd2cd; box-shadow:0 1px 2px rgba(15,20,18,.36),inset 0 0 0 2px rgba(255,255,255,.13); }
 .placed-piece.end { background:#56615c; }
 .status-line { flex:0 0 22px; display:flex; justify-content:space-between; gap:12px; padding:6px 2px 0 17px; color:var(--muted); font:10px var(--font-geist-mono),monospace; }
@@ -205,7 +208,7 @@ kbd { padding-left:4px; color:#69736f; font:10px var(--font-geist-mono),monospac
 .layout-key span { display:flex; align-items:center; gap:6px; }
 .layout-key i { width:14px; height:5px; background:var(--wall); }
 .layout-key .key-door { height:7px; background:#7d4b39; }
-.layout-key .key-pillar { width:6px; height:6px; transform:rotate(45deg); background:#26302c; }
+.layout-key .key-pillar { width:6px; height:6px; background:#26302c; }
 .inspector-height { flex:0 0 auto; margin-top:14px; }
 .zone-list { display:grid; gap:5px; margin-top:14px; padding-top:12px; border-top:1px solid var(--line); }
 .zone-list-heading { display:flex; justify-content:space-between; align-items:center; color:var(--muted); font-size:11px; font-weight:700; }
