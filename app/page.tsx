@@ -3,9 +3,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { generate, type Anchor, type GenerateReport } from "./generate.ts";
 import {
-  BOARDING_INVENTORY, BOARD_SIZES, BOARD_STORAGE_KEY, MANUFACTURERS,
+  APPEARANCE_STORAGE_KEY, BOARDING_INVENTORY, BOARD_SIZES, BOARD_STORAGE_KEY, MANUFACTURERS,
   MM_PER_IN, PALETTE_STORAGE_KEY, TERRAIN, TERRAIN_KITS, getDef,
-  type BoardPreset, type CatalogueId, type TerrainDef,
+  type Appearance, type BoardPreset, type CatalogueId, type TerrainDef,
 } from "./terrain.ts";
 
 type PlacedPiece = {
@@ -28,7 +28,7 @@ type ReservedZone = {
   height: number;
 };
 
-type ZoneCorner = "nw" | "ne" | "sw" | "se";
+type ZoneCorner = "nw" | "ne" | "sw" | "se";
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 
@@ -51,10 +51,16 @@ export default function Home() {
   const [theme, setTheme] = useState<"industrial" | "gothic" | "desert">("industrial");
   const [boardPreset, setBoardPreset] = useState<BoardPreset>("card");
   const [boardReady, setBoardReady] = useState(false);
-  // How many copies of the kit are on the table. One Boarding Actions set fills one
-  // card board at real density, so this is what lets a bigger board be filled
-  // instead of thinned: the complex grows its footprint rather than its density.
-  const [sets, setSets] = useState(1);
+  // Light or dark for the whole application, distinct from the board STYLE below
+  // (industrial / gothic / desert), which is what the terrain is made of rather than
+  // how the interface is lit. Starts from the operating system and is remembered
+  // once the user chooses.
+  const [appearance, setAppearance] = useState<Appearance>("light");
+  const [appearanceReady, setAppearanceReady] = useState(false);
+  // The last generator report, so the board can show what it actually built —
+  // grid size, density, sight line and what stayed in the box. The generator
+  // computes all of it; not surfacing it was leaving the reader to guess.
+  const [layoutReport, setLayoutReport] = useState<GenerateReport | null>(null);
   // Where a complex smaller than the board goes. Not cosmetic — the board border is
   // a free wall, so a corner uses two of them and spends more of the kit on interior
   // structure, while a centred island has to build its own perimeter.
@@ -144,6 +150,31 @@ export default function Home() {
     }, 0);
     return () => window.clearTimeout(restoreTimer);
   }, []);
+
+  // Appearance: follow the operating system until the user says otherwise, then
+  // remember the choice. Read after mount rather than during render, because the
+  // server has no way to know what the device prefers and guessing produces a flash
+  // of the wrong theme.
+  useEffect(() => {
+    const restoreTimer = window.setTimeout(() => {
+      let saved: Appearance | null = null;
+      try { saved = window.localStorage.getItem(APPEARANCE_STORAGE_KEY) as Appearance | null; } catch { /* Appearance persistence is optional. */ }
+      if (saved === "light" || saved === "dark") setAppearance(saved);
+      else setAppearance(window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+      setAppearanceReady(true);
+    }, 0);
+    return () => window.clearTimeout(restoreTimer);
+  }, []);
+
+  useEffect(() => {
+    // The attribute is applied on every change, but the write to storage waits for
+    // the restore pass. Writing unconditionally means this effect runs once on mount
+    // with the initial default and overwrites the saved choice before the restore
+    // has had a chance to read it — so the app always came back light.
+    document.documentElement.dataset.appearance = appearance;
+    if (!appearanceReady) return;
+    try { window.localStorage.setItem(APPEARANCE_STORAGE_KEY, appearance); } catch { /* Appearance persistence is optional. */ }
+  }, [appearance, appearanceReady]);
 
   useEffect(() => {
     if (!boardReady) return;
@@ -537,10 +568,9 @@ export default function Home() {
   // directions is how boards got worse while every tracked number improved.
   const generateSpatialSystem = (catalogue: CatalogueId) => {
     const override = generationInventoryRef.current;
-    const base = Object.fromEntries(TERRAIN.map((def) => [def.id, override ? override[def.id] || 0 : limits[def.id] || 0]));
-    // Regenerating from what is on the board must not multiply it, so the set
-    // multiplier applies only to the palette.
-    const inventory = override ? base : Object.fromEntries(Object.entries(base).map(([id, count]) => [id, count * sets]));
+    // The palette IS the inventory. Wanting a second set means adding it from the kit
+    // browser above, which is where quantities belong.
+    const inventory = Object.fromEntries(TERRAIN.map((def) => [def.id, override ? override[def.id] || 0 : limits[def.id] || 0]));
     const seed = (Date.now() + uidRef.current * 2654435761 + boardWidth * 101 + boardHeight * 211 + (catalogue === "boarding" ? 17 : 53)) >>> 0;
     const report = generate({
       boardWidth,
@@ -556,6 +586,7 @@ export default function Home() {
       nextUid,
     });
     lastReportRef.current = report;
+    setLayoutReport(report);
     return report.pieces as PlacedPiece[];
   };
 
@@ -591,22 +622,30 @@ export default function Home() {
       if (catalogues.includes("boarding")) layouts.push(generateSpatialSystem("boarding"));
       if (catalogues.includes("ttcombat")) layouts.push(generateSpatialSystem("ttcombat"));
       const generated = layouts.length === 1 ? layouts[0] : mergeGeneratedSystems(layouts);
-      const generatedCounts = generated.reduce<Record<string, number>>((counts, piece) => ({ ...counts, [piece.defId]:(counts[piece.defId] || 0) + 1 }), {});
-      const usedEverything = Object.entries(inventory).every(([defId, quantity]) => generatedCounts[defId] === quantity) && generated.length === pieces.length;
+      // Use the layout the generator actually built.
+      //
+      // This used to demand that generation spend every placed piece exactly —
+      // `usedEverything` — and otherwise fall back to `losslessRemix`, which is
+      // just the existing layout mirrored in X and Y. Since the generator
+      // deliberately leaves surplus in the box, that condition was essentially
+      // never true, so this button always fell through to the mirror: the same
+      // board, flipped. It looked like it was sliding the whole complex around,
+      // because it was.
+      //
+      // Heights are reassigned from the pieces that were on the board, per piece
+      // type, so a manually raised wall keeps its height through a remix.
       const heightQueues = Object.fromEntries(Object.entries(sourceHeights).map(([defId, heights]) => [defId, [...heights]]));
-      const remixSource = (flipX: boolean, flipY: boolean) => pieces.map((source) => {
-        const rect = pieceRect(source);
-        return { ...source, uid:nextUid(), x:flipX ? boardWidth - source.x - rect.width : source.x, y:flipY ? boardHeight - source.y - rect.height : source.y };
-      });
-      const variants = [{ flipX:true, flipY:false }, { flipX:false, flipY:true }, { flipX:true, flipY:true }];
-      const losslessRemix = variants.map(({ flipX, flipY }) => remixSource(flipX, flipY)).find((candidate) => candidate.every((piece) => !pieceIntersectsReservedZone(piece)));
-      const finalized = usedEverything
-        ? generated.map((piece) => ({ ...piece, height:heightQueues[piece.defId].shift() ?? piece.height }))
-        : losslessRemix;
-      if (!finalized) { setMessage("The placed layout cannot be remixed without entering a reserved zone"); return; }
+      const finalized = generated.length
+        ? generated.map((piece) => ({ ...piece, height:heightQueues[piece.defId]?.shift() ?? piece.height }))
+        : null;
+      if (!finalized) {
+        setMessage(lastReportRef.current?.note || "That terrain cannot form a supported layout");
+        return;
+      }
       setPieces(finalized);
       selectOnly(null);
-      setMessage(`Layout regenerated from all ${finalized.length} placed pieces`);
+      const held = pieces.length - finalized.length;
+      setMessage(`Layout regenerated · ${finalized.length} pieces${held > 0 ? ` · ${held} held back` : ""}${lastReportRef.current?.note ? ` · ${lastReportRef.current.note}` : ""}`);
     } finally {
       generationInventoryRef.current = null;
     }
@@ -720,7 +759,15 @@ export default function Home() {
       const y = boardY + piece.y * boardScale;
       const width = Math.max(4, widthIn * boardScale);
       const depth = Math.max(4, depthIn * boardScale);
-      const colour = def.kind === "door" ? "#7d4b39" : def.kind === "wall" ? "#3d4844" : def.kind === "end" ? "#56615c" : "#2d3934";
+      // The export always prints on paper, whichever appearance the app is set to.
+      // A sheet you take to the table wants ink on white, not a screenshot of a dark
+      // viewport, so these are deliberately the light palette's literals rather than
+      // the live tokens.
+      const colour = def.kind === "door" ? "#7d4b39"
+        : def.kind === "wall" ? "#3d4844"
+          : def.kind === "end" ? "#56615c"
+            : def.kind === "scatter" ? "#4c6f66"
+              : "#2d3934";
       ctx.fillStyle = colour;
       ctx.fillRect(x, y, width, depth);
       ctx.strokeStyle = "#18211e";
@@ -1040,7 +1087,7 @@ export default function Home() {
       <a className="skip-link" href="#layout-board">Skip to layout board</a>
       <header className="topbar">
         <div><p className="eyebrow">Horus Heresy layout utility</p><h1>Mortalis Architect</h1></div>
-        <div className="top-actions"><label className="board-size-control"><span>Board</span><select aria-label="Board size" value={boardPreset} onChange={(event) => changeBoardSize(event.target.value as BoardPreset)}>{(Object.entries(BOARD_SIZES) as Array<[BoardPreset, typeof BOARD_SIZES[BoardPreset]]>).map(([value, size]) => <option key={value} value={value}>{size.label}</option>)}</select></label><span className="board-chip">{boardWidth.toFixed(1)} × {boardHeight.toFixed(1)} IN</span><button className="export-action" onClick={exportLayoutPng} disabled={!pieces.length} aria-label="Export layout and piece manifest as PNG">Export PNG</button><button className="primary" onClick={generateLayout} disabled={!pieces.length} aria-label="Generate a new layout using every piece currently on the board">Generate layout</button></div>
+        <div className="top-actions"><div className="appearance-switch" role="group" aria-label="Appearance">{(["light", "dark"] as const).map((mode) => <button key={mode} className={appearance === mode ? "active" : ""} aria-pressed={appearance === mode} onClick={() => setAppearance(mode)}>{mode}</button>)}</div><label className="board-size-control"><span>Board</span><select aria-label="Board size" value={boardPreset} onChange={(event) => changeBoardSize(event.target.value as BoardPreset)}>{(Object.entries(BOARD_SIZES) as Array<[BoardPreset, typeof BOARD_SIZES[BoardPreset]]>).map(([value, size]) => <option key={value} value={value}>{size.label}</option>)}</select></label><span className="board-chip">{boardWidth.toFixed(1)} × {boardHeight.toFixed(1)} IN</span><button className="export-action" onClick={exportLayoutPng} disabled={!pieces.length} aria-label="Export layout and piece manifest as PNG">Export PNG</button><button className="primary" onClick={generateLayout} disabled={!pieces.length} aria-label="Generate a new layout using every piece currently on the board">Generate layout</button></div>
       </header>
 
       <section className="workspace">
@@ -1077,7 +1124,6 @@ export default function Home() {
             </div>
             {catalogueTotal > 0 && <div className="palette-generation-controls">
               <label className="generation-target palette-generation-target" title="Share of the palette the generator may spend. The board is filled to real density regardless; lower this only to deliberately hold pieces back."><span>Spend <strong>{generationPercent}%</strong></span><input type="range" min="20" max="100" step="5" value={generationPercent} onChange={(event) => setGenerationPercent(Number(event.target.value))} aria-label="Footprint coverage target" /></label>
-              <label className="generation-target palette-generation-target" title="How many copies of the kit are on the table. One Boarding Actions set fills one card board at real density, so more sets grow the complex rather than thinning it."><span>Sets <strong>{sets}</strong></span><input type="range" min="1" max="6" step="1" value={sets} onChange={(event) => setSets(Number(event.target.value))} aria-label="Number of terrain sets owned" /></label>
               <label className="generation-target palette-generation-target" title="Where a complex smaller than the board sits. The board border is a free wall, so a corner spends more of the kit on interior structure; a centred island must build its own perimeter."><span>Placement</span><select value={anchor} onChange={(event) => setAnchor(event.target.value as Anchor)} aria-label="Where to anchor a complex smaller than the board"><option value="auto">Automatic</option><option value="corner">Into a corner</option><option value="edge">Against an edge</option><option value="centre">Centred island</option></select></label>
               <button className="primary palette-generate" onClick={generateFromPalette} aria-label="Generate layout from current terrain palette">Generate from palette</button>
             </div>}
@@ -1131,6 +1177,7 @@ export default function Home() {
               })}
             </div>
           </div></div>
+          {layoutReport?.metrics && <div className="metrics-strip" aria-label="Generated layout readings"><span><strong>{layoutReport.plan?.lattice.cols} × {layoutReport.plan?.lattice.rows}</strong> squares</span><span>density <strong>{layoutReport.metrics.density.toFixed(2)}</strong></span><span>sight <strong>{layoutReport.metrics.meanSight.toFixed(1)}</strong> / {layoutReport.metrics.longestSight} sq</span><span>runs <strong>{layoutReport.metrics.meanRun.toFixed(1)}</strong> avg</span><span>{layoutReport.leftover > 0 ? <><strong>{layoutReport.leftover}</strong> panels in the box</> : <>whole palette spent</>}</span></div>}
           <div className="status-line" id="board-help"><span role="status" aria-live="polite">{message}</span><span>{smartFit ? "Smart fit · " : "Overlap allowed · "}{zones.length ? `${zones.length} zone${zones.length === 1 ? "" : "s"} · ` : ""}{snap ? `Grid ${gridSize}″` : "Free placement"} · Drag empty space to multi-select · Ctrl C / V</span></div>
         </div>
 

@@ -15,13 +15,23 @@ export type TerrainDef = {
   depth: number;
   height: number;
   limit: number;
-  kind: "wall" | "door" | "pillar" | "connector" | "end" | "floor" | "stair";
+  kind: "wall" | "door" | "pillar" | "connector" | "end" | "floor" | "stair" | "scatter";
   /** Node-to-node span for kits on a fixed assembly grid. Authoritative for
    *  spacing; the piece is drawn centred inside it. */
   span?: number;
   /** Pillars moulded into the piece, at 0, 1 or 2 of its ends. */
   ownColumns?: 0 | 1 | 2;
-  visual?: "solid" | "grid" | "pipe" | "vertical-pipe" | "reinforced" | "fan" | "floor" | "stair" | "door";
+  /**
+   * Size tier, which decides where a scatter piece may stand.
+   *
+   * A Gallowdark corridor gives 69 mm of clear opening between pillars, so a piece
+   * much over 50 mm across makes it awkward to move a model through. Small goes
+   * anywhere, medium in rooms and reserved halls, large only in halls — which is
+   * what the reserved-zone tool is for.
+   */
+  scatter?: "small" | "medium" | "large";
+  visual?: "solid" | "grid" | "pipe" | "vertical-pipe" | "reinforced" | "fan" | "floor" | "stair" | "door"
+    | "crate" | "barrel" | "barricade" | "console" | "machinery" | "container" | "tank" | "pipes";
   note: string;
 };
 
@@ -78,6 +88,11 @@ export const BOARD_SIZES = {
 export type BoardPreset = keyof typeof BOARD_SIZES;
 export const PALETTE_STORAGE_KEY = "mortalis-architect-terrain-palette-v4";
 export const BOARD_STORAGE_KEY = "mortalis-architect-board-size-v1";
+export const APPEARANCE_STORAGE_KEY = "mortalis-architect-appearance-v1";
+
+/** Light or dark for the interface as a whole. Separate from the board STYLE,
+ *  which describes what the terrain is made of, not how the app is lit. */
+export type Appearance = "light" | "dark";
 
 export const MANUFACTURERS: Record<CatalogueId, { name:string; range:string }> = {
   boarding: { name:"Games Workshop", range:"Boarding Actions" },
@@ -109,6 +124,29 @@ export const TERRAIN: TerrainDef[] = [
   // meeting at that corner.
   { id:"pillar", catalogue:"boarding", name:"Pillar", shortName:"Pillar", width:28/MM_PER_IN, depth:25/MM_PER_IN, height:60/MM_PER_IN, limit:32, kind:"pillar", note:"28 × 25 mm" },
   { id:"wall-end", catalogue:"boarding", name:"Wall end", shortName:"Wall end", width:25/MM_PER_IN, depth:14/MM_PER_IN, height:60/MM_PER_IN, limit:4, kind:"end", note:"25 × 14 mm approx." },
+
+  // ---------------------------------------------------------------------------
+  // Scatter
+  //
+  // Games Workshop publishes no dimensions for any of this, so these are DESIGN
+  // APPROXIMATIONS from a sizing reference rather than measurements — treat them as
+  // ranges, and correct any piece you own with a caliper.
+  //
+  // The tiers are what matter, because they decide where a piece may be placed. A
+  // Gallowdark corridor is 97 mm between pillar centres and 69 mm of clear opening,
+  // so anything much over 50 mm across turns a corridor into a squeeze. Hence:
+  // small scatter anywhere, medium in rooms, and the large line-of-sight blockers
+  // only in a reserved hall — which is exactly what the zone tool is for.
+  { id:"scatter-ammo-crate", catalogue:"boarding", name:"Ammo crate", shortName:"Ammo crate", width:25/MM_PER_IN, depth:25/MM_PER_IN, height:20/MM_PER_IN, limit:0, kind:"scatter", scatter:"small", visual:"crate", note:"25 × 25 mm · fits anywhere" },
+  { id:"scatter-barrel", catalogue:"boarding", name:"Promethium barrel", shortName:"Barrel", width:25/MM_PER_IN, depth:25/MM_PER_IN, height:38/MM_PER_IN, limit:0, kind:"scatter", scatter:"small", visual:"barrel", note:"Ø25 × 38 mm · fits anywhere" },
+  { id:"scatter-crate", catalogue:"boarding", name:"Cargo crate", shortName:"Cargo crate", width:40/MM_PER_IN, depth:40/MM_PER_IN, height:35/MM_PER_IN, limit:0, kind:"scatter", scatter:"small", visual:"crate", note:"40 × 40 mm · fits anywhere" },
+  { id:"scatter-console", catalogue:"boarding", name:"Control console", shortName:"Console", width:50/MM_PER_IN, depth:30/MM_PER_IN, height:35/MM_PER_IN, limit:0, kind:"scatter", scatter:"medium", visual:"console", note:"50 × 30 mm · rooms and halls" },
+  { id:"scatter-generator", catalogue:"boarding", name:"Generator", shortName:"Generator", width:60/MM_PER_IN, depth:50/MM_PER_IN, height:55/MM_PER_IN, limit:0, kind:"scatter", scatter:"medium", visual:"machinery", note:"60 × 50 mm · rooms and halls" },
+  { id:"scatter-barricade", catalogue:"boarding", name:"Barricade", shortName:"Barricade", width:90/MM_PER_IN, depth:30/MM_PER_IN, height:40/MM_PER_IN, limit:0, kind:"scatter", scatter:"medium", visual:"barricade", note:"90 × 30 mm · rooms and halls" },
+  { id:"scatter-pipes", catalogue:"boarding", name:"Plasma conduit", shortName:"Conduit", width:90/MM_PER_IN, depth:35/MM_PER_IN, height:45/MM_PER_IN, limit:0, kind:"scatter", scatter:"medium", visual:"pipes", note:"90 × 35 mm · rooms and halls" },
+  { id:"scatter-machinery", catalogue:"boarding", name:"Heavy machinery", shortName:"Machinery", width:90/MM_PER_IN, depth:75/MM_PER_IN, height:85/MM_PER_IN, limit:0, kind:"scatter", scatter:"large", visual:"machinery", note:"90 × 75 mm · halls only" },
+  { id:"scatter-container", catalogue:"boarding", name:"Munitorum container", shortName:"Container", width:120/MM_PER_IN, depth:60/MM_PER_IN, height:60/MM_PER_IN, limit:0, kind:"scatter", scatter:"large", visual:"container", note:"120 × 60 mm · halls only" },
+  { id:"scatter-tank", catalogue:"boarding", name:"Storage tank", shortName:"Storage tank", width:90/MM_PER_IN, depth:110/MM_PER_IN, height:120/MM_PER_IN, limit:0, kind:"scatter", scatter:"large", visual:"tank", note:"90 × 110 mm · halls only" },
 
   { id:"tt-connector", catalogue:"ttcombat", name:"Iron Labyrinth connector block", shortName:"Connector", width:50/MM_PER_IN, depth:50/MM_PER_IN, height:60/MM_PER_IN, limit:24, kind:"connector", note:"50 × 50 mm" },
   { id:"tt-wall-end", catalogue:"ttcombat", name:"Iron Labyrinth wall end", shortName:"Wall end", width:46/MM_PER_IN, depth:33/MM_PER_IN, height:60/MM_PER_IN, limit:21, kind:"end", note:"46 × 33 mm" },
@@ -145,6 +183,14 @@ export const TERRAIN_KITS: TerrainKit[] = [
   { id:"iron-stairs", catalogue:"ttcombat", maker:"TTCombat", name:"Iron Labyrinth Stairs", description:"Two connector-compatible stair sections", source:"TTCombat published dimensions", sourceUrl:"https://ttcombat.com/products/iron-labyrinth-stairs", inventory:{ "tt-stair":2 } },
   { id:"iron-death-quadrant", catalogue:"ttcombat", maker:"TTCombat", name:"Iron Labyrinth – Death Quadrant Complex", description:"Dimensioned columns, walls, and door modules", source:"TTCombat published dimensions", sourceUrl:"https://ttcombat.com/products/iron-labyrinth-death-quadrant-complex", inventory:{ "tt-dq-column":11, "tt-dq-double-wall":4, "tt-dq-single-wall":4, "tt-dq-double-door":1, "tt-dq-single-door":2 }, caveat:"Platforms, tiles, ladders, and stairs are listed by TTCombat but omitted from the scaled palette because their footprints are not published." },
   { id:"iron-ultima", catalogue:"ttcombat", maker:"TTCombat", name:"Iron Labyrinth Ultima Complex", description:"24 connectors, 21 ends, and 18 wall sections", source:"TTCombat published dimensions", sourceUrl:"https://ttcombat.com/products/iron-labyrinth-bundle", inventory:{ "tt-connector":24, "tt-wall-end":21, "tt-solid-wall":8, "tt-grid-wall":2, "tt-solid-pipe-wall":2, "tt-vertical-pipe-wall":2, "tt-reinforced-pipe-wall":2, "tt-fan-wall":2 } },
+  // Not a real GW product — the scatter pieces above have no published kit to
+  // belong to, and the "Available pieces" browser only ever shows what a selected
+  // kit lists. Without an entry here the pieces exist in the catalogue but are
+  // permanently unreachable from the UI. One of each small/medium type by default,
+  // so a generated board has something to dress a room with immediately; the large
+  // line-of-sight blockers are 0 by default since they need a reserved hall to
+  // legally stand in.
+  { id:"scatter-set", catalogue:"boarding", maker:"Design approximation", name:"Deck Scatter (unofficial)", description:"Crates, barrels, consoles and machinery sized from a community scale reference, not a published GW set", source:"Sized from Munitorum container and general 28-35mm scatter references — see terrain.ts", sourceUrl:"https://www.warhammer.com/en-GB/shop/Battlezone-Manufactorum-Munitorum-Armoured-Containers-2020", inventory:{ "scatter-ammo-crate":3, "scatter-barrel":3, "scatter-crate":2, "scatter-console":2, "scatter-generator":1, "scatter-barricade":2, "scatter-pipes":2, "scatter-machinery":0, "scatter-container":0, "scatter-tank":0 }, caveat:"Games Workshop has not published dimensions for Boarding Actions scatter terrain. These footprints are design approximations sized off the ~120 x 60 mm Munitorum container and general 28-35mm scale references — correct any piece you own with a caliper." },
 ];
 
 export const getDef = (id: string) => TERRAIN.find((item) => item.id === id)!;

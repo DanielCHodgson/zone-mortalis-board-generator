@@ -17,11 +17,12 @@
  */
 
 import {
-  internalEdgeCount, makeLattice, pitchIsBuildable, columnBite,
+  edgeKey, internalEdgeCount, makeLattice, nodeWorld, pitchIsBuildable, columnBite,
   type Lattice,
 } from "./lattice.ts";
-import { buildDeckPlan, renderPlan, type DeckPlan } from "./deckplan.ts";
+import { buildDeckPlan, renderPlan, type DeckPlan, type Rect } from "./deckplan.ts";
 import { build, type BuildDef, type BuiltPiece } from "./build.ts";
+import { placeScatter, type ScatterTier } from "./scatter.ts";
 import {
   distanceFromReference, invariants, measure,
   PROVISIONAL_REFERENCE, type Metrics, type ReferenceProfile,
@@ -33,7 +34,9 @@ export type KitDef = {
   id:string;
   catalogue:KitCatalogue;
   width:number; depth:number; height:number;
-  kind:"wall" | "door" | "pillar" | "connector" | "end" | "floor" | "stair";
+  kind:"wall" | "door" | "pillar" | "connector" | "end" | "floor" | "stair" | "scatter";
+  /** Size tier for scatter, deciding whether it may stand in a corridor. */
+  scatter?:ScatterTier;
   /** Node-to-node span, for kits built on a fixed assembly grid. Gallowdark is
    *  such a kit: a short panel spans one 97 mm square and a long panel two. */
   span?:number;
@@ -107,6 +110,13 @@ const randomFactory = (seed:number) => {
  */
 const spanOf = (def:KitDef, support:number) => def.span ?? support + def.width;
 
+/** Fallback tier for a scatter piece whose catalogue entry does not state one,
+ *  taken from whether it would fit through a corridor. */
+const tierFor = (width:number, depth:number):ScatterTier => {
+  const across = Math.max(width, depth);
+  return across <= 1.6 ? "small" : across <= 3.6 ? "medium" : "large";
+};
+
 export type KitReading = {
   pitch:number;
   support:number;
@@ -176,9 +186,28 @@ export const readKit = (defs:KitDef[], inventory:Record<string, number>, catalog
  * the table, after which there is nowhere left to grow and the surplus does raise
  * density. Footprint first, density second.
  */
+/**
+ * How many panels the outside wall will cost.
+ *
+ * A complex that fills the table borrows the board edge as its hull for free. One
+ * that does not has to build its own, and that is not a rounding error: a 6 x 7
+ * complex inset on a 4' board needs 26 panels of exterior before a single interior
+ * bulkhead goes up, against a capacity of 48. Sizing that ignores it produces a
+ * plan the kit cannot finish, and the build then backs off in 8% steps until it
+ * fits — which works, but wastes the whole first half of the candidate budget.
+ */
+const hullCost = (cols:number, rows:number, fillsX:boolean, fillsY:boolean, anchor:Anchor) => {
+  if (fillsX && fillsY) return 0;
+  // Anchored into a corner, two sides are the table edge. Against an edge, one is.
+  // Centred, the building pays for all four.
+  const sidesX = anchor === "centre" ? 2 : anchor === "edge" ? 2 : 1;
+  const sidesY = anchor === "centre" ? 2 : anchor === "edge" ? 1 : 1;
+  return (fillsX ? 0 : sidesX * rows) + (fillsY ? 0 : sidesY * cols);
+};
+
 const sizeLattice = (
   boardWidth:number, boardHeight:number, pitch:number, support:number,
-  capacity:number, targetDensity:number,
+  capacity:number, targetDensity:number, anchor:Anchor,
 ) => {
   // A lattice flush to the board edge would centre a column on the edge itself and
   // hang half of it over the side, so a margin is kept for the complex to be inset
@@ -195,7 +224,11 @@ const sizeLattice = (
   let best:{ cols:number; rows:number } | null = null;
   let bestKey = -Infinity;
   for (let cols = 2; cols <= maxCols; cols++) for (let rows = 2; rows <= maxRows; rows++) {
-    if (internalEdgeCount(cols, rows) * targetDensity > capacity) continue;
+    const fillsX = cols >= maxCols;
+    const fillsY = rows >= maxRows;
+    const needed = internalEdgeCount(cols, rows) * targetDensity
+      + hullCost(cols, rows, fillsX, fillsY, anchor);
+    if (needed > capacity) continue;
     // Biggest first, but proportion matters enough to give up a cell or two for: on
     // a square table, 5 x 9 holds more cells than 6 x 7 and looks like a corridor
     // block rather than a deck. Compared as a log ratio so that being twice as long
@@ -222,9 +255,12 @@ const sizeLattice = (
  *            rooms. Right when you want a free-standing structure with deck all
  *            round; expensive otherwise.
  */
-const resolveAnchor = (requested:Anchor, greed:number, slackX:number, slackY:number, pitch:number):Anchor => {
+const resolveAnchor = (requested:Anchor, greed:number):Anchor => {
   if (requested !== "auto") return requested;
-  if (slackX < pitch && slackY < pitch) return "centre";
+  // Enough terrain to fill the table: it is centred because there is nowhere else
+  // for it to go, and all four sides are the table edge. Short of that, the
+  // cheapest hull wins, so a small complex goes into a corner.
+  if (greed >= .95) return "centre";
   return greed < .8 ? "corner" : "edge";
 };
 
@@ -247,6 +283,63 @@ const rectsOverlap = (
   second:{ x:number;y:number;width:number;height:number },
 ) => first.x < second.x + second.width && first.x + first.width > second.x
   && first.y < second.y + second.height && first.y + first.height > second.y;
+
+/**
+ * Which perimeter edges face open deck and so need building as the outside wall.
+ *
+ * An edge sitting on the table border is the hull for free. One that is not is the
+ * complex's own exterior, and the difference between building those and leaving
+ * them bare is the difference between a sectioned-off structure and a patch of
+ * corridors with stubs hanging off it.
+ */
+const exteriorEdges = (lattice:Lattice, boardWidth:number, boardHeight:number, support:number) => {
+  // The lattice is deliberately inset by half a column wherever it meets a border,
+  // so that a column centred on a perimeter node sits hard against the table edge
+  // instead of hanging over it. That inset still counts as "at the board" — reading
+  // it as open deck makes a complex that fills the table build a second hull just
+  // inside the table edge, which swallowed the entire panel budget and left the
+  // interior almost unsubdivided.
+  const tolerance = support / 2 + .2;
+  const atBoard = (value:number, limit:number) => value <= tolerance || value >= limit - tolerance;
+  const exterior = new Set<string>();
+  for (let col = 0; col < lattice.cols; col++) {
+    [0, lattice.rows].forEach((row) => {
+      const { y } = nodeWorld(lattice, { col, row });
+      if (!atBoard(y, boardHeight)) exterior.add(edgeKey({ axis:"h", col, row }));
+    });
+  }
+  for (let row = 0; row < lattice.rows; row++) {
+    [0, lattice.cols].forEach((col) => {
+      const { x } = nodeWorld(lattice, { col, row });
+      if (!atBoard(x, boardWidth)) exterior.add(edgeKey({ axis:"v", col, row }));
+    });
+  }
+  return exterior;
+};
+
+/**
+ * Reserved zones, expressed as whole lattice cells.
+ *
+ * Rounded OUTWARD — every cell the zone touches at all is reserved, not just the
+ * ones it mostly covers. A zone is drawn freehand and will not line up with the
+ * grid, so snapping to the nearest line leaves the reserved area offset from the
+ * drawn rectangle by up to half a square, and the walls around the reserved region
+ * then land *inside* the rectangle the user drew. Rounding outward guarantees the
+ * reserved cells cover the drawn zone, so its boundary walls fall outside it.
+ *
+ * The cost is that a zone claims a little more floor than was drawn. That is the
+ * right trade: the point of the tool is that nothing is generated in there.
+ */
+const reservedRects = (lattice:Lattice, zones:Zone[]):Rect[] =>
+  zones.map((zone) => {
+    const low = (value:number, origin:number, pitch:number) => Math.floor((value - origin) / pitch);
+    const high = (value:number, origin:number, pitch:number) => Math.ceil((value - origin) / pitch);
+    const col = Math.max(0, low(zone.x, lattice.originX, lattice.pitchX));
+    const row = Math.max(0, low(zone.y, lattice.originY, lattice.pitchY));
+    const right = Math.min(lattice.cols, high(zone.x + zone.width, lattice.originX, lattice.pitchX));
+    const bottom = Math.min(lattice.rows, high(zone.y + zone.height, lattice.originY, lattice.pitchY));
+    return { col, row, cols:right - col, rows:bottom - row };
+  }).filter((rect) => rect.cols > 0 && rect.rows > 0);
 
 const zoneOverlapArea = (rect:{ x:number;y:number;width:number;height:number }, zones:Zone[]) =>
   zones.reduce((sum, zone) => {
@@ -284,18 +377,26 @@ export const generate = (input:GenerateInput):GenerateReport => {
   }
 
   const spendable = Math.max(1, Math.round(kit.capacity * usage));
-  const sized = sizeLattice(boardWidth, boardHeight, kit.pitch, kit.support, spendable, reference.density);
-  if (!sized) return empty("the board is smaller than one grid square");
 
-  const boardEdges = internalEdgeCount(sized.maxCols, sized.maxRows);
+  // Anchoring is settled before sizing, because the two depend on each other: how
+  // big the complex can be depends on how much outside wall it has to build, which
+  // depends on how many sides borrow the table edge. Resolving the anchor from
+  // coverage alone breaks the circle.
+  const roughCols = Math.floor((boardWidth - kit.support / 2) / kit.pitch);
+  const roughRows = Math.floor((boardHeight - kit.support / 2) / kit.pitch);
+  if (roughCols < 2 || roughRows < 2) return empty("the board is smaller than one grid square");
+  const boardEdges = internalEdgeCount(roughCols, roughRows);
   const greed = spendable / Math.max(1, boardEdges * reference.density);
   const setsToFill = Math.max(1, Math.ceil(1 / Math.max(greed, 1e-6)));
+  const anchor = resolveAnchor(input.anchor ?? "auto", greed);
+
+  const sized = sizeLattice(boardWidth, boardHeight, kit.pitch, kit.support, spendable, reference.density, anchor);
+  if (!sized) return empty("the board is smaller than one grid square");
 
   const gridWidth = sized.cols * kit.pitch;
   const gridHeight = sized.rows * kit.pitch;
   const slackX = Math.max(0, boardWidth - gridWidth);
   const slackY = Math.max(0, boardHeight - gridHeight);
-  const anchor = resolveAnchor(input.anchor ?? "auto", greed, slackX, slackY, kit.pitch);
   const inset = Math.min(kit.support / 2, slackX / 2, slackY / 2);
 
   const random = randomFactory(seed);
@@ -312,25 +413,27 @@ export const generate = (input:GenerateInput):GenerateReport => {
   const maxSight = Math.max(3, Math.round(reference.longestSight + 2));
 
   for (let attempt = 0; attempt < candidates; attempt++) {
-    // Anchoring is re-rolled per candidate, and a position overlapping a reserved
-    // zone is skipped rather than having its pieces deleted afterwards. Deleting
-    // pieces from a finished layout is what leaves a bulkhead with a hole in it.
-    let origin = originsFor(anchor, slackX, slackY, inset, random);
-    if (zones.length) {
-      const options = Array.from({ length:8 }, () => originsFor(anchor, slackX, slackY, inset, random))
-        .map((candidate) => ({
-          candidate,
-          overlap:zoneOverlapArea({ x:candidate.x, y:candidate.y, width:gridWidth, height:gridHeight }, zones),
+    // Where zones exist, the complex is nudged to CONTAIN them rather than to avoid
+    // them. A hangar or command room drawn on the board is meant to be a room in the
+    // building — it is only useful as one if the building is around it. (The previous
+    // pass did the opposite, shoving the complex away to minimise overlap, which is
+    // why a zone in the middle of the table pushed the whole complex into a corner
+    // and left the zone as bare deck.)
+    const origin = zones.length
+      ? Array.from({ length:10 }, () => originsFor(anchor, slackX, slackY, inset, random))
+        .map((option) => ({
+          option,
+          covered:zoneOverlapArea({ x:option.x, y:option.y, width:gridWidth, height:gridHeight }, zones),
         }))
-        .sort((first, second) => first.overlap - second.overlap);
-      origin = options[0].candidate;
-    }
-
+        .sort((first, second) => second.covered - first.covered)[0].option
+      : originsFor(anchor, slackX, slackY, inset, random);
     const lattice = makeLattice(sized.cols, sized.rows, kit.pitch, kit.pitch, origin.x, origin.y);
     const plan = buildDeckPlan({
       lattice,
       wallEdgeBudget:budget,
       hatchSupply:kit.doorways,
+      exterior:exteriorEdges(lattice, boardWidth, boardHeight, kit.support),
+      reserved:reservedRects(lattice, zones),
       random,
     });
 
@@ -347,7 +450,7 @@ export const generate = (input:GenerateInput):GenerateReport => {
 
     const defMap = new Map(kit.buildDefs.map((def) => [def.id, def]));
     const failures = invariants({
-      plan, pieces:built.pieces, defs:defMap, inventory, boardWidth, boardHeight, maxSight,
+      plan, pieces:built.pieces, defs:defMap, inventory, boardWidth, boardHeight, maxSight, zones,
     });
     if (failures.length) {
       failures.forEach((failure) => { rejected[failure.rule] = (rejected[failure.rule] ?? 0) + 1; });
@@ -370,8 +473,79 @@ export const generate = (input:GenerateInput):GenerateReport => {
   const builtCells = best.metrics ? best.plan.panelEdges.length : 0;
   const leftover = Math.max(0, kit.capacity - builtCells);
 
-  // Accessories dress the open deck the complex does not occupy. They are scatter,
-  // not structure, so they are placed last and never allowed to foul a doorway.
+  // Scatter dresses the finished deck: crates in the corridors, machinery in the
+  // halls. Placed last, after the layout has passed every invariant, so it cannot
+  // break one — it carries no wall and blocks no route.
+  const scatterDefs = defs
+    .filter((def) => def.catalogue === catalogue && def.kind === "scatter" && (inventory[def.id] ?? 0) > 0)
+    .map((def) => ({
+      id:def.id, width:def.width, depth:def.depth, height:def.height,
+      tier:def.scatter ?? tierFor(def.width, def.depth),
+    }));
+  if (scatterDefs.length) {
+    const defMap = new Map(kit.buildDefs.map((def) => [def.id, def]));
+    const boxOf = (piece:BuiltPiece) => {
+      const def = defMap.get(piece.defId);
+      const along = def?.length ?? .5;
+      const across = def?.depth ?? .5;
+      return piece.rotation === 90
+        ? { x:piece.x, y:piece.y, width:across, height:along }
+        : { x:piece.x, y:piece.y, width:along, height:across };
+    };
+    const wanted = Object.fromEntries(scatterDefs.map((def) => [def.id, Math.round((inventory[def.id] ?? 0) * usage)]));
+    const inside = placeScatter({
+      plan:best.plan, defs:scatterDefs, stock:wanted, heights,
+      occupied:pieces.map(boxOf), nextUid, random,
+    });
+    pieces.push(...inside);
+
+    // Whatever would not fit inside the complex dresses the open deck around it,
+    // preferring any reserved zone that fell outside the footprint. A zone drawn on
+    // bare deck is still a designated space — a hangar apron, a loading bay — and
+    // filling it is the whole point of the tool. This is also where the large
+    // line-of-sight blockers end up on a board whose complex has no hall big enough
+    // for them.
+    const complex = { x:best.lattice.originX, y:best.lattice.originY, width:gridWidth, height:gridHeight };
+    const footprints = [...pieces.map(boxOf)];
+    const placedCounts = new Map<string, number>();
+    inside.forEach((piece) => placedCounts.set(piece.defId, (placedCounts.get(piece.defId) ?? 0) + 1));
+    const outerZones = zones.filter((zone) => zoneOverlapArea(zone, [complex]) < zone.width * zone.height * .5);
+
+    scatterDefs.forEach((def) => {
+      const remaining = (wanted[def.id] ?? 0) - (placedCounts.get(def.id) ?? 0);
+      for (let copy = 0; copy < remaining; copy++) {
+        for (let attempt = 0; attempt < 50; attempt++) {
+          const rotation:(0 | 90) = random() < .5 ? 0 : 90;
+          const width = rotation === 90 ? def.depth : def.width;
+          const height = rotation === 90 ? def.width : def.depth;
+          // Aim inside a reserved zone while there is one; otherwise anywhere on the
+          // open deck. Zones are tried first so they fill up before the rest.
+          const target = outerZones.length && attempt < 35
+            ? outerZones[Math.floor(random() * outerZones.length)]
+            : { x:0, y:0, width:boardWidth, height:boardHeight };
+          const rect = {
+            x:target.x + random() * Math.max(0, target.width - width),
+            y:target.y + random() * Math.max(0, target.height - height),
+            width, height,
+          };
+          if (rect.x < 0 || rect.y < 0 || rect.x + width > boardWidth || rect.y + height > boardHeight) continue;
+          if (rectsOverlap(rect, complex)) continue;
+          if (footprints.some((other) => rectsOverlap(rect, other))) continue;
+          const piece:BuiltPiece = {
+            uid:nextUid(), defId:def.id, x:rect.x, y:rect.y, rotation,
+            height:heights[def.id] ?? def.height,
+          };
+          pieces.push(piece);
+          footprints.push(rect);
+          break;
+        }
+      }
+    });
+  }
+
+  // Accessories — the Iron Labyrinth floors and stair sections — are large enough to
+  // be terrain features rather than scatter, so they go on the open deck OUTSIDE the
+  // complex, where there is room for them.
   if (kit.accessories.length) {
     const complex = { x:best.lattice.originX, y:best.lattice.originY, width:gridWidth, height:gridHeight };
     kit.accessories.forEach((def) => {

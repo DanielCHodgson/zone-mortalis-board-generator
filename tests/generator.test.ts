@@ -321,23 +321,138 @@ test("anchoring puts a small complex where it was asked to go", () => {
   );
 });
 
-test("a reserved zone is left clear without cutting holes in the walls", () => {
-  // The old generator deleted pieces that landed in a zone, which left bulkheads
-  // with gaps. The complex is moved instead, so the zone stays clear and the walls
-  // stay whole.
-  const width = 48, height = 48;
-  const zone = { x:2, y:2, width:14, height:14 };
+test("a reserved zone is left genuinely clear, on every board size", () => {
+  // This test used to be worthless. It asserted only that no OTHER invariant broke,
+  // and `invariants` did not check zones at all, so it passed happily on layouts with
+  // walls straight through the zone. Now it measures the thing directly, across every
+  // board size, because the failure was size-dependent: a complex that filled the
+  // board had no slack to move into and simply built over the zone.
+  Object.entries(BOARD_SIZES).forEach(([name, size]) => [1, 2].forEach((sets) => SEEDS.slice(0, 3).forEach((seed) => {
+    const zone = { x:size.width * .3, y:size.height * .3, width:9, height:8 };
+    const report = generate({
+      boardWidth:size.width, boardHeight:size.height, catalogue:"boarding", defs,
+      inventory:scaled(sets), heights, zones:[zone], seed, nextUid,
+    });
+    assert.ok(report.plan, `${name} x${sets} seed ${seed}: nothing built — ${report.note}`);
+
+    const kit = readKit(defs, scaled(sets), "boarding")!;
+    const defMap = new Map(kit.buildDefs.map((def) => [def.id, def]));
+    const structural = report.pieces.filter((piece) => defMap.has(piece.defId));
+    const intruding = structural.filter((piece) => {
+      const def = defMap.get(piece.defId)!;
+      const width = piece.rotation === 90 ? def.depth : def.length;
+      const height = piece.rotation === 90 ? def.length : def.depth;
+      const centre = { x:piece.x + width / 2, y:piece.y + height / 2 };
+      return centre.x > zone.x + .25 && centre.x < zone.x + zone.width - .25
+        && centre.y > zone.y + .25 && centre.y < zone.y + zone.height - .25;
+    });
+    assert.deepEqual(
+      intruding.map((piece) => piece.defId), [],
+      `${name} x${sets} seed ${seed}: terrain generated inside the reserved zone`,
+    );
+
+    const failures = invariants({
+      plan:report.plan, pieces:report.pieces, defs:defMap,
+      inventory:scaled(sets), boardWidth:size.width, boardHeight:size.height, maxSight:9, zones:[zone],
+    });
+    assert.deepEqual(failures.map((failure) => failure.rule), [], `${name} x${sets} seed ${seed}`);
+  })));
+});
+
+test("a complex smaller than the board builds its own outside wall", () => {
+  // Without this, a sparse board is a patch of corridors that simply stops, with wall
+  // stubs dangling into open deck. The hull is what makes it read as a building.
+  const board = 48;
   const report = generate({
-    boardWidth:width, boardHeight:height, catalogue:"boarding", defs,
-    inventory:scaled(1), heights, zones:[zone], seed:4, nextUid,
+    boardWidth:board, boardHeight:board, catalogue:"boarding", defs,
+    inventory:scaled(1), heights, zones:[], seed:6, nextUid, anchor:"corner",
   });
   assert.ok(report.plan, `nothing built — ${report.note}`);
-  const kit = readKit(defs, scaled(1), "boarding")!;
-  const failures = invariants({
-    plan:report.plan, pieces:report.pieces, defs:new Map(kit.buildDefs.map((def) => [def.id, def])),
-    inventory:scaled(1), boardWidth:width, boardHeight:height, maxSight:8,
+  const { lattice, state } = report.plan;
+
+  const perimeter:{ edge:string; atBoard:boolean }[] = [];
+  const tolerance = 1.5;
+  for (let col = 0; col < lattice.cols; col++) [0, lattice.rows].forEach((row) => {
+    const y = lattice.originY + row * lattice.pitchY;
+    perimeter.push({ edge:edgeKey({ axis:"h", col, row }), atBoard:y <= tolerance || y >= board - tolerance });
   });
-  assert.deepEqual(failures.map((failure) => failure.rule), [], "zones must not cost invariants");
+  for (let row = 0; row < lattice.rows; row++) [0, lattice.cols].forEach((col) => {
+    const x = lattice.originX + col * lattice.pitchX;
+    perimeter.push({ edge:edgeKey({ axis:"v", col, row }), atBoard:x <= tolerance || x >= board - tolerance });
+  });
+
+  const facingDeck = perimeter.filter((entry) => !entry.atBoard);
+  assert.ok(facingDeck.length, "a corner-anchored complex on a 4' board must face open deck on two sides");
+  const bare = facingDeck.filter((entry) => !state.has(entry.edge));
+  assert.deepEqual(bare.map((entry) => entry.edge), [], "every side facing open deck must be walled");
+
+  // And it needs a way in, or it is a sealed box.
+  const entrances = facingDeck.filter((entry) => state.get(entry.edge) !== "wall");
+  assert.ok(entrances.length >= 1, "the building must have at least one entrance");
+
+  // The sides that ARE the table edge stay free — the board is the hull there, and
+  // walling it would spend panels on something the table already provides.
+  const wastedOnBoardEdge = perimeter.filter((entry) => entry.atBoard && state.has(entry.edge));
+  assert.deepEqual(wastedOnBoardEdge.map((entry) => entry.edge), [], "the table edge is a wall for free");
+});
+
+test("scatter respects corridor clearance and never fouls the structure", () => {
+  // A Gallowdark corridor is 69 mm of clear opening, so a large piece standing in one
+  // cannot be moved past. Small scatter goes anywhere; medium wants a room; the
+  // line-of-sight blockers want a hall or open deck.
+  const scatterStock = Object.fromEntries(
+    TERRAIN.filter((def) => def.kind === "scatter").map((def) => [def.id, 4]),
+  );
+  const inventory = { ...scaled(1), ...scatterStock };
+  const board = 48;
+  const zone = { x:8, y:8, width:14, height:12 };
+  const report = generate({
+    boardWidth:board, boardHeight:board, catalogue:"boarding", defs,
+    inventory, heights, zones:[zone], seed:9, nextUid,
+  });
+  assert.ok(report.plan, `nothing built — ${report.note}`);
+  const { lattice } = report.plan;
+
+  const byId = new Map(TERRAIN.map((def) => [def.id, def]));
+  const boxOf = (piece:{ defId:string; x:number; y:number; rotation:number }) => {
+    const def = byId.get(piece.defId)!;
+    const width = piece.rotation === 90 ? def.depth : def.width;
+    const height = piece.rotation === 90 ? def.width : def.depth;
+    return { x:piece.x, y:piece.y, width, height, def };
+  };
+  const scatter = report.pieces.filter((piece) => byId.get(piece.defId)?.kind === "scatter");
+  assert.ok(scatter.length, "scatter should be placed when the palette holds some");
+
+  // Scatter must never sit on anything. Structure-against-structure is deliberately
+  // NOT checked here: a pillar overlaps the panels it brackets and a wall-end cap
+  // overlaps the panel it caps, because that overlap IS the joint. `invariants`
+  // covers those with a rule that understands the difference.
+  const boxes = report.pieces.map(boxOf);
+  boxes.filter((box) => box.def.kind === "scatter").forEach((piece) => {
+    boxes.forEach((other) => {
+      if (other === piece) return;
+      const clash = piece.x < other.x + other.width - .02 && piece.x + piece.width > other.x + .02
+        && piece.y < other.y + other.height - .02 && piece.y + piece.height > other.y + .02;
+      assert.ok(!clash, `scatter ${piece.def.id} overlaps ${other.def.id}`);
+    });
+  });
+
+  // No large piece stands in a corridor.
+  const regionKindAt = (x:number, y:number) => {
+    const col = Math.floor((x - lattice.originX) / lattice.pitchX);
+    const row = Math.floor((y - lattice.originY) / lattice.pitchY);
+    if (col < 0 || row < 0 || col >= lattice.cols || row >= lattice.rows) return "deck";
+    return report.plan!.regions[report.plan!.cellRegion[row * lattice.cols + col]]?.kind ?? "deck";
+  };
+  scatter.forEach((piece) => {
+    const box = boxOf(piece);
+    const where = regionKindAt(box.x + box.width / 2, box.y + box.height / 2);
+    if (box.def.scatter === "small") return;
+    assert.notEqual(
+      where, "corridor",
+      `${piece.defId} (${box.def.scatter}) is standing in a corridor`,
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -63,16 +63,23 @@ export type Metrics = {
 export type ReferenceProfile = Metrics & { weights:Partial<Record<keyof Metrics, number>> };
 
 export const PROVISIONAL_REFERENCE:ReferenceProfile = {
-  density:.62,
-  meanSight:2.1,
+  // Interior density, excluding the outside wall. Deliberately below the 0.62 the
+  // kit arithmetic alone suggests, for two reasons: a complex smaller than the board
+  // spends part of its panels on its own hull, and a board packed to the arithmetic
+  // limit reads as solid rather than as dense. Lowering it also spreads the same
+  // terrain over a LARGER footprint, because sizing solves
+  // `internalEdges x density + hull <= capacity` — so this one number is the
+  // "use a bit more of the table" dial.
+  density:.52,
+  meanSight:2.3,
   longestSight:4.5,
-  meanRun:2.6,
+  meanRun:2.8,
   longestRun:6,
-  junctionShare:.42,
-  meanRoom:2.4,
-  roomSpread:1.5,
+  junctionShare:.4,
+  meanRoom:3,
+  roomSpread:1.6,
   deadEndShare:.12,
-  hatchShare:.5,
+  hatchShare:.46,
   // Sight lines and run structure are what separate a deck from a scatter, so they
   // carry the most weight. Density matters but is largely fixed by the box.
   weights:{
@@ -189,9 +196,10 @@ const panelsClash = (first:Box, second:Box) => {
  * candidate died on — that turned out to be the fastest way to tell a generator
  * that is nearly right from one that is structurally wrong.
  */
-export const invariants = ({ plan, pieces, defs, inventory, boardWidth, boardHeight, maxSight }:{
+export const invariants = ({ plan, pieces, defs, inventory, boardWidth, boardHeight, maxSight, zones = [] }:{
   plan:DeckPlan; pieces:BuiltPiece[]; defs:Map<string, BuildDef>;
   inventory:Record<string, number>; boardWidth:number; boardHeight:number; maxSight:number;
+  zones?:{ x:number; y:number; width:number; height:number }[];
 }):Failure[] => {
   const failures:Failure[] = [];
   const { lattice, state } = plan;
@@ -272,6 +280,27 @@ export const invariants = ({ plan, pieces, defs, inventory, boardWidth, boardHei
   });
   if (unsupported.length) {
     failures.push({ rule:"bracketed", detail:`${unsupported.length} panel ends stand on nothing` });
+  }
+
+  // 7. Reserved zones stay clear.
+  //
+  // A rule, not a hope. The generator previously "respected" zones by nudging the
+  // whole complex to overlap them less, which silently gave up whenever the complex
+  // filled the board — and the test that was supposed to catch it only checked that
+  // no OTHER invariant broke, so it passed on layouts with walls straight through
+  // the zone. Walls AROUND a zone are wanted; anything inside it is not.
+  if (zones.length) {
+    const structuralKinds = new Set(["wall", "door", "pillar", "connector", "end"]);
+    const intruding = pieces.filter((piece) => {
+      if (!structuralKinds.has(defs.get(piece.defId)?.kind ?? "")) return false;
+      const rect = rectOf(piece, defs);
+      const centre = { x:rect.x + rect.width / 2, y:rect.y + rect.height / 2 };
+      return zones.some((zone) => centre.x > zone.x + .25 && centre.x < zone.x + zone.width - .25
+        && centre.y > zone.y + .25 && centre.y < zone.y + zone.height - .25);
+    });
+    if (intruding.length) {
+      failures.push({ rule:"zone", detail:`${intruding.length} pieces stand inside a reserved zone (${intruding.map((piece) => piece.defId).join(", ")})` });
+    }
   }
 
   return failures;

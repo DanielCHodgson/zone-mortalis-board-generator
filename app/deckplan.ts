@@ -33,13 +33,13 @@
  */
 
 import {
-  cellKey, edgeKey, edgesOfCell, internalEdges, makeLattice,
+  allEdges, cellInside, cellKey, edgeKey, edgesOfCell, internalEdges, isBorderEdge, makeLattice,
   type EdgeState, type LatticeCell, type LatticeEdge, type Lattice,
 } from "./lattice.ts";
 
 export type Rect = { col:number; row:number; cols:number; rows:number };
 
-export type RegionKind = "corridor" | "room";
+export type RegionKind = "corridor" | "room" | "reserved";
 
 export type Region = { id:number; kind:RegionKind; cells:LatticeCell[]; bounds:Rect };
 
@@ -62,6 +62,25 @@ export type DeckPlanInput = {
   /** How many hatchway panels are in stock. Doorways beyond this become open
    *  archways, which cost nothing and are a legitimate way into a compartment. */
   hatchSupply:number;
+  /**
+   * Lattice perimeter edges that face open deck rather than the table edge, and
+   * must therefore be built as the complex's own outside wall.
+   *
+   * This is what makes a complex smaller than the board read as a BUILDING rather
+   * than as a patch of walls that stops. When the lattice fills the table, its
+   * perimeter is the board edge and costs nothing; when it is inset, those same
+   * edges are open air, and leaving them bare is why sparse boards came out as
+   * runs with stubs dangling off them into nothing.
+   */
+  exterior?:Set<string>;
+  /**
+   * Cells the user has reserved — a hangar, a command room, a generator hall.
+   *
+   * Reserved cells become a single undivided compartment with walls around it and
+   * a doorway in, which is what the tool is for. No panel is ever placed inside
+   * one; scatter goes there instead.
+   */
+  reserved?:Rect[];
   /** Largest compartment, in cells, before a split becomes compulsory. */
   roomMax?:number;
   /** Chance of splitting a compartment that is already small enough to keep. */
@@ -223,6 +242,28 @@ const chooseCorridors = (lattice:Lattice, random:() => number):Corridor[] => {
   return [{ axis, at:first }, { axis, at:second }];
 };
 
+/**
+ * Cut a rectangular hole out of a rectangle, leaving up to four pieces.
+ *
+ * Used for reserved zones. They are rectangles in board space, so they are
+ * rectangles in lattice space too, which means the recursive subdivision can carry
+ * on working on rectangles either side of them rather than needing to handle
+ * arbitrary cell sets.
+ */
+const subtractRect = (rect:Rect, hole:Rect):Rect[] => {
+  const left = Math.max(rect.col, hole.col);
+  const right = Math.min(rect.col + rect.cols, hole.col + hole.cols);
+  const top = Math.max(rect.row, hole.row);
+  const bottom = Math.min(rect.row + rect.rows, hole.row + hole.rows);
+  if (left >= right || top >= bottom) return [rect];
+  return [
+    { col:rect.col, row:rect.row, cols:rect.cols, rows:top - rect.row },
+    { col:rect.col, row:bottom, cols:rect.cols, rows:rect.row + rect.rows - bottom },
+    { col:rect.col, row:top, cols:left - rect.col, rows:bottom - top },
+    { col:right, row:top, cols:rect.col + rect.cols - right, rows:bottom - top },
+  ].filter(rectArea);
+};
+
 /** Remove the corridor bands from a set of rectangles, leaving the blocks
  *  between them to be subdivided into compartments. */
 const carve = (rects:Rect[], corridor:Corridor):Rect[] =>
@@ -280,7 +321,9 @@ const chooseBulkheads = (lattice:Lattice, corridors:Corridor[], random:() => num
   return bulkheads;
 };
 
-const assignRegions = (lattice:Lattice, corridorCells:Set<string>, rooms:Rect[], bulkheads:Set<string>) => {
+const assignRegions = (
+  lattice:Lattice, corridorCells:Set<string>, rooms:Rect[], bulkheads:Set<string>, reserved:Rect[] = [],
+) => {
   const cellRegion = new Int32Array(lattice.cols * lattice.rows).fill(-1);
   const index = (cell:LatticeCell) => cell.row * lattice.cols + cell.col;
   const regions:Region[] = [];
@@ -322,30 +365,48 @@ const assignRegions = (lattice:Lattice, corridorCells:Set<string>, rooms:Rect[],
     });
   });
 
-  rooms.forEach((rect) => {
+  // Reserved halls next, so they claim their cells before the subdivided
+  // compartments do and stay undivided whatever the recursion produced.
+  const asRegion = (rect:Rect, kind:RegionKind) => {
     const id = regions.length;
     const cells:LatticeCell[] = [];
     for (let row = rect.row; row < rect.row + rect.rows; row++) for (let col = rect.col; col < rect.col + rect.cols; col++) {
+      if (!cellInside(lattice, { col, row }) || cellRegion[index({ col, row })] !== -1) continue;
       cells.push({ col, row });
       cellRegion[index({ col, row })] = id;
     }
-    regions.push({ id, kind:"room", cells, bounds:rect });
-  });
+    if (!cells.length) return;
+    regions.push({ id, kind, cells, bounds:rect });
+  };
+
+  reserved.forEach((rect) => asRegion(rect, "reserved"));
+  rooms.forEach((rect) => asRegion(rect, "room"));
 
   return { cellRegion, regions, index };
 };
 
-/** Every internal edge whose two cells belong to different regions. That is the
- *  partition boundary, and it is the whole wall set — nothing else needs a wall
- *  and nothing here can be left out. */
-const boundaryEdges = (lattice:Lattice, cellRegion:Int32Array) => {
+/** The pseudo-region on the far side of an exterior wall. Open deck: not a
+ *  compartment, but something the building needs a door onto. */
+const OUTSIDE = -2;
+
+/**
+ * Every edge that needs a panel: the partition boundaries, plus the outside wall.
+ *
+ * An internal edge earns a panel when the two cells it separates belong to
+ * different regions — that is the partition, and it is the whole interior wall set.
+ * A perimeter edge listed in `exterior` earns one because it faces open deck and is
+ * the building's own outside wall.
+ */
+const boundaryEdges = (lattice:Lattice, cellRegion:Int32Array, exterior:Set<string>) => {
   const index = (cell:LatticeCell) => cell.row * lattice.cols + cell.col;
-  return internalEdges(lattice).filter((edge) => {
+  const interior = internalEdges(lattice).filter((edge) => {
     const [first, second] = edge.axis === "h"
       ? [{ col:edge.col, row:edge.row - 1 }, { col:edge.col, row:edge.row }]
       : [{ col:edge.col - 1, row:edge.row }, { col:edge.col, row:edge.row }];
     return cellRegion[index(first)] !== cellRegion[index(second)];
   });
+  const hull = allEdges(lattice).filter((edge) => isBorderEdge(lattice, edge) && exterior.has(edgeKey(edge)));
+  return [...interior, ...hull];
 };
 
 // ---------------------------------------------------------------------------
@@ -363,15 +424,18 @@ const boundaryEdges = (lattice:Lattice, cellRegion:Int32Array) => {
  */
 const cutDoorways = (
   boundary:LatticeEdge[], lattice:Lattice, cellRegion:Int32Array, regionCount:number,
-  hatchSupply:number, loopShare:number, random:() => number,
+  hatchSupply:number, loopShare:number, entrances:number, random:() => number,
 ) => {
   const index = (cell:LatticeCell) => cell.row * lattice.cols + cell.col;
+  const regionOf = (cell:LatticeCell) =>
+    cell.col < 0 || cell.row < 0 || cell.col >= lattice.cols || cell.row >= lattice.rows
+      ? OUTSIDE : cellRegion[index(cell)];
   const shared = new Map<string, { a:number; b:number; edges:LatticeEdge[] }>();
   boundary.forEach((edge) => {
     const [first, second] = edge.axis === "h"
       ? [{ col:edge.col, row:edge.row - 1 }, { col:edge.col, row:edge.row }]
       : [{ col:edge.col - 1, row:edge.row }, { col:edge.col, row:edge.row }];
-    const a = cellRegion[index(first)], b = cellRegion[index(second)];
+    const a = regionOf(first), b = regionOf(second);
     const key = a < b ? `${a}-${b}` : `${b}-${a}`;
     const entry = shared.get(key);
     if (entry) entry.edges.push(edge);
@@ -382,15 +446,27 @@ const cutDoorways = (
   const find = (id:number):number => { while (parent[id] !== id) { parent[id] = parent[parent[id]]; id = parent[id]; } return id; };
   const union = (first:number, second:number) => { const a = find(first), b = find(second); if (a === b) return false; parent[a] = b; return true; };
 
-  const adjacencies = shuffled([...shared.values()], random);
+  // Exterior adjacencies are handled separately from the spanning tree. The tree's
+  // job is to make every compartment reachable from every other, which is a purely
+  // interior question; the outside is not a compartment and must not be allowed to
+  // stand in as the route between two rooms, or the only way from one end of the
+  // complex to the other would be to walk around it.
+  const all = shuffled([...shared.values()], random);
+  const outward = all.filter((adjacency) => adjacency.a === OUTSIDE);
+  const inward = all.filter((adjacency) => adjacency.a !== OUTSIDE);
+
   const chosen:{ edges:LatticeEdge[] }[] = [];
   const spare:{ edges:LatticeEdge[] }[] = [];
-  adjacencies.forEach((adjacency) => {
+  inward.forEach((adjacency) => {
     if (union(adjacency.a, adjacency.b)) chosen.push(adjacency);
     else spare.push(adjacency);
   });
   // Loops, so the board has alternative routes rather than one thread.
   chosen.push(...spare.slice(0, Math.round(chosen.length * loopShare)));
+  // Then the ways in. A sealed building is not playable, and one door on a big
+  // complex funnels every game through the same corridor, so entrances scale with
+  // how much outside wall there is.
+  chosen.push(...outward.slice(0, Math.max(1, entrances)));
 
   const doorways = new Map<string, EdgeState>();
   // Hatchways where the kit has them, open archways for the rest. Shuffled so the
@@ -413,24 +489,43 @@ export const buildDeckPlan = (input:DeckPlanInput):DeckPlan => {
   const splitChance = input.splitChance ?? .55;
   const loopShare = input.loopShare ?? .3;
 
+  const exterior = input.exterior ?? new Set<string>();
+  const reserved = (input.reserved ?? []).filter(rectArea);
+
   const corridors = chooseCorridors(lattice, random);
+  const reservedCells = new Set<string>();
+  reserved.forEach((rect) => {
+    for (let row = rect.row; row < rect.row + rect.rows; row++) for (let col = rect.col; col < rect.col + rect.cols; col++) {
+      reservedCells.add(cellKey({ col, row }));
+    }
+  });
+
   const corridorCells = new Set<string>();
   corridors.forEach((corridor) => {
     if (corridor.axis === "h") for (let col = 0; col < lattice.cols; col++) corridorCells.add(cellKey({ col, row:corridor.at }));
     else for (let row = 0; row < lattice.rows; row++) corridorCells.add(cellKey({ col:corridor.at, row }));
   });
+  // A reserved hall takes precedence over a street running through it. The corridor
+  // simply arrives at the hall and stops, which is what a corridor meeting a hangar
+  // does anyway.
+  reservedCells.forEach((key) => corridorCells.delete(key));
 
   let blocks:Rect[] = [{ col:0, row:0, cols:lattice.cols, rows:lattice.rows }];
   corridors.forEach((corridor) => { blocks = carve(blocks, corridor); });
+  reserved.forEach((rect) => { blocks = blocks.flatMap((block) => subtractRect(block, rect)); });
 
   const bulkheads = chooseBulkheads(lattice, corridors, random);
   const trees = blocks.map((rect) => subdivide(rect, 0, roomMax, splitChance, random));
 
-  let assigned = assignRegions(lattice, corridorCells, trees.flatMap(leavesOf), bulkheads);
-  let boundary = boundaryEdges(lattice, assigned.cellRegion);
+  // Roughly one way in per four squares of outside wall, so a small blockhouse has
+  // a door and a large complex has several approaches.
+  const entrances = Math.max(1, Math.round(exterior.size / 4));
+
+  let assigned = assignRegions(lattice, corridorCells, trees.flatMap(leavesOf), bulkheads, reserved);
+  let boundary = boundaryEdges(lattice, assigned.cellRegion, exterior);
   const reassign = () => {
-    assigned = assignRegions(lattice, corridorCells, trees.flatMap(leavesOf), bulkheads);
-    boundary = boundaryEdges(lattice, assigned.cellRegion);
+    assigned = assignRegions(lattice, corridorCells, trees.flatMap(leavesOf), bulkheads, reserved);
+    boundary = boundaryEdges(lattice, assigned.cellRegion, exterior);
   };
 
   // Spend the budget. The recursion stops early by design — a compartment small
@@ -462,7 +557,7 @@ export const buildDeckPlan = (input:DeckPlanInput):DeckPlan => {
 
   const doorways = cutDoorways(
     boundary, lattice, assigned.cellRegion, assigned.regions.length,
-    hatchSupply, loopShare, random,
+    hatchSupply, loopShare, entrances, random,
   );
 
   const state = new Map<string, EdgeState>();
@@ -480,23 +575,38 @@ export const buildDeckPlan = (input:DeckPlanInput):DeckPlan => {
  *  fastest way to tell a deck plan from a scatter of fragments. */
 export const renderPlan = (plan:DeckPlan) => {
   const { lattice, state } = plan;
+  // Distinguishes a perimeter edge the complex BUILT (its own outside wall, shown
+  // solid) from one that is simply the table edge (shown as free border). Without
+  // that distinction the map looks identical whether the hull exists or not, which
+  // is exactly the bug it was needed to find.
   const at = (edge:LatticeEdge) => state.get(edgeKey(edge)) ?? "open";
   const lines:string[] = [];
   for (let row = 0; row <= lattice.rows; row++) {
     let top = "";
     for (let col = 0; col < lattice.cols; col++) {
+      const edge:LatticeEdge = { axis:"h", col, row };
       const border = row === 0 || row === lattice.rows;
-      const value = at({ axis:"h", col, row });
-      top += "+" + (border ? "===" : value === "wall" ? "---" : value === "hatch" ? "-o-" : "   ");
+      const value = at(edge);
+      const built = border && state.has(edgeKey(edge));
+      top += "+" + (built ? (value === "hatch" ? "*o*" : value === "open" ? "   " : "###")
+        : border ? "==="
+          : value === "wall" ? "---" : value === "hatch" ? "-o-" : "   ");
     }
     lines.push(top + "+");
     if (row === lattice.rows) break;
     let middle = "";
     for (let col = 0; col <= lattice.cols; col++) {
+      const edge:LatticeEdge = { axis:"v", col, row };
       const border = col === 0 || col === lattice.cols;
-      const value = at({ axis:"v", col, row });
-      middle += (border ? "#" : value === "wall" ? "|" : value === "hatch" ? "o" : " ");
-      if (col < lattice.cols) middle += plan.regions[plan.cellRegion[row * lattice.cols + col]]?.kind === "corridor" ? " . " : "   ";
+      const value = at(edge);
+      const built = border && state.has(edgeKey(edge));
+      middle += built ? (value === "hatch" ? "*" : value === "open" ? " " : "#")
+        : border ? ":"
+          : value === "wall" ? "|" : value === "hatch" ? "o" : " ";
+      if (col < lattice.cols) {
+        const kind = plan.regions[plan.cellRegion[row * lattice.cols + col]]?.kind;
+        middle += kind === "corridor" ? " . " : kind === "reserved" ? " Z " : "   ";
+      }
     }
     lines.push(middle);
   }
