@@ -233,10 +233,25 @@ export const invariants = ({ plan, pieces, defs, inventory, boardWidth, boardHei
     failures.push({ rule:"connected", detail:`${regions.sizes.length} separate walkable regions` });
   }
 
-  // 2. No firing lane across the table.
+  // 2. No firing lane across the table — measured with an allowance for any hall the
+  //    user reserved.
+  //
+  //    A reserved zone is a single undivided compartment, so sight crosses the whole
+  //    of it by definition. That is the POINT of a hangar or a generator hall, but the
+  //    flat cap treated it as a defect and threw the board away: a thin zone across a
+  //    four-foot board failed every seed, which is why generating with a zone drawn
+  //    appeared to do nothing at all. The allowance is the largest reserved region's
+  //    own extent, so the hall costs exactly what it spans and no more — a firing lane
+  //    running past it still fails.
+  const reservedExtent = Math.max(
+    0,
+    ...plan.regions.filter((region) => region.kind === "reserved")
+      .map((region) => Math.max(region.bounds.cols, region.bounds.rows)),
+  );
+  const sightAllowance = maxSight + reservedExtent;
   const sight = sightLines(lattice, state);
-  if (sight.longest > maxSight) {
-    failures.push({ rule:"sight", detail:`open lane of ${sight.longest} cells, limit ${maxSight}` });
+  if (sight.longest > sightAllowance) {
+    failures.push({ rule:"sight", detail:`open lane of ${sight.longest} cells, limit ${sightAllowance}` });
   }
 
   // 3. Every doorway the plan promised actually got a hatchway panel. A solid

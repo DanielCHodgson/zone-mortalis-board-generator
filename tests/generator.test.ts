@@ -624,3 +624,62 @@ test("every board on every preset lands near the reference density", () => {
     });
   });
 });
+
+test("generating with a zone drawn works for every shape a person might drag out", () => {
+  // "Generate not working when you draw zones" — 10.7% of zone configurations returned
+  // an empty board, from three separate causes:
+  //
+  //   * a reserved hall is one big open region, so sight crosses all of it and the
+  //     firing-lane invariant threw the board away. A hangar is MEANT to be open, so
+  //     the cap now carries an allowance for the hall's own extent.
+  //   * the hall's boundary walls are not compartments, so the budget backoff could
+  //     not merge them away and stalled at "out of stock" forever.
+  //   * a zone bigger than the footprint left every cell reserved, so the partition
+  //     had nothing to divide and the plan carried no panels at all. The complex is
+  //     now capped to the largest zone-free rectangle and built BESIDE such a zone.
+  //
+  // Refusing is a legitimate outcome for a zone that genuinely leaves no room, but it
+  // has to say so — an empty board and no explanation is the bug.
+  const shapes = (width:number, height:number):{ label:string; zones:{ x:number;y:number;width:number;height:number }[] }[] => [
+    { label:"tiny", zones:[{ x:width * .4, y:height * .4, width:2, height:2 }] },
+    { label:"sliver", zones:[{ x:width * .5, y:height * .5, width:.6, height:.6 }] },
+    { label:"medium", zones:[{ x:width * .3, y:height * .3, width:8, height:7 }] },
+    { label:"thin across", zones:[{ x:width * .2, y:height * .45, width:width * .55, height:1.5 }] },
+    { label:"thin down", zones:[{ x:width * .45, y:height * .2, width:1.5, height:height * .55 }] },
+    { label:"corner", zones:[{ x:0, y:0, width:8, height:7 }] },
+    { label:"far corner", zones:[{ x:width - 8, y:height - 7, width:8, height:7 }] },
+    { label:"half the board", zones:[{ x:width * .2, y:height * .2, width:width * .5, height:height * .5 }] },
+    { label:"two rooms", zones:[{ x:width * .1, y:height * .1, width:6, height:6 }, { x:width * .6, y:height * .6, width:6, height:6 }] },
+  ];
+
+  Object.entries(BOARD_SIZES).forEach(([name, size]) => [1, 2].forEach((sets) => {
+    shapes(size.width, size.height).forEach(({ label, zones }) => {
+      SEEDS.slice(0, 3).forEach((seed) => {
+        const report = generate({
+          boardWidth:size.width, boardHeight:size.height, catalogue:"boarding", defs,
+          inventory:scaled(sets), heights, zones, seed, nextUid,
+        });
+        const where = `${name} x${sets} ${label} seed ${seed}`;
+        if (!report.plan) {
+          // Only a self-explaining refusal is acceptable, and only for a zone that
+          // really does leave nowhere to build.
+          assert.match(report.note, /leave no room/, `${where}: empty board with no reason — ${report.note}`);
+          return;
+        }
+
+        const kit = readKit(defs, scaled(sets), "boarding")!;
+        const defMap = new Map(kit.buildDefs.map((def) => [def.id, def]));
+        const intruding = report.pieces.filter((piece) => {
+          const def = defMap.get(piece.defId);
+          if (!def) return false;
+          const width = piece.rotation === 90 ? def.depth : def.length;
+          const height = piece.rotation === 90 ? def.length : def.depth;
+          const centre = { x:piece.x + width / 2, y:piece.y + height / 2 };
+          return zones.some((zone) => centre.x > zone.x + .25 && centre.x < zone.x + zone.width - .25
+            && centre.y > zone.y + .25 && centre.y < zone.y + zone.height - .25);
+        });
+        assert.deepEqual(intruding.map((piece) => piece.defId), [], `${where}: terrain generated inside the zone`);
+      });
+    });
+  }));
+});

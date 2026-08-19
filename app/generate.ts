@@ -368,6 +368,43 @@ const reservedRects = (lattice:Lattice, zones:Zone[]):Rect[] =>
     return { col, row, cols:right - col, rows:bottom - row };
   }).filter((rect) => rect.cols > 0 && rect.rows > 0);
 
+/**
+ * The largest rectangle on the board that no zone touches.
+ *
+ * Needed for the case where a zone is too big to be a room. A zone covering most of
+ * the table cannot be contained by the complex, and it cannot be avoided by nudging
+ * the origin either — every cell of the lattice ends up reserved, so the partition has
+ * nothing to divide, the plan carries no panels, and generating appears to do nothing
+ * at all. The answer is to build BESIDE the zone, at whatever size actually fits.
+ *
+ * Exact rather than approximate, and cheap because zones are axis-aligned rectangles:
+ * their edges are the only interesting cut lines, so the maximal free rectangle has
+ * its sides on them. A few zones give a handful of candidate lines and a brute-force
+ * sweep is far simpler to trust than a clever sweep-line.
+ */
+const largestFreeRect = (boardWidth:number, boardHeight:number, zones:Zone[]) => {
+  if (!zones.length) return { x:0, y:0, width:boardWidth, height:boardHeight };
+  const xs = [...new Set([0, boardWidth, ...zones.flatMap((zone) => [zone.x, zone.x + zone.width])])]
+    .filter((value) => value >= 0 && value <= boardWidth).sort((a, b) => a - b);
+  const ys = [...new Set([0, boardHeight, ...zones.flatMap((zone) => [zone.y, zone.y + zone.height])])]
+    .filter((value) => value >= 0 && value <= boardHeight).sort((a, b) => a - b);
+  let best = { x:0, y:0, width:0, height:0 };
+  for (let left = 0; left < xs.length - 1; left++) {
+    for (let right = left + 1; right < xs.length; right++) {
+      for (let top = 0; top < ys.length - 1; top++) {
+        for (let bottom = top + 1; bottom < ys.length; bottom++) {
+          const rect = { x:xs[left], y:ys[top], width:xs[right] - xs[left], height:ys[bottom] - ys[top] };
+          if (rect.width * rect.height <= best.width * best.height) continue;
+          if (zones.some((zone) => rect.x < zone.x + zone.width && rect.x + rect.width > zone.x
+            && rect.y < zone.y + zone.height && rect.y + rect.height > zone.y)) continue;
+          best = rect;
+        }
+      }
+    }
+  }
+  return best;
+};
+
 const zoneOverlapArea = (rect:{ x:number;y:number;width:number;height:number }, zones:Zone[]) =>
   zones.reduce((sum, zone) => {
     const width = Math.min(rect.x + rect.width, zone.x + zone.width) - Math.max(rect.x, zone.x);
@@ -427,11 +464,50 @@ export const generate = (input:GenerateInput):GenerateReport => {
   const sized = sizeLattice(boardWidth, boardHeight, kit.pitch, kit.support, spendable, reference.density, anchor);
   if (!sized) return empty("the board is smaller than one grid square");
 
-  const gridWidth = sized.cols * kit.pitch;
-  const gridHeight = sized.rows * kit.pitch;
-  const slackX = Math.max(0, boardWidth - gridWidth);
-  const slackY = Math.max(0, boardHeight - gridHeight);
-  const inset = Math.min(kit.support / 2, slackX / 2, slackY / 2);
+  // Mutable, because a reserved zone can make a given size unbuildable and the honest
+  // response is to build something smaller beside it rather than to give up. A zone
+  // covering most of the lattice leaves no cells to partition, so the plan comes back
+  // with no panels at all and the board comes out empty — which is what "generate does
+  // nothing when I draw a zone" was.
+  let cols = sized.cols;
+  let rows = sized.rows;
+
+  // A zone too big to be a room is an exclusion, and the complex has to fit beside it.
+  // Capping the footprint to the largest zone-free rectangle is what makes that
+  // happen; without it the lattice keeps overlapping the zone whatever the origin, and
+  // every cell comes out reserved.
+  // Measured against the LATTICE, not the board. A 24" zone is a quarter of a
+  // four-foot table and looks modest by that yardstick, but one set only builds a
+  // 27" x 23" complex, so the same zone is 94% of the footprint and cannot possibly be
+  // a room inside it. Judging against the board let that case through as "contain",
+  // the origin search then pushed the complex onto the zone to cover it, every cell
+  // came out reserved, and the board came out empty.
+  const zonesArea = zones.reduce((sum, zone) => sum + zone.width * zone.height, 0);
+  const excluding = zones.length > 0 && zonesArea > cols * rows * kit.pitch * kit.pitch * .5;
+  // Where a zone is too big to contain AND too big to sit beside, the honest answer is
+  // to refuse and say why.
+  //
+  // The tempting alternative — cover the zone and wall the hall off inside it, giving a
+  // hall with a ring of rooms around it — was tried and reverted. It only works by
+  // putting the hall's own wall on the outermost cell of the DRAWN zone, and the one
+  // thing the zone tool promises is that terrain never appears where a zone is. A
+  // salvaged board that quietly breaks that is worse than a refusal that explains
+  // itself, and it would make the zone invariant untrustworthy everywhere else.
+  if (excluding) {
+    const free = largestFreeRect(boardWidth, boardHeight, zones);
+    const fitCols = Math.floor((free.width - kit.support / 2) / kit.pitch);
+    const fitRows = Math.floor((free.height - kit.support / 2) / kit.pitch);
+    if (fitCols >= 2 && fitRows >= 2) {
+      cols = Math.max(2, Math.min(cols, fitCols));
+      rows = Math.max(2, Math.min(rows, fitRows));
+    } else {
+      return empty(
+        "the reserved zones leave no room for a complex — "
+        + `the largest clear area is ${free.width.toFixed(1)}" x ${free.height.toFixed(1)}", `
+        + `and one grid square is ${kit.pitch.toFixed(1)}". Shrink a zone, or draw it to one side.`,
+      );
+    }
+  }
 
   const random = randomFactory(seed);
   const candidates = input.candidates ?? 40;
@@ -455,21 +531,40 @@ export const generate = (input:GenerateInput):GenerateReport => {
   const maxSight = Math.max(3, Math.round(reference.longestSight + 2));
 
   for (let attempt = 0; attempt < candidates; attempt++) {
+    const gridWidth = cols * kit.pitch;
+    const gridHeight = rows * kit.pitch;
+    const slackX = Math.max(0, boardWidth - gridWidth);
+    const slackY = Math.max(0, boardHeight - gridHeight);
+    const inset = Math.min(kit.support / 2, slackX / 2, slackY / 2);
     // Where zones exist, the complex is nudged to CONTAIN them rather than to avoid
     // them. A hangar or command room drawn on the board is meant to be a room in the
     // building — it is only useful as one if the building is around it. (The previous
     // pass did the opposite, shoving the complex away to minimise overlap, which is
     // why a zone in the middle of the table pushed the whole complex into a corner
     // and left the zone as bare deck.)
+    //
+    // Containing only makes sense while the zone is small enough to BE a room. Past
+    // that it is an exclusion — an apron, a landing area — and the right answer is a
+    // complex beside it, so the preference flips to avoiding it and the candidate
+    // origins are drawn from the clear area rather than from the board as a whole.
+    // Flush-and-centre positions relative to the whole board will happily never land in
+    // the clear area at all.
+    const free = excluding ? largestFreeRect(boardWidth, boardHeight, zones) : null;
+    const options = free
+      ? Array.from({ length:12 }, () => ({
+        x:free.x + random() * Math.max(0, free.width - gridWidth),
+        y:free.y + random() * Math.max(0, free.height - gridHeight),
+      }))
+      : Array.from({ length:10 }, () => originsFor(anchor, slackX, slackY, inset, random));
     const origin = zones.length
-      ? Array.from({ length:10 }, () => originsFor(anchor, slackX, slackY, inset, random))
+      ? options
         .map((option) => ({
           option,
           covered:zoneOverlapArea({ x:option.x, y:option.y, width:gridWidth, height:gridHeight }, zones),
         }))
-        .sort((first, second) => second.covered - first.covered)[0].option
+        .sort((first, second) => excluding ? first.covered - second.covered : second.covered - first.covered)[0].option
       : originsFor(anchor, slackX, slackY, inset, random);
-    const lattice = makeLattice(sized.cols, sized.rows, kit.pitch, kit.pitch, origin.x, origin.y);
+    const lattice = makeLattice(cols, rows, kit.pitch, kit.pitch, origin.x, origin.y);
     // The outside wall is not optional and not negotiable, so it is added on top of
     // the interior allowance rather than taken out of it — capped by what the kit
     // actually holds, so a hull it cannot afford still fails honestly in `build`.
@@ -491,6 +586,16 @@ export const generate = (input:GenerateInput):GenerateReport => {
       // abandoning the board: fewer, larger compartments is a real board, and a
       // plan the kit cannot finish is not.
       interiorBudget = Math.max(4, Math.floor(interiorBudget * .92));
+      // Trimming the budget cannot help when the problem is the FOOTPRINT: a reserved
+      // hall's own boundary walls are not compartments, so no amount of merging removes
+      // them, and a zone that swallows the lattice leaves nothing to partition at all.
+      // Both stall until the lattice itself gets smaller. Shrinking the long axis keeps
+      // the proportions sane while it looks for a size that fits beside the zone.
+      if (attempt % 4 === 3) {
+        if (cols >= rows && cols > 3) cols--;
+        else if (rows > 3) rows--;
+        else if (cols > 2) cols--;
+      }
       continue;
     }
 
@@ -516,6 +621,11 @@ export const generate = (input:GenerateInput):GenerateReport => {
   }
 
   const pieces = [...best.pieces];
+  // The winning candidate's own footprint. A reserved zone can shrink the lattice
+  // mid-search, so anything downstream that needs the complex's extent has to read it
+  // off the lattice that was actually kept rather than the size sizing first proposed.
+  const gridWidth = best.lattice.cols * best.lattice.pitchX;
+  const gridHeight = best.lattice.rows * best.lattice.pitchY;
   const builtCells = best.metrics ? best.plan.panelEdges.length : 0;
   const leftover = Math.max(0, kit.capacity - builtCells);
 
@@ -619,7 +729,7 @@ export const generate = (input:GenerateInput):GenerateReport => {
   }
 
   const fills = Math.round(Math.min(1, greed) * 100);
-  const grid = `${sized.cols} x ${sized.rows} squares`;
+  const grid = `${best.lattice.cols} x ${best.lattice.rows} squares`;
   const note = greed < .95
     ? `${grid} — this palette fills about ${fills}% of the board at real density; ${setsToFill} sets would fill it`
     : leftover > 2
