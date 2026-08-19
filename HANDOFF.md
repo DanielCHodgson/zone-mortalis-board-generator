@@ -150,3 +150,79 @@ range. The joint model now lives in `MANUFACTURERS[...].joint` and nothing branc
 a maker name. `randomFactory` and `shuffle` were four byte-identical copies across four
 modules and are now `app/random.ts`; seven dead exports and five unread `BuildResult`
 fields are gone.
+
+## Third pass: doors were doing the walls' job
+
+The complaint was that doors were used "like walls instead of ways to connect movement
+channels", and that there were too many closed-off squares. Measured over eight boards at
+four sets, before any change:
+
+| | before | after | the photographs |
+|---|---|---|---|
+| doorways per board | 63 | 9.4 | a handful |
+| doorways as a share of panels | 43% | 7% | a small minority |
+| compartment faces fully open | 0% | 50% | most |
+| compartments sealed | 100% | 5% | rare |
+| compartments <= 2 cells | 55% | 20% | mostly 2x2 bays |
+| largest see-across area | 7% of floor | 35% | one or two big open areas |
+
+Four causes, and only the first was a policy choice:
+
+1. **`hatchShare: .46` was a scoring TARGET.** Candidates are scored by distance to the
+   reference, so a board with fewer doors scored worse — the spam was asked for. The
+   number came from the kit's composition (20 of 32 panels carry a hatchway) transplanted
+   into a target for the layout. Those are different things: a hatchway panel standing in
+   a wall run with its door shut is a wall. Renamed `doorwayShare`, target .08.
+2. **An opening was a door unless the kit ran out.** `order < hatchSupply ? "hatch" :
+   "open"` — so open archways only appeared once hatchway stock was exhausted, and adding
+   terrain could only ever add doors.
+3. **Every boundary was walled by construction**, so connectivity had to be bought back
+   one door at a time: 386 compartments meant at least 386 doors. The doors were the debt.
+4. **The partition had no way to express an alcove.** A partition divides a rectangle
+   exhaustively, so every region is closed. `mouth` (a whole open face) and `spur` (a wall
+   inside a compartment) are the two primitives that were missing.
+
+Consequences worth knowing about:
+
+- **Mouths are whole faces, not single edges.** Opening one edge punched a hole in the
+  middle of a wall line and fragmented every run on the board; mean run fell to 1.9 cells.
+  Consolidating the openings is what buys back long runs while keeping the board open.
+- **Spurs extend into runs.** Placed one edge at a time they read as scattered plus-signs.
+- **Spurs cost columns.** A spur ends in open floor and that end needs a column, so spurs
+  are the FIRST lever given up when columns run short — ahead of the footprint. Getting
+  that order wrong shrank a one-set card board to 5 x 6 to pay for cover it did not need.
+- **Junctions and openness are in tension.** A junction needs three or four faces of a node
+  walled, and half the faces on this board are deliberately open. The old 0.4 target was a
+  property of the walled-everything model, not of a good board.
+- **A hatchway panel used as a wall now DRAWS as a wall.** Colouring by `kind === "door"`
+  painted every substituted hatchway as an opening, so a board running 8% doorways looked
+  like 58% doors. `BuiltPiece.servesDoorway` carries the distinction.
+
+`npm run profile` is the instrument for this. It exists because every number in the old
+profile was in range on those boards — and it reads its openness figures from `measure()`
+rather than recomputing them, after counting open EDGES twice told me textbook alcoves were
+wide-open floor.
+
+### Wall ends are cosmetic
+
+A wall end covers the exposed end of a panel that stops in open floor. It brackets
+nothing, so it can never be the joint between two panels.
+
+The node pass allowed one wherever a single panel END arrived at a node, which is not the
+same test. A run terminating against the FLANK of a long panel has exactly one end
+arriving there, while the long panel covers that same node with two more panel edges.
+Measured over 18 boards: 51 of 168 caps — 30% — were sitting in that position, holding a
+wall onto the side of another wall. The test is now on panel edges incident at the node,
+which must be exactly one, and there is an invariant (`cap`) plus a test for it.
+
+Two notes for whoever touches this next:
+
+- **The first fix was wrong and is worth not repeating.** I read the problem as "the kit
+  cannot build that joint at all" and stopped the tiler laying a long panel across an
+  occupied node. That collapsed the boards: 16 of a set's 24 wall panels are two-cell
+  pieces, so blocking them left the tiler short of stock, and boards fell to 4 x 4. A loose
+  pillar standing against a panel's flank is something builders actually do — it is the
+  CAP that is illegitimate there, because it brackets nothing.
+- **`COLUMNS_PER_WALL_CELL` moves when panel choice changes.** That experiment took the
+  measured ratio from 0.92 to 0.79, and a stale constant mis-sizes every board on the
+  first attempt. Re-measure after any change to how panels are chosen.

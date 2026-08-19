@@ -37,7 +37,8 @@
  */
 
 import {
-  allEdges, cellInside, cellKey, edgeKey, edgeRuns, internalEdges, isBorderEdge,
+  allEdges, cellInside, cellKey, cellRegions, cellsOfEdge, edgeKey, edgeRuns, internalEdges,
+  isBorderEdge, nextEdgeAlong, nodeKey, nodesOfEdge, passable, previousEdgeAlong,
   type EdgeState, type LatticeCell, type LatticeEdge, type Lattice,
 } from "./lattice.ts";
 import { shuffle as shuffled } from "./random.ts";
@@ -96,11 +97,41 @@ export type DeckPlanInput = {
   reserved?:Rect[];
   /** Largest compartment, in cells, before a split becomes compulsory. */
   roomMax?:number;
+  /**
+   * Smallest side a compartment may be split down to when spending surplus terrain.
+   *
+   * The floor that stops a big kit grinding the board into single squares. Without it
+   * the growth loop subdivides until the budget is gone, and 27% of the compartments on
+   * a four-set board came out one cell across. Surplus past this floor stays in the box
+   * and the sizing pass spends it on footprint instead, which is where a real
+   * collection goes: a bigger deck, not a finer mesh.
+   */
+  roomMin?:number;
   /** Chance of splitting a compartment that is already small enough to keep. */
   splitChance?:number;
-  /** Extra doorways beyond the spanning tree, as a share of it. A board wants
+  /** Extra mouths beyond the spanning forest, as a share of it. A board wants
    *  alternative routes, not one thread with dead ends hanging off it. */
   loopShare?:number;
+  /**
+   * How many spur walls may be added, at most.
+   *
+   * Separate from `wallEdgeBudget` because spurs are not paid for in panels alone. A
+   * spur ends in open floor, and that free end needs a column to stand on — and columns,
+   * not panels, are what a Gallowdark kit runs out of first. Left unbounded, spurs ate
+   * the column supply and `build` answered by shrinking the lattice: one set on a card
+   * board came out 5 x 6 instead of the 7 x 6 it is cut for.
+   *
+   * So this is the lever the generator gives up FIRST when it runs out of columns, ahead
+   * of the footprint. A spur is cover; the footprint is the board.
+   */
+  spurBudget?:number;
+  /**
+   * Share of compartments sealed with a hatchway instead of given an open mouth.
+   *
+   * The tactical door. Keep it low: this is the difference between a board with a few
+   * closed stores on it and the old model's 63-doors-per-board.
+   */
+  sealedShare?:number;
   random:() => number;
 };
 
@@ -128,10 +159,15 @@ const rectArea = (rect:Rect) => rect.cols * rect.rows;
  * one-cell closet is a real feature of these boards, a board made mostly of them
  * is not.
  */
-const chooseSplit = (rect:Rect, random:() => number) => {
+const chooseSplit = (rect:Rect, roomMin:number, random:() => number) => {
+  // A split has to leave `roomMin` cells either side, not one. With a floor of one, an
+  // unbiased pick produced a lot of single-cell slivers and the board came out as a
+  // fine mesh rather than as bays — 27% of compartments were one cell across. A
+  // one-cell closet is a real feature of these boards; a board made mostly of them is
+  // not, and a bay you cannot stand two models in is not a nook.
   const axisCandidates:("v" | "h")[] = [];
-  if (rect.cols >= 2) axisCandidates.push("v");
-  if (rect.rows >= 2) axisCandidates.push("h");
+  if (rect.cols >= roomMin * 2) axisCandidates.push("v");
+  if (rect.rows >= roomMin * 2) axisCandidates.push("h");
   if (!axisCandidates.length) return null;
   // Split the longer side. Where both are splittable and equal, either will do.
   const axis = axisCandidates.length === 1 ? axisCandidates[0]
@@ -140,8 +176,11 @@ const chooseSplit = (rect:Rect, random:() => number) => {
         : axisCandidates[Math.floor(random() * 2)];
 
   const extent = axis === "v" ? rect.cols : rect.rows;
-  const offset = 1 + Math.floor((random() + random()) / 2 * (extent - 1));
-  const at = (axis === "v" ? rect.col : rect.row) + Math.min(extent - 1, Math.max(1, offset));
+  // Biased toward the middle by averaging two rolls, then clamped so neither side
+  // falls below the floor.
+  const span = extent - roomMin * 2;
+  const offset = roomMin + Math.floor((random() + random()) / 2 * (span + 1));
+  const at = (axis === "v" ? rect.col : rect.row) + Math.min(extent - roomMin, Math.max(roomMin, offset));
 
   const first:Rect = axis === "v"
     ? { col:rect.col, row:rect.row, cols:at - rect.col, rows:rect.rows }
@@ -152,16 +191,18 @@ const chooseSplit = (rect:Rect, random:() => number) => {
   return { axis, at, first, second };
 };
 
-const subdivide = (rect:Rect, depth:number, roomMax:number, splitChance:number, random:() => number):SplitNode => {
+const subdivide = (
+  rect:Rect, depth:number, roomMax:number, roomMin:number, splitChance:number, random:() => number,
+):SplitNode => {
   const node:SplitNode = { rect, depth, split:null };
   const mustSplit = rect.cols > roomMax || rect.rows > roomMax;
   if (!mustSplit && random() > splitChance) return node;
-  const choice = chooseSplit(rect, random);
+  const choice = chooseSplit(rect, roomMin, random);
   if (!choice) return node;
   node.split = {
     axis:choice.axis, at:choice.at,
-    a:subdivide(choice.first, depth + 1, roomMax, splitChance, random),
-    b:subdivide(choice.second, depth + 1, roomMax, splitChance, random),
+    a:subdivide(choice.first, depth + 1, roomMax, roomMin, splitChance, random),
+    b:subdivide(choice.second, depth + 1, roomMax, roomMin, splitChance, random),
   };
   return node;
 };
@@ -177,8 +218,8 @@ const leafNodes = (node:SplitNode, into:SplitNode[] = []):SplitNode[] => {
 
 /** Split one compartment without recursing, for the pass that grows a plan up to
  *  the terrain budget. */
-const splitOnce = (node:SplitNode, random:() => number) => {
-  const choice = chooseSplit(node.rect, random);
+const splitOnce = (node:SplitNode, roomMin:number, random:() => number) => {
+  const choice = chooseSplit(node.rect, roomMin, random);
   if (!choice) return false;
   node.split = {
     axis:choice.axis, at:choice.at,
@@ -450,23 +491,49 @@ const boundaryEdges = (lattice:Lattice, cellRegion:Int32Array, exterior:Set<stri
 // ---------------------------------------------------------------------------
 
 /**
- * Cut one doorway per chosen adjacency.
+ * Decide what each partition boundary actually is: a mouth, a doorway, or a wall.
  *
- * A spanning tree over the REGION graph guarantees every compartment is reachable
- * using one doorway per compartment, then extra links are added so there is more
- * than one way around. The doorway is a hatchway where stock allows and an open
- * archway otherwise: connectivity is never traded away for a shortage of panels,
- * which is the mistake the old `openSealedPockets` was there to clean up after.
+ * THIS IS THE PART THAT DECIDES WHETHER THE BOARD LOOKS RIGHT, and the previous
+ * version had it backwards. It walled every boundary and then bought connectivity
+ * back one doorway at a time -- `order < hatchSupply ? "hatch" : "open"`, so an
+ * opening was a door whenever the kit had one in stock, and a genuine gap only when
+ * stock ran out. Measured over eight boards at four sets: 63 doorways per board, 43%
+ * of all panels, 100% of compartments sealed, and not one open face anywhere. Adding
+ * terrain could only ever add more doors.
+ *
+ * Look at a real board instead. A bay is three walls and an OPEN FACE onto the
+ * corridor. That open face is the point: it is what makes the nook you can put a squad
+ * in, and it is why you can see and shoot into a bay without a door being involved.
+ * Doors are rare, and they are decisions -- a street pinched by a bulkhead, a
+ * compartment genuinely sealed, a way in through the hull.
+ *
+ * So the rule is inverted. Every compartment gets a MOUTH, one face left open, and the
+ * mouth is what connects it. Walls are what is left over -- every face between two
+ * compartments that already have their own way in -- and those come out as the long
+ * runs a real board is made of. Three kinds of edge:
+ *
+ *   mouth    no panel at all. The bay's open face. Connects, and sees through.
+ *   doorway  a hatchway panel. Passes models, blocks sight. Deliberate and rare.
+ *   wall     a solid face.
+ *
+ * Connectivity is still guaranteed, and still by a spanning forest over the region
+ * graph. Only the currency changed, from hatchways to open faces.
  */
-const cutDoorways = (
-  boundary:LatticeEdge[], lattice:Lattice, cellRegion:Int32Array, regionCount:number,
-  hatchSupply:number, loopShare:number, entrances:number, random:() => number,
-) => {
+type BoundaryPlan = { state:Map<string, EdgeState>; mouths:number; doorways:number };
+
+const classifyBoundary = (
+  boundary:LatticeEdge[], lattice:Lattice, cellRegion:Int32Array, regions:Region[],
+  options:{ loopShare:number; entrances:number; sealedShare:number; hatchSupply:number },
+  random:() => number,
+):BoundaryPlan => {
   const index = (cell:LatticeCell) => cell.row * lattice.cols + cell.col;
   const regionOf = (cell:LatticeCell) =>
     cell.col < 0 || cell.row < 0 || cell.col >= lattice.cols || cell.row >= lattice.rows
       ? OUTSIDE : cellRegion[index(cell)];
-  const shared = new Map<string, { a:number; b:number; edges:LatticeEdge[] }>();
+  const kindOf = (id:number) => id === OUTSIDE ? "outside" : regions[id]?.kind ?? "room";
+
+  type Adjacency = { a:number; b:number; edges:LatticeEdge[] };
+  const shared = new Map<string, Adjacency>();
   boundary.forEach((edge) => {
     const [first, second] = edge.axis === "h"
       ? [{ col:edge.col, row:edge.row - 1 }, { col:edge.col, row:edge.row }]
@@ -478,41 +545,214 @@ const cutDoorways = (
     else shared.set(key, { a:Math.min(a, b), b:Math.max(a, b), edges:[edge] });
   });
 
-  const parent = Int32Array.from({ length:regionCount }, (_, id) => id);
+  const parent = Int32Array.from({ length:regions.length }, (_, id) => id);
   const find = (id:number):number => { while (parent[id] !== id) { parent[id] = parent[parent[id]]; id = parent[id]; } return id; };
   const union = (first:number, second:number) => { const a = find(first), b = find(second); if (a === b) return false; parent[a] = b; return true; };
 
-  // Exterior adjacencies are handled separately from the spanning tree. The tree's
-  // job is to make every compartment reachable from every other, which is a purely
-  // interior question; the outside is not a compartment and must not be allowed to
-  // stand in as the route between two rooms, or the only way from one end of the
-  // complex to the other would be to walk around it.
+  const state = new Map<string, EdgeState>();
+  boundary.forEach((edge) => state.set(edgeKey(edge), "wall"));
+  let mouths = 0;
+  let doorways = 0;
+  const oneOf = (adjacency:Adjacency) => adjacency.edges[Math.floor(random() * adjacency.edges.length)];
+  /**
+   * A mouth is the WHOLE shared face, not one edge of it.
+   *
+   * Opening a single edge punched a one-cell hole in the middle of a wall line, which
+   * fragmented every run on the board — mean run length fell to 1.9 cells against 2.8 on
+   * a reference board, and junctions with it, because a run broken in the middle stops
+   * meeting anything at its corners. It also is not what the photographs show: a bay is
+   * open along a whole side, so its neighbours' walls stay whole and long.
+   *
+   * Consolidating the openings is what buys back the long runs while keeping the board
+   * open, and the two stop competing: the walls that remain are unbroken, and the gaps
+   * are gaps you can walk a squad through rather than arrow-slits.
+   */
+  const openAt = (adjacency:Adjacency) => {
+    adjacency.edges.forEach((edge) => state.set(edgeKey(edge), "open"));
+    mouths += adjacency.edges.length;
+  };
+  // A door, by contrast, is one panel wide. The rest of that face stays walled.
+  const doorAt = (adjacency:Adjacency) => { state.set(edgeKey(oneOf(adjacency)), "hatch"); doorways++; };
+
   const all = shuffled([...shared.values()], random);
   const outward = all.filter((adjacency) => adjacency.a === OUTSIDE);
   const inward = all.filter((adjacency) => adjacency.a !== OUTSIDE);
+  const bothCorridor = (adjacency:Adjacency) =>
+    kindOf(adjacency.a) === "corridor" && kindOf(adjacency.b) === "corridor";
 
-  const chosen:{ edges:LatticeEdge[] }[] = [];
-  const spare:{ edges:LatticeEdge[] }[] = [];
-  inward.forEach((adjacency) => {
-    if (union(adjacency.a, adjacency.b)) chosen.push(adjacency);
+  // A street closed by a bulkhead is closed by a HATCHWAY, never by an open gap: the
+  // point of the bulkhead is to stop you shooting the length of the street while still
+  // letting you walk it. This is the one place a door is structural, and the clearest
+  // case of a door used tactically rather than as filler.
+  inward.filter(bothCorridor).forEach((adjacency) => {
+    if (union(adjacency.a, adjacency.b)) doorAt(adjacency);
+  });
+
+  // Then every other compartment gets its way in, corridor-facing adjacencies first so
+  // a bay opens onto a street where it can rather than onto the bay next door.
+  // Bay-to-bay mouths are wanted too -- that is where the deeper nooks come from -- but
+  // only for compartments no street can reach directly.
+  const touchesCorridor = (adjacency:Adjacency) =>
+    kindOf(adjacency.a) === "corridor" || kindOf(adjacency.b) === "corridor";
+  const rest = inward.filter((adjacency) => !bothCorridor(adjacency));
+  const ordered = [...rest.filter(touchesCorridor), ...rest.filter((adjacency) => !touchesCorridor(adjacency))];
+
+  const links:Adjacency[] = [];
+  const spare:Adjacency[] = [];
+  ordered.forEach((adjacency) => {
+    if (union(adjacency.a, adjacency.b)) links.push(adjacency);
     else spare.push(adjacency);
   });
-  // Loops, so the board has alternative routes rather than one thread.
-  chosen.push(...spare.slice(0, Math.round(chosen.length * loopShare)));
-  // Then the ways in. A sealed building is not playable, and one door on a big
-  // complex funnels every game through the same corridor, so entrances scale with
-  // how much outside wall there is.
-  chosen.push(...outward.slice(0, Math.max(1, entrances)));
 
-  const doorways = new Map<string, EdgeState>();
-  // Hatchways where the kit has them, open archways for the rest. Shuffled so the
-  // archways are not all clustered on whichever regions happened to be visited
-  // first.
-  shuffled(chosen, random).forEach((adjacency, order) => {
-    const edge = adjacency.edges[Math.floor(random() * adjacency.edges.length)];
-    doorways.set(edgeKey(edge), order < hatchSupply ? "hatch" : "open");
+  // A reserved hall is the exception to the mouth rule. The user asked for a hangar or
+  // a generator hall, and a hall is a room with a door, not an alcove.
+  const isReserved = (adjacency:Adjacency) =>
+    kindOf(adjacency.a) === "reserved" || kindOf(adjacency.b) === "reserved";
+
+  // ...and a small share of ordinary compartments are sealed on purpose, which is the
+  // other legitimate door: a store or a cell you have to open to get into. Decided
+  // after the forest, so sealing one can never cut it off -- a hatchway passes models.
+  links.forEach((adjacency) => {
+    if (isReserved(adjacency) || random() < options.sealedShare) doorAt(adjacency);
+    else openAt(adjacency);
   });
-  return doorways;
+
+  // Loops, so there is more than one way around. Open, not doored: a second mouth on a
+  // bay is what turns two square alcoves into one L-shaped nook.
+  shuffled(spare, random).slice(0, Math.round(links.length * options.loopShare)).forEach(openAt);
+
+  // Ways in through the hull. These ARE doors -- a building's outside wall has doors in
+  // it, not gaps -- and they scale with how much outside wall there is, so a large
+  // complex has several approaches rather than one funnel.
+  shuffled(outward, random).slice(0, Math.max(1, options.entrances)).forEach(doorAt);
+
+  // A doorway needs a hatchway panel to stand in it. Past the kit's supply the honest
+  // answer is an open archway, which costs nothing and is a legitimate way into a
+  // compartment -- never a solid wall, which would seal a route the plan promised.
+  if (doorways > options.hatchSupply) {
+    let excess = doorways - options.hatchSupply;
+    for (const [key, value] of state) {
+      if (!excess) break;
+      if (value !== "hatch") continue;
+      state.set(key, "open");
+      doorways--; mouths++; excess--;
+    }
+  }
+
+  return { state, mouths, doorways };
+};
+
+/**
+ * Spend surplus terrain on spur walls: runs that stand INSIDE a compartment.
+ *
+ * The partition can only spend panels by subdividing, and subdividing has a floor —
+ * past `roomMin` there is nowhere left to put a wall that is also a compartment
+ * boundary. A four-set board hit that floor with 103 of its 192 wall-cells still in the
+ * box, and a board that leaves half the collection behind is the "few pieces on open
+ * floor" complaint wearing a different hat.
+ *
+ * Look at what the reference boards do with the surplus, though: they do NOT have a
+ * finer mesh of rooms. They have free-standing wall runs standing in open floor —
+ * stubs, Ls, and short lengths that jut into a bay without closing it. That is the
+ * primitive this model had no way to express, and it is the one that makes the nooks and
+ * crevices you can tuck a squad into: cover inside an open space, rather than another
+ * sealed box.
+ *
+ * A spur is any interior edge of a compartment. It is preferred where one of its ends
+ * already carries a panel, so spurs grow off existing structure into Ls and Ts rather
+ * than floating unattached, and every spur is checked against connectivity before it is
+ * kept — a spur that seals a cell off is rejected outright rather than repaired, which
+ * is the rule everywhere else in this generator.
+ *
+ * The far end of a spur stands in open floor, which is exactly what the kit's wall-end
+ * caps are for; `build` puts a column or a cap there like any other panel end.
+ */
+const addSpurs = (
+  lattice:Lattice, state:Map<string, EdgeState>, cellRegion:Int32Array, regions:Region[],
+  budget:number, currentPanels:number, spurBudget:number, random:() => number,
+):LatticeEdge[] => {
+  if (spurBudget <= 0) return [];
+  const index = (cell:LatticeCell) => cell.row * lattice.cols + cell.col;
+  const regionAt = (cell:LatticeCell) =>
+    cellInside(lattice, cell) ? cellRegion[index(cell)] : -1;
+
+  // Candidates: interior edges with the same compartment either side, and no decision
+  // on them yet. An edge already in `state` is a partition boundary and belongs to the
+  // classifier, not here.
+  //
+  // Rooms only. A reserved hall is the user promising themselves an empty floor, and a
+  // spur inside one breaks that promise as surely as a bulkhead would — three zone tests
+  // caught it doing exactly that. A corridor is excluded for a different reason: it is
+  // one cell wide, so any spur across it is a wall across the street. Closing a street
+  // is a real move, but it is the bulkhead's job and it comes with a hatchway.
+  const spurrable = new Set(
+    regions.filter((region) => region.kind === "room").map((region) => region.id),
+  );
+  const candidates = internalEdges(lattice).filter((edge) => {
+    if (state.has(edgeKey(edge))) return false;
+    const [first, second] = cellsOfEdge(lattice, edge);
+    if (!first || !second) return false;
+    const region = regionAt(first);
+    return region >= 0 && region === regionAt(second) && spurrable.has(region);
+  });
+  if (!candidates.length) return [];
+
+  const attachedNodes = new Set<string>();
+  state.forEach((value, key) => {
+    if (value === "open") return;
+    const [axis, col, row] = key.split(":");
+    nodesOfEdge({ axis:axis as "h" | "v", col:Number(col), row:Number(row) })
+      .forEach((node) => attachedNodes.add(nodeKey(node)));
+  });
+  const attaches = (edge:LatticeEdge) =>
+    nodesOfEdge(edge).some((node) => attachedNodes.has(nodeKey(node)));
+
+  const openable = new Set(candidates.map(edgeKey));
+  const added:LatticeEdge[] = [];
+  let panels = currentPanels;
+
+  // One edge at a time, kept only if the board stays connected. Rejected, never
+  // repaired — the rule everywhere else in this generator.
+  const tryPlace = (edge:LatticeEdge) => {
+    const key = edgeKey(edge);
+    if (!openable.has(key) || state.has(key)) return false;
+    state.set(key, "wall");
+    if (cellRegions(lattice, state, passable).sizes.length > 1) {
+      state.delete(key);
+      return false;
+    }
+    added.push(edge);
+    nodesOfEdge(edge).forEach((node) => attachedNodes.add(nodeKey(node)));
+    panels++;
+    return true;
+  };
+
+  // Attached first, so spurs read as architecture growing off a bulkhead rather than as
+  // fragments dropped on the floor.
+  const ordered = shuffled(candidates, random);
+  const queue = [...ordered.filter(attaches), ...ordered.filter((edge) => !attaches(edge))];
+
+  for (const edge of queue) {
+    if (panels >= budget || added.length >= spurBudget) break;
+    if (!tryPlace(edge)) continue;
+    // Then EXTEND it along its own axis, which is the difference between a wall and a
+    // stud. Placed one edge at a time, spurs came out as isolated single segments: the
+    // longest solid run on a four-set board fell to 3.7 cells against 5 on a reference
+    // board, junctions with it, and the board read as a field of scattered plus-signs
+    // rather than as bulkheads with cover against them. A spur two or three cells long
+    // meeting a bulkhead makes a T, and a T is a junction.
+    const wanted = 1 + Math.floor(random() * 3);
+    let head = edge;
+    let tail = edge;
+    for (let step = 1; step < wanted; step++) {
+      if (panels >= budget || added.length >= spurBudget) break;
+      // Alternate ends so a spur grows both ways rather than always trailing one
+      // direction, which would bias every run away from where it started.
+      if (step % 2 === 1) { const next = nextEdgeAlong(head); if (tryPlace(next)) head = next; }
+      else { const previous = previousEdgeAlong(tail); if (tryPlace(previous)) tail = previous; }
+    }
+  }
+  return added;
 };
 
 /**
@@ -535,7 +775,15 @@ const cutDoorways = (
  * long — that is honest, and better than punching an open hole and opening a firing
  * lane through it.
  */
-const MAX_SOLID_RUN = 4;
+/**
+ * How long a stretch of unbroken solid wall may run, in cells.
+ *
+ * Was 4, which is about 15" at the Gallowdark pitch and tighter than any of the
+ * reference boards — photo runs reach six or seven squares before anything interrupts
+ * them, and long runs are half of what makes a deck read as a deck. Six is the limit
+ * that still rules out a bulkhead spanning the table.
+ */
+const MAX_SOLID_RUN = 6;
 
 const breakLongBulkheads = (
   boundary:LatticeEdge[], state:Map<string, EdgeState>, hatchSupply:number, random:() => number,
@@ -573,9 +821,17 @@ const breakLongBulkheads = (
 
 export const buildDeckPlan = (input:DeckPlanInput):DeckPlan => {
   const { lattice, wallEdgeBudget, hatchSupply, random } = input;
-  const roomMax = input.roomMax ?? 3;
-  const splitChance = input.splitChance ?? .55;
+  // Bays up to five cells across before a split is forced, and a block big enough to
+  // keep is kept half the time. That matches the reference boards: two- and three-tile
+  // bays with room for a spur to stand inside one, and the occasional undivided block
+  // that becomes an open area. The growth loop converges to much the same board across a
+  // wide range of both numbers, so neither is load-bearing.
+  const roomMax = input.roomMax ?? 5;
+  const roomMin = input.roomMin ?? 2;
+  const splitChance = input.splitChance ?? .5;
   const loopShare = input.loopShare ?? .3;
+  const sealedShare = input.sealedShare ?? .12;
+  const spurBudget = input.spurBudget ?? Infinity;
 
   const exterior = input.exterior ?? new Set<string>();
   const reserved = (input.reserved ?? []).filter(rectArea);
@@ -605,7 +861,7 @@ export const buildDeckPlan = (input:DeckPlanInput):DeckPlan => {
   reserved.forEach((rect) => { blocks = blocks.flatMap((block) => subtractRect(block, rect)); });
 
   const bulkheads = chooseBulkheads(legs, random);
-  const trees = blocks.map((rect) => subdivide(rect, 0, roomMax, splitChance, random));
+  const trees = blocks.map((rect) => subdivide(rect, 0, roomMax, roomMin, splitChance, random));
 
   // Roughly one way in per four squares of outside wall, so a small blockhouse has
   // a door and a large complex has several approaches.
@@ -618,44 +874,69 @@ export const buildDeckPlan = (input:DeckPlanInput):DeckPlan => {
     boundary = boundaryEdges(lattice, assigned.cellRegion, exterior);
   };
 
-  // Spend the budget. The recursion stops early by design — a compartment small
-  // enough to keep usually is kept — so a plan routinely lands well under what
-  // the box could build, and an under-spent kit is exactly the "few pieces on
-  // open floor" complaint. Splitting the largest compartment repeatedly puts the
-  // surplus somewhere useful: it subdivides the big open blocks first, which is
-  // also where a real board would put its next bulkhead.
-  for (let guard = 0; boundary.length < wallEdgeBudget && guard < 400; guard++) {
+  const classify = () => classifyBoundary(
+    boundary, lattice, assigned.cellRegion, assigned.regions,
+    { loopShare, entrances, sealedShare, hatchSupply }, random,
+  );
+
+  // The budget is measured in PANELS, not in boundary edges, and the two stopped being
+  // the same number the moment mouths were introduced: a mouth is a boundary the plan
+  // deliberately leaves bare. Counting boundary edges here made every open face look
+  // like an unspent panel, and the growth loop below answered by subdividing further —
+  // which is how the old model got 55% of its compartments down to two cells or fewer.
+  //
+  // So the loop is run against the classified plan. It costs a classification per
+  // iteration, which is cheap beside the region flood `reassign` already does.
+  let plan = classify();
+  const panelCount = () => boundary.length - plan.mouths;
+
+  // Grow into the budget. The recursion stops early by design — a compartment small
+  // enough to keep usually is kept — so a plan routinely lands under what the box could
+  // build, and an under-spent kit is the "few pieces on open floor" complaint.
+  //
+  // Splitting the LARGEST compartment first is what keeps this honest: it puts the next
+  // bulkhead where a real board would put it, in the big open blocks, and it leaves the
+  // small bays alone. `roomMin` is the floor — a compartment already at the minimum is
+  // not a candidate, so surplus terrain stops subdividing and goes into footprint
+  // instead, via the sizing pass in generate.ts.
+  for (let guard = 0; panelCount() < wallEdgeBudget && guard < 400; guard++) {
     const candidates = trees.flatMap((tree) => leafNodes(tree))
-      .filter((leaf) => leaf.rect.cols >= 2 || leaf.rect.rows >= 2);
+      .filter((leaf) => rectArea(leaf.rect) >= roomMin * 2
+        && (leaf.rect.cols >= roomMin * 2 || leaf.rect.rows >= roomMin * 2));
     if (!candidates.length) break;
     candidates.sort((first, second) => rectArea(second.rect) - rectArea(first.rect));
-    if (!splitOnce(candidates[0], random)) break;
+    if (!splitOnce(candidates[0], roomMin, random)) break;
     reassign();
+    plan = classify();
   }
 
-  // Then come back inside it, by merging compartments smallest and deepest first.
-  // Piece count is a converged result rather than an accident of how the
-  // recursion happened to land, and a board short of terrain comes out as fewer,
-  // larger rooms instead of a plan with holes in it.
-  for (let guard = 0; boundary.length > wallEdgeBudget && guard < 400; guard++) {
+  // Then come back inside it, merging compartments smallest and deepest first. Piece
+  // count is a converged result rather than an accident of where the recursion landed,
+  // and a board short of terrain comes out as fewer, larger rooms rather than a plan
+  // with holes in it.
+  for (let guard = 0; panelCount() > wallEdgeBudget && guard < 400; guard++) {
     const candidates = trees.flatMap((tree) => undoableSplits(tree));
     if (!candidates.length) break;
     candidates.sort((first, second) => second.depth - first.depth || rectArea(first.rect) - rectArea(second.rect));
     candidates[0].split = null;
     reassign();
+    plan = classify();
   }
 
-  const doorways = cutDoorways(
-    boundary, lattice, assigned.cellRegion, assigned.regions.length,
-    hatchSupply, loopShare, entrances, random,
+  const { state } = plan;
+
+  // Anything the partition could not spend goes into spur walls rather than staying in
+  // the box, and they are added before the long-bulkhead pass so that a spur growing off
+  // a bulkhead counts toward that run's length.
+  const spurs = addSpurs(
+    lattice, state, assigned.cellRegion, assigned.regions,
+    wallEdgeBudget, panelCount(), spurBudget, random,
   );
+  const structural = [...boundary, ...spurs];
 
-  const state = new Map<string, EdgeState>();
-  boundary.forEach((edge) => state.set(edgeKey(edge), doorways.get(edgeKey(edge)) ?? "wall"));
+  breakLongBulkheads(structural, state, hatchSupply, random);
 
-  breakLongBulkheads(boundary, state, hatchSupply, random);
-
-  const panelEdges = boundary.filter((edge) => state.get(edgeKey(edge)) !== "open");
+  const panelEdges = structural.filter((edge) => state.get(edgeKey(edge)) !== "open");
 
   return {
     lattice, state, regions:assigned.regions, cellRegion:assigned.cellRegion,

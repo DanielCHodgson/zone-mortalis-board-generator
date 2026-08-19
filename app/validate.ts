@@ -19,9 +19,9 @@
  */
 
 import {
-  cellRegions, edgeKey, edgeRuns, internalEdgeCount, isBorderEdge, nodeKey, nodesOfEdge,
-  passable, sightLines,
-  type LatticeEdge,
+  cellInside, cellKey, cellRegions, edgeKey, edgeRuns, internalEdgeCount, isBorderEdge,
+  nodeKey, nodesOfEdge, passable, sightLines,
+  type LatticeCell, type LatticeEdge,
 } from "./lattice.ts";
 import type { DeckPlan } from "./deckplan.ts";
 import type { BuildDef, BuiltPiece } from "./build.ts";
@@ -56,8 +56,36 @@ export type Metrics = {
   roomSpread:number;
   /** Cells with only one way in. */
   deadEndShare:number;
-  /** Share of panels that carry a hatchway. */
-  hatchShare:number;
+  /**
+   * Share of panelled edges that are a DOORWAY — a hatchway the plan relies on as a
+   * route.
+   *
+   * Was `hatchShare`, and the rename is the point. The old name and its 0.46 target
+   * came from the kit's composition — 20 of the 32 panels in the box carry a hatchway,
+   * so 62% of the panels you own have a door moulded into them — and that fact was
+   * transplanted into a target for the LAYOUT. They are different things. A hatchway
+   * panel standing in a wall run with its door shut is a wall; what makes an edge a
+   * doorway is the plan choosing it as the way through. Scoring toward 0.46 asked for
+   * 63 doorways a board and got them.
+   */
+  doorwayShare:number;
+  /**
+   * Share of compartment faces with no panel at all — the open faces.
+   *
+   * The metric the old profile had no equivalent of, which is why nothing could see the
+   * defect: boards scored well on every number while running at 0% open faces and 100%
+   * sealed compartments. A bay open along one side is the single most characteristic
+   * feature of these boards.
+   */
+  openFaceShare:number;
+  /**
+   * Share of compartments that are an alcove: open along exactly one side.
+   *
+   * Counted in SIDES, not edges. A 2 x 3 bay open along its three-cell side has three
+   * open edges and is still one alcove with one mouth, so counting edges reads a
+   * textbook nook as a wide-open space.
+   */
+  alcoveShare:number;
 };
 
 /**
@@ -84,25 +112,69 @@ export const PROVISIONAL_REFERENCE:ReferenceProfile = {
   // terrain over a LARGER footprint, because sizing solves
   // `internalEdges x density + hull <= capacity` — so this one number is the
   // "use a bit more of the table" dial.
-  density:.52,
-  meanSight:2.3,
-  longestSight:4.5,
-  meanRun:2.8,
-  // A long SOLID stretch is what looks wrong. Hatchways are 62% of the box, so a
-  // wall line is expected to be broken up by doors every couple of panels. Four
-  // panels is about 15", which is as far as a bulkhead runs on a real board before a
-  // hatchway appears in it, and it is the limit `breakLongBulkheads` enforces.
+  // Spend the box. Density and OPENNESS stopped competing when mouths and spur walls
+  // arrived: surplus panels go into spurs standing inside a bay rather than into another
+  // wall around one, so a board can carry the whole collection and still be open.
+  density:.5,
+  meanSight:2.6,
+  // A lane of five squares is about 19" — long enough to be a real shooting lane and
+  // well short of the table. The reference boards plainly have lanes this long down
+  // their streets and across their open areas; the previous 4.5 was one of the two
+  // constraints forcing the board to be chopped into small sealed boxes.
+  longestSight:5,
+  // Straight legs of two. This is what the photographed walls are actually made of —
+  // the Ls, Ts and alcove sides are two panels a leg — with the long spines showing up
+  // in `longestSolidRun` rather than in the mean. The old 2.8 was measured on a model
+  // that walled every boundary, where every split line ran the width of its block.
+  meanRun:2.2,
+  // The spines.
+  //
+  // This one scales with how much terrain is on the table, which no single fixed profile
+  // can express: measured 3.3 cells at two sets on a 2' board, 3.8 at two sets on 4', and
+  // 5.3 at four sets on 4'. Long runs come from spur walls extending and merging into the
+  // bulkheads they grow off, so a board with more panels has longer walls — and a one-set
+  // board simply has no 5-cell unbroken wall in it once half its faces are open.
+  //
+  // Four is the middle of that range rather than the top of it. Aiming at the top would
+  // penalise every small board for something the box cannot do, which is the mistake the
+  // old profile made in the other direction.
   longestSolidRun:4,
-  junctionShare:.4,
-  meanRoom:3,
-  roomSpread:1.6,
-  deadEndShare:.12,
-  hatchShare:.46,
-  // Sight lines and run structure are what separate a deck from a scatter, so they
-  // carry the most weight. Density matters but is largely fixed by the box.
+  // Ls and Ts, where a spur meets a bulkhead or two split lines cross.
+  //
+  // Lowered from 0.4, and the reason is arithmetic rather than taste: a junction is a node
+  // where three or four panels meet, so it needs three or four of that node's faces
+  // walled. Half the faces on this board are deliberately open. You cannot have a wall on
+  // every face AND an open face on every bay, and 0.4 was measured on a model that walled
+  // every boundary — it is the old aesthetic's number, not a property of a good board.
+  junctionShare:.25,
+  // A 2 x 2 bay. Not 3: the partition floor is what keeps single-square closets rare,
+  // and a bay you can stand a squad in is the unit these boards are built from.
+  meanRoom:4,
+  roomSpread:1.8,
+  // A nook IS a dead end, and nooks are the point — "crevices in the corridor system
+  // where you can fit troops". The old 0.12 was asking for a board with no cover on it.
+  //
+  // Worth being honest about what this number is: unlike density or doorway share, it is a
+  // DESCRIPTION of the alcove-heavy aesthetic rather than an independent target drawn from
+  // the photographs. A board that is half open faces and half bays lands here by
+  // construction. It is kept in the profile, at low weight, so that a candidate which
+  // wanders far from it still loses a little — not so that the scorer chases it.
+  deadEndShare:.32,
+  // Doors are tactical and rare: a bulkhead across a street, a store worth sealing, a
+  // way in through the hull. Around one panel in twelve, against the old 0.46.
+  doorwayShare:.08,
+  // Most bay faces are open. This and `alcoveShare` are the two numbers that hold the
+  // aesthetic, so they carry the most weight on the board — without them the scorer has
+  // no way to prefer an open board over a sealed one.
+  openFaceShare:.45,
+  alcoveShare:.5,
+  // Sight lines and run structure separate a deck from a scatter; openness separates
+  // this generator's output from a warren. Density matters but is largely fixed by the
+  // box.
   weights:{
-    density:1, meanSight:2.5, longestSight:2, meanRun:2, longestSolidRun:1.25,
-    junctionShare:1.5, meanRoom:.75, roomSpread:.5, deadEndShare:1, hatchShare:.5,
+    density:1, meanSight:2, longestSight:1.5, meanRun:2, longestSolidRun:1.25,
+    junctionShare:1.25, meanRoom:1, roomSpread:.5, deadEndShare:.75,
+    doorwayShare:2, openFaceShare:2.5, alcoveShare:2,
   },
 };
 
@@ -140,6 +212,37 @@ export const measure = (plan:DeckPlan):Metrics => {
 
   const hatches = panels.filter((edge) => state.get(edgeKey(edge)) === "hatch").length;
 
+  // Openness, measured per compartment face. A face is a maximal contiguous run of
+  // same-axis edges along one side of the compartment, so a three-cell-wide mouth counts
+  // as ONE open side rather than three — the distinction between a bay with a mouth and
+  // a bay with no wall at all.
+  let openFaces = 0;
+  let totalFaces = 0;
+  let alcoves = 0;
+  plan.regions.forEach((region) => {
+    const inRegion = new Set(region.cells.map(cellKey));
+    const outward:LatticeEdge[] = [];
+    const openEdges:LatticeEdge[] = [];
+    region.cells.forEach((cell) => {
+      ([
+        { edge:{ axis:"h", col:cell.col, row:cell.row }, next:{ col:cell.col, row:cell.row - 1 } },
+        { edge:{ axis:"h", col:cell.col, row:cell.row + 1 }, next:{ col:cell.col, row:cell.row + 1 } },
+        { edge:{ axis:"v", col:cell.col, row:cell.row }, next:{ col:cell.col - 1, row:cell.row } },
+        { edge:{ axis:"v", col:cell.col + 1, row:cell.row }, next:{ col:cell.col + 1, row:cell.row } },
+      ] as { edge:LatticeEdge; next:LatticeCell }[]).forEach(({ edge, next }) => {
+        if (!cellInside(lattice, next) || inRegion.has(cellKey(next))) return;
+        outward.push(edge);
+        if (!passable(lattice, state, edge) || state.get(edgeKey(edge)) === "hatch") return;
+        openEdges.push(edge);
+      });
+    });
+    const sides = edgeRuns(outward).length;
+    const openSides = edgeRuns(openEdges).length;
+    totalFaces += sides;
+    openFaces += openSides;
+    if (openSides === 1) alcoves++;
+  });
+
   return {
     density:panels.length / Math.max(1, internalEdgeCount(lattice.cols, lattice.rows)),
     meanSight:sight.mean,
@@ -149,7 +252,9 @@ export const measure = (plan:DeckPlan):Metrics => {
     junctionShare:nodeDegree.size ? junctions / nodeDegree.size : 0,
     meanRoom, roomSpread,
     deadEndShare:deadEnds / Math.max(1, lattice.cols * lattice.rows),
-    hatchShare:panels.length ? hatches / panels.length : 0,
+    doorwayShare:panels.length ? hatches / panels.length : 0,
+    openFaceShare:totalFaces ? openFaces / totalFaces : 0,
+    alcoveShare:plan.regions.length ? alcoves / plan.regions.length : 0,
   };
 };
 
@@ -329,7 +434,41 @@ export const invariants = ({ plan, pieces, defs, inventory, boardWidth, boardHei
     failures.push({ rule:"bracketed", detail:`${unsupported.length} panel ends stand on nothing` });
   }
 
-  // 7. Reserved zones stay clear.
+  // 7. A wall-end cap covers a free end, and nothing else.
+  //
+  //    A wall end is cosmetic — it hides the exposed end of a panel that stops in open
+  //    floor. It brackets nothing, so it can never be the joint between two panels.
+  //
+  //    The build pass used to allow one wherever a single panel END arrived at a node,
+  //    which is not the same test: a run terminating against the flank of a long panel has
+  //    one end arriving there while the long panel covers the node with two more panel
+  //    edges. 30% of the caps on a board were in that position, holding a wall onto the
+  //    side of another wall. Invariant 6 could not see it, because a cap counts as support
+  //    for a panel end and legitimately does — for a free end.
+  const caps = pieces.filter((piece) => defs.get(piece.defId)?.kind === "end");
+  const misusedCaps = caps.filter((piece) => {
+    const rect = rectOf(piece, defs);
+    const centre = { x:rect.x + rect.width / 2, y:rect.y + rect.height / 2 };
+    const col = Math.round((centre.x - lattice.originX) / lattice.pitchX);
+    const row = Math.round((centre.y - lattice.originY) / lattice.pitchY);
+    const carriesPanel = (edge:LatticeEdge) => {
+      const value = state.get(edgeKey(edge));
+      return value === "wall" || value === "hatch";
+    };
+    const touching = ([
+      { axis:"h", col:col - 1, row }, { axis:"h", col, row },
+      { axis:"v", col, row:row - 1 }, { axis:"v", col, row },
+    ] as LatticeEdge[]).filter(carriesPanel).length;
+    return touching !== 1;
+  });
+  if (misusedCaps.length) {
+    failures.push({
+      rule:"cap",
+      detail:`${misusedCaps.length} wall ends are joining panels rather than capping a free end`,
+    });
+  }
+
+  // 8. Reserved zones stay clear.
   //
   // A rule, not a hope. The generator previously "respected" zones by nudging the
   // whole complex to overlap them less, which silently gave up whenever the complex

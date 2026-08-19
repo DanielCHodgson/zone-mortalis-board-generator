@@ -17,6 +17,9 @@ type PlacedPiece = {
   height: number;
   runId?: string;
   sequenceIndex?: number;
+  /** Set by the generator on a hatchway panel whose door is a route the plan uses. A
+   *  hatchway panel without it is standing in a wall run with its door shut. */
+  servesDoorway?: boolean;
 };
 
 type ReservedZone = {
@@ -813,8 +816,13 @@ export default function Home() {
       // A sheet you take to the table wants ink on white, not a screenshot of a dark
       // viewport, so these are deliberately the light palette's literals rather than
       // the live tokens.
-      const colour = def.kind === "door" ? "#7d4b39"
-        : def.kind === "wall" ? "#3d4844"
+      // A hatchway panel the plan uses as a WALL prints as wall — same piece, door shut.
+      // Colouring every door-kind panel as an opening is what made a board running 8%
+      // doorways read as 58% doors. The manifest below still lists it as a hatchway,
+      // because that is the piece you reach into the box for.
+      const asDoorway = def.kind === "door" && piece.servesDoorway !== false;
+      const colour = asDoorway ? "#7d4b39"
+        : def.kind === "wall" || def.kind === "door" ? "#3d4844"
           : def.kind === "end" ? "#56615c"
             : def.kind === "scatter" ? "#4c6f66"
               : "#2d3934";
@@ -825,10 +833,17 @@ export default function Home() {
       ctx.strokeRect(x, y, width, depth);
       ctx.strokeStyle = "rgba(226,233,228,.48)";
       ctx.lineWidth = 2;
-      if (def.kind === "door") {
+      if (asDoorway) {
         ctx.fillStyle = "#252d2a";
         if (width >= depth) ctx.fillRect(x + width * .35, y + 3, width * .3, Math.max(2, depth - 6));
         else ctx.fillRect(x + 3, y + depth * .35, Math.max(2, width - 6), depth * .3);
+      } else if (def.kind === "door") {
+        // Shut, but still outlined: the sheet is a build guide and you need to know
+        // which panel goes here.
+        ctx.strokeStyle = "rgba(189,113,82,.45)";
+        if (width >= depth) ctx.strokeRect(x + width * .35, y + 3, width * .3, Math.max(2, depth - 6));
+        else ctx.strokeRect(x + 3, y + depth * .35, Math.max(2, width - 6), depth * .3);
+        ctx.strokeStyle = "rgba(226,233,228,.48)";
       } else if (["pillar", "connector"].includes(def.kind)) {
         ctx.strokeRect(x + 4, y + 4, Math.max(1, width - 8), Math.max(1, depth - 8));
       } else if (def.visual === "grid") {
@@ -873,6 +888,8 @@ export default function Home() {
       ctx.fillText(`${MANUFACTURERS[catalogueId].name.toUpperCase()} · ${MANUFACTURERS[catalogueId].range.toUpperCase()}`, manifestX + 30, rowY);
       rowY += 42;
       manifest.filter((item) => item.def.catalogue === catalogueId).forEach(({ def, count, heightCounts }) => {
+        // The manifest lists piece TYPES, so a hatchway panel shows as a hatchway here
+        // whatever the layout uses it for — this is the shopping list, not the board.
         ctx.fillStyle = def.kind === "door" ? "#7d4b39" : def.kind === "wall" ? "#3d4844" : def.kind === "end" ? "#56615c" : "#2d3934";
         ctx.fillRect(manifestX + 30, rowY - 16, 12, 12);
         ctx.fillStyle = "#17201e";
@@ -1223,7 +1240,7 @@ export default function Home() {
                 const width = piece.rotation === 90 ? def.depth : def.width;
                 const height = piece.rotation === 90 ? def.width : def.depth;
                 const isSelected = selectedIds.includes(piece.uid);
-                return <button key={piece.uid} title={`${def.name} · ${def.note} × ${Math.round(piece.height * MM_PER_IN)} mm high`} aria-label={`${def.name}, ${Math.round(piece.height * MM_PER_IN)} millimetres high${isSelected ? ", selected" : ""}`} aria-pressed={isSelected} className={`placed-piece ${def.kind} ${def.visual ? `visual-${def.visual}` : ""} ${piece.rotation === 90 ? "rotated" : ""} ${isSelected ? "selected" : ""}`} style={{ left:`${piece.x / boardWidth * 100}%`, top:`${piece.y / boardHeight * 100}%`, width:`${width / boardWidth * 100}%`, height:`${height / boardHeight * 100}%` }} onDoubleClick={() => rotatePiece(piece.uid)} onContextMenu={(event) => { event.preventDefault(); setFocusedZone(null); selectOnly(piece.uid); rotatePiece(piece.uid); }} onPointerDown={(event) => beginPieceDrag(event, piece)}><span className="terrain-detail" /></button>;
+                return <button key={piece.uid} title={`${def.name} · ${def.note} × ${Math.round(piece.height * MM_PER_IN)} mm high`} aria-label={`${def.name}, ${Math.round(piece.height * MM_PER_IN)} millimetres high${isSelected ? ", selected" : ""}`} aria-pressed={isSelected} className={`placed-piece ${def.kind} ${def.kind === "door" && piece.servesDoorway === false ? "shut" : ""} ${def.visual ? `visual-${def.visual}` : ""} ${piece.rotation === 90 ? "rotated" : ""} ${isSelected ? "selected" : ""}`} style={{ left:`${piece.x / boardWidth * 100}%`, top:`${piece.y / boardHeight * 100}%`, width:`${width / boardWidth * 100}%`, height:`${height / boardHeight * 100}%` }} onDoubleClick={() => rotatePiece(piece.uid)} onContextMenu={(event) => { event.preventDefault(); setFocusedZone(null); selectOnly(piece.uid); rotatePiece(piece.uid); }} onPointerDown={(event) => beginPieceDrag(event, piece)}><span className="terrain-detail" /></button>;
               })}
             </div>
           </div></div>
@@ -1246,7 +1263,7 @@ export default function Home() {
           <div className="metric"><span>{paletteCatalogues.length > 1 ? "Walls + hatchways" : generationJoint === "straddle" ? "Operable doorways" : "Wall modules"}</span><strong>{paletteCatalogues.length > 1 ? wallPieces.length : generationJoint === "straddle" ? doors : wallPieces.length}</strong></div><div className="metric"><span>Corridor loops</span><strong>{loops}</strong></div><div className="metric"><span>Open chambers</span><strong>{chambers}</strong></div>
           <div className="divider" />
           <p className="inspector-copy">{paletteCatalogues.length > 1 ? "Each terrain system keeps its physical assembly rules, then compatible ordinary wall faces are aligned across kits. Special pipes, floors, stairs, caps, and proprietary connectors remain system-specific." : generationJoint === "straddle" ? `The planner scores 24 column-node layouts, builds hooked chambers and branching junctions, and keeps separate wall networks far enough apart that the board retains long playable lanes. Every ${generationRange} panel slots into the columns straddling its span.` : `The planner scores 24 connector-node layouts. Every ${generationRange} wall is generated as a connector-to-connector edge, while separate networks retain at least 3.8 inches of walkable clearance.`}</p>
-          <div className="layout-key">{paletteCatalogues.length > 1 ? <><span><i className="key-wall" /> Compatible wall</span><span><i className="key-door" /> Door / hatch</span><span><i className="key-pillar" /> System support</span></> : generationJoint === "straddle" ? <><span><i className="key-wall" /> Wall</span><span><i className="key-door" /> Doorway</span><span><i className="key-pillar" /> Column</span></> : <><span><i className="key-wall" /> Wall</span><span><i className="key-door" /> Wall end</span><span><i className="key-pillar" /> Connector</span></>}</div>
+          <div className="layout-key">{paletteCatalogues.length > 1 ? <><span><i className="key-wall" /> Compatible wall</span><span><i className="key-door" /> Door / hatch</span><span><i className="key-pillar" /> System support</span></> : generationJoint === "straddle" ? <><span><i className="key-wall" /> Wall</span><span><i className="key-door" /> Doorway</span><span><i className="key-pillar" /> Column</span><span><i className="key-open" /> Open face</span></> : <><span><i className="key-wall" /> Wall</span><span><i className="key-door" /> Wall end</span><span><i className="key-pillar" /> Connector</span></>}</div>
           {catalogueTotal > 0 && <details className="height-settings inspector-height">
             <summary><span><strong>Advanced dimensions</strong><small>3D and export height defaults</small></span><em>Z axis · mm</em></summary>
             <p className="height-explainer">Optional vertical dimensions. They do not change the bird&apos;s-eye footprint.</p>

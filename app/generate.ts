@@ -453,7 +453,38 @@ export const generate = (input:GenerateInput):GenerateReport => {
     );
   }
 
-  const spendable = Math.max(1, Math.round(kit.capacity * usage));
+  /**
+   * Columns a wall-cell costs, on average, once a board is tiled.
+   *
+   * Measured across 72 generated boards spanning every preset and one, two and four
+   * sets: median 0.92, tenth percentile 0.76, ninetieth 1.00. Long runs share nodes and
+   * push it down; spurs and junction-poor layouts push it up.
+   *
+   * It is an estimate for SIZING and nothing more — the retry loop corrects any board
+   * where it turns out optimistic. Re-measure it after any change to how panels are
+   * CHOSEN, because it moves: an experiment that stopped long panels spanning an occupied
+   * node took it to 0.79, and a stale figure here mis-sizes every board on the first try.
+   */
+  const COLUMNS_PER_WALL_CELL = .9;
+
+  /**
+   * What the kit can actually build, which is not what it can panel.
+   *
+   * A Boarding Actions set holds 48 wall-cells of panel and 32 loose columns plus 4 wall
+   * ends. At 0.9 columns a wall-cell those 36 supports bracket about 40 wall-cells, so
+   * the last 8 panels in the box have nothing to stand on. Sizing did not know that: it
+   * solved `internalEdges x density + hull <= 48` and handed back a lattice the kit could
+   * never finish, `build` failed on columns, and the retry loop spent its candidates
+   * walking the footprint back down again.
+   *
+   * Sizing against the lesser of the two is the same fact stated once, up front, instead
+   * of discovered forty times per board. It is also why the note reports sets-to-fill
+   * higher than raw panel arithmetic suggests — which is correct, and is the constraint
+   * the README already calls the binding one.
+   */
+  const bracketable = Math.floor((kit.columns + kit.caps) / COLUMNS_PER_WALL_CELL);
+  const usable = Math.min(kit.capacity, bracketable);
+  const spendable = Math.max(1, Math.round(usable * usage));
 
   // Anchoring is settled before sizing, because the two depend on each other: how
   // big the complex can be depends on how much outside wall it has to build, which
@@ -539,9 +570,30 @@ export const generate = (input:GenerateInput):GenerateReport => {
   // own perimeter and had 11 left for the entire interior. That is why 30 x 22 came
   // out identical at one, two and four sets — the cap, not the kit, was the limit —
   // and why every inset board sat at 0.38 interior density against a 0.52 target.
-  const interiorCapFor = (atCols:number, atRows:number) =>
-    Math.round(internalEdgeCount(atCols, atRows) * Math.min(1, reference.density * 1.15));
+  /**
+   * The interior density ceiling.
+   *
+   * Held near the reference so surplus terrain goes into FOOTPRINT rather than into a
+   * denser board — right up until the footprint has nowhere left to grow, at which point
+   * holding the line achieves nothing except leaving the collection in the box. Two sets
+   * on a 30 x 22 board are already at the largest lattice that fits, and with a flat
+   * ceiling they built exactly the same board as one set.
+   *
+   * The higher ceiling is only safe because of spur walls. Under the old model every
+   * panel closed something, so pushing density past the reference meant a compartment per
+   * square and a wall on nearly every edge — a solid board, not a dense one. A spur
+   * closes nothing: it stands inside a bay as cover. So a full board can carry its whole
+   * collection and stay open, which is what the reference photographs of a big collection
+   * on a small table actually look like.
+   */
+  const interiorCapFor = (atCols:number, atRows:number) => {
+    const full = atCols >= sized.maxCols && atRows >= sized.maxRows;
+    return Math.round(internalEdgeCount(atCols, atRows) * Math.min(1, reference.density * (full ? 1.4 : 1.15)));
+  };
   let interiorBudget = Math.min(spendable, interiorCapFor(cols, rows));
+  // Spurs start unbounded by count — the wall budget still caps them — and the retry
+  // below backs them off when the columns cannot bracket them.
+  let spurBudget = kit.capacity;
   let best:{ pieces:BuiltPiece[]; metrics:Metrics; lattice:Lattice; plan:DeckPlan; score:number } | null = null;
   const maxSight = Math.max(3, Math.round(reference.longestSight + 2));
 
@@ -600,6 +652,7 @@ export const generate = (input:GenerateInput):GenerateReport => {
       hatchSupply:kit.doorways,
       exterior,
       reserved,
+      spurBudget,
       random,
     });
 
@@ -607,20 +660,7 @@ export const generate = (input:GenerateInput):GenerateReport => {
     const built = build({ plan, defs:kit.buildDefs, stock, heights, nextUid, seed:seed + attempt * 7919 });
     if (!built.ok) {
       rejected[built.reason.replace(/\d+/g, "n")] = (rejected[built.reason.replace(/\d+/g, "n")] ?? 0) + 1;
-      // Two levers, and which one is right depends on what ran out.
-      //
-      // Trimming the interior budget merges compartments, and fewer larger rooms is a
-      // real board — but it can ONLY reduce interior density, so it is the wrong lever
-      // whenever density is already at the reference. Shrinking the lattice is the
-      // other way round: it cuts the hull and the node count, which is what a complex
-      // short of columns or paying for a big perimeter actually needs.
-      //
-      // So the budget gives way down to the reference density and no further, and past
-      // that the FOOTPRINT gives way instead. Pulling the budget lever regardless is
-      // how a 4' board with one set came out at its full footprint with a 0.37 interior
-      // where a smaller complex would have hit 0.52 properly — and a column shortage
-      // never responds to it at all, because a hull and a reserved hall's boundary are
-      // not compartments and no amount of merging removes them.
+      // Three levers now, and which one is right depends on what ran out. See below.
       const shrink = () => {
         if (cols >= rows && cols > 3) cols--;
         else if (rows > 3) rows--;
@@ -629,11 +669,25 @@ export const generate = (input:GenerateInput):GenerateReport => {
         interiorBudget = Math.min(spendable, interiorCapFor(cols, rows));
         return true;
       };
+      // Out of columns: give up SPURS first, then the footprint. A spur is cover
+      // standing in a bay and the cheapest thing on the board to lose; the footprint is
+      // the board itself. Backing off in the other order shrank a one-set card board to
+      // 5 x 6 to pay for cover it did not need.
+      if (built.reason.startsWith("out of columns")) {
+        if (spurBudget > 0) spurBudget = Math.floor(spurBudget / 2);
+        else shrink();
+        continue;
+      }
+      // Short of panels instead. Trimming the interior budget merges compartments, and
+      // fewer larger rooms is a real board — but it can only ever reduce interior
+      // density, so once density is already at the reference the FOOTPRINT gives way
+      // instead. Pulling the budget lever regardless is how a 4' board with one set came
+      // out at full footprint with a 0.37 interior where a smaller complex would have hit
+      // 0.52 properly.
       const atReference = interiorBudget <= internalEdgeCount(cols, rows) * reference.density;
-      const shrinkFirst = built.reason.startsWith("out of columns") || atReference;
       // Once the lattice is down to its floor there is nothing left to give but the
       // budget, so keep trimming rather than spinning through the remaining attempts.
-      if (!shrinkFirst || !shrink()) interiorBudget = Math.max(4, Math.floor(interiorBudget * .92));
+      if (!atReference || !shrink()) interiorBudget = Math.max(4, Math.floor(interiorBudget * .92));
       continue;
     }
 

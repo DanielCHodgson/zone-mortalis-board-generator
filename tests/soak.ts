@@ -129,7 +129,7 @@ for (const preset of PRESETS) {
 // 4. Distance from the reference board, which is the single number the generator
 //    is actually optimising, so its distribution is the headline result.
 console.log("\n=== VS REFERENCE BOARD ===");
-const keys:(keyof Metrics)[] = ["density", "meanSight", "longestSight", "meanRun", "longestSolidRun", "junctionShare", "meanRoom", "roomSpread", "deadEndShare", "hatchShare"];
+const keys:(keyof Metrics)[] = ["density", "meanSight", "longestSight", "meanRun", "longestSolidRun", "junctionShare", "meanRoom", "roomSpread", "deadEndShare", "doorwayShare", "openFaceShare", "alcoveShare"];
 console.log("metric            target     mean       sd      p10      p90     |  within 25%");
 keys.forEach((key) => {
   const good = rows.filter((row) => row.ok);

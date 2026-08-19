@@ -20,9 +20,9 @@ import assert from "node:assert/strict";
 
 import { TERRAIN, BOARDING_INVENTORY, BOARD_SIZES, GALLOWDARK_GRID } from "../app/terrain.ts";
 import { generate, readKit, type KitDef } from "../app/generate.ts";
-import { invariants, measure } from "../app/validate.ts";
+import { invariants, measure, PROVISIONAL_REFERENCE } from "../app/validate.ts";
 import {
-  columnBite, edgeKey, edgeRuns, fullyConnected, internalEdgeCount, nodesOfEdge,
+  columnBite, edgeKey, edgeRuns, fullyConnected, internalEdgeCount, isBorderEdge, nodesOfEdge,
   pitchIsBuildable, sightLines, spanWorld,
 } from "../app/lattice.ts";
 
@@ -239,18 +239,74 @@ test("no more of a piece is used than the palette owns", () => {
   }));
 });
 
-test("hatchways are used as the kit ships them, not as filler or as a rarity", () => {
-  // The kit is 20 hatchway panels to 12 solid, so a board that is nearly all doors
-  // and a board with one door in eight panels are both wrong. This brackets it from
-  // both sides, which neither of the two previous regressions would have survived.
+test("doorways are tactical and rare, not a way to spend hatchway panels as walls", () => {
+  // This test replaces one that asserted the OPPOSITE, and the story is worth keeping
+  // because the number looked well-founded. The old test bracketed `hatchShare` between
+  // 0.2 and 0.8 on the reasoning that the box holds 20 hatchway panels to 12 solid, so a
+  // board with few doors must be wrong. But "62% of the panels you own have a door
+  // moulded into them" is a fact about the BOX; it says nothing about how many EDGES
+  // should be a way through. A hatchway panel standing in a wall run with its door shut
+  // is a wall.
+  //
+  // Conflating the two produced 63 doorways on a four-set board, 43% of every panel
+  // placed, and — measured across eight boards — 100% of compartments sealed with not one
+  // open face anywhere. Doors were doing the job walls should do.
   SEEDS.forEach((seed) => {
     const { report } = run({ seed });
     const metrics = measure(report.plan!);
     assert.ok(
-      metrics.hatchShare > .2 && metrics.hatchShare < .8,
-      `seed ${seed}: ${(metrics.hatchShare * 100).toFixed(0)}% of panels carry a hatchway`,
+      metrics.doorwayShare < .2,
+      `seed ${seed}: ${(metrics.doorwayShare * 100).toFixed(0)}% of panels are a doorway — doors are being used as walls`,
     );
   });
+});
+
+test("compartments open by a face, rather than being sealed behind a door", () => {
+  // The positive half of the rule above, and the one that actually describes the
+  // reference boards: a bay is three walls and an open side. That open side is what
+  // makes a nook you can put a squad in, and it is why you can see and shoot into a bay
+  // without a door being involved.
+  //
+  // Asserted as a floor on open faces and a ceiling on sealed compartments, because the
+  // failure mode is one-directional — the partition model's natural state is to wall
+  // every boundary, and it will drift back there given any excuse.
+  SEEDS.forEach((seed) => {
+    const { report } = run({ seed, sets:2 });
+    const metrics = measure(report.plan!);
+    assert.ok(
+      metrics.openFaceShare > .25,
+      `seed ${seed}: only ${(metrics.openFaceShare * 100).toFixed(0)}% of compartment faces are open`,
+    );
+    assert.ok(
+      metrics.alcoveShare > .2,
+      `seed ${seed}: only ${(metrics.alcoveShare * 100).toFixed(0)}% of compartments are an alcove`,
+    );
+  });
+});
+
+test("spur walls stand inside compartments, so surplus terrain becomes cover", () => {
+  // The partition can only spend a panel by making it a compartment boundary, and that
+  // has a floor: past `roomMin` there is nowhere left to put one. A four-set board hit
+  // the floor with 103 of its 192 wall-cells still in the box.
+  //
+  // Spurs are the way out, and they are what the reference boards do with a big
+  // collection — free-standing runs jutting into open floor, making crevices rather than
+  // another sealed box. Asserted as: a generous kit on a fixed board spends materially
+  // more of itself than the partition alone could.
+  const oneSet = run({ width:48, height:48, sets:1, seed:3 }).report;
+  const fourSets = run({ width:48, height:48, sets:4, seed:3 }).report;
+  assert.ok(oneSet.plan && fourSets.plan, "both boards should build");
+  const panels = (report:typeof oneSet) => report.plan!.panelEdges.length;
+  assert.ok(
+    panels(fourSets) > panels(oneSet) * 1.5,
+    `four sets placed ${panels(fourSets)} wall-cells against one set's ${panels(oneSet)} — surplus is staying in the box`,
+  );
+  // And they must never seal anything: a spur that cuts a cell off is rejected, not
+  // repaired, like every other invariant here.
+  assert.ok(
+    fullyConnected(fourSets.lattice!, fourSets.plan!.state),
+    "spurs broke connectivity",
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -553,8 +609,31 @@ test("the outside wall is paid for on top of the interior, not out of it", () =>
   };
   const one = density(1);
   const two = density(2);
-  assert.ok(one >= .45, `one set on 30 x 22 reached only ${one.toFixed(2)} interior density`);
-  assert.ok(two > one + .02, `extra sets bought nothing: ${one.toFixed(2)} then ${two.toFixed(2)}`);
+  // Two assertions, and the second one used to be `two > one + .02` — extra sets must buy
+  // interior density. That has stopped being true on this board, for a reason worth
+  // recording rather than papering over: a 30 x 22 board is a 7 x 5 lattice, which has 58
+  // interior edges and 12 hull edges, so it cannot hold much over 40 wall-cells before it
+  // is a wall on nearly every edge. One set nearly fills it. The surplus from a second
+  // set has nowhere to go, and the generator reports it as staying in the box, which is
+  // the designed behaviour rather than a defect. Set scaling on a board with room to grow
+  // is covered by "more sets grow the footprint" above.
+  //
+  // So this now tests its actual subject directly: the HULL is paid on top of the
+  // interior, not out of it. The bug was an inset complex spending 24 of a 35-panel
+  // budget on its own perimeter and having 11 left for everything else.
+  //
+  // The floor is 0.40 rather than 0.45 because the measure changed meaning when mouths
+  // arrived: `density` counts panelled interior edges, and a mouth is an interior edge the
+  // plan deliberately leaves bare, so the same kit on the same board reads lower without
+  // building any less.
+  assert.ok(one >= .40, `one set on 30 x 22 reached only ${one.toFixed(2)} interior density`);
+  assert.ok(two >= .40, `two sets on 30 x 22 reached only ${two.toFixed(2)} interior density`);
+  const { report } = run({ width:30, height:22, sets:1, seed:11 });
+  const hull = report.plan!.panelEdges.filter((edge) => isBorderEdge(report.lattice!, edge)).length;
+  assert.ok(
+    hull < report.plan!.panelEdges.length * .45,
+    `the hull took ${hull} of ${report.plan!.panelEdges.length} wall-cells — it is eating the interior`,
+  );
 });
 
 test("a complex that all but fills the board borrows the table edge as its hull", () => {
@@ -590,8 +669,13 @@ test("long bulkheads get doors, so no stretch of blank wall spans the table", ()
         return Math.max(0, ...edgeRuns(solid).map((line) => line.length));
       });
       const mean = longest.reduce((sum, value) => sum + value, 0) / longest.length;
+      // Seven, against the five this asserted while `MAX_SOLID_RUN` was 4. Four cells is
+      // about 15" at the Gallowdark pitch, which is shorter than any run on the reference
+      // boards — their bulkheads reach six or seven squares before something interrupts
+      // them, and long runs are half of what makes a deck read as a deck rather than as
+      // scatter. The hard cap below is what rules out a wall spanning the table.
       assert.ok(
-        mean <= 5,
+        mean <= 7,
         `${width}x${height} x${sets}: mean longest blank wall ${mean.toFixed(1)} panels (${longest.join(",")})`,
       );
       // The hard cap is looser than the average on purpose. Where the kit's hatchway
@@ -607,8 +691,17 @@ test("long bulkheads get doors, so no stretch of blank wall spans the table", ()
 
 test("every board on every preset lands near the reference density", () => {
   // The headline result of the soak, pinned. Interior density across the whole matrix
-  // used to run from 0.37 to 0.60 depending on how much of the budget the hull ate;
-  // it now sits in a narrow band around the 0.52 reference on every combination.
+  // used to run from 0.37 to 0.60 depending on how much of the budget the hull ate; it
+  // now tracks the reference on every combination.
+  //
+  // The band is derived from the reference rather than written out, because a hard-coded
+  // 0.42-0.68 outlived the 0.52 it was drawn around and then failed for the wrong reason.
+  //
+  // It is wider below than above, and the reason is the kit rather than the plan: a
+  // Boarding Actions set holds 32 columns against 48 wall-cells of panel, so a small kit
+  // on a big board runs out of things to stand its panels on well before it runs out of
+  // panels. One set on two card boards is column-bound at about 39 wall-cells, and no
+  // amount of planning changes that — it is what the box contains.
   const presets = Object.values(BOARD_SIZES);
   presets.forEach((size) => {
     [1, 2].forEach((sets) => {
@@ -616,9 +709,11 @@ test("every board on every preset lands near the reference density", () => {
         const { report } = run({ width:size.width, height:size.height, sets, seed });
         assert.ok(report.metrics, `${size.label} x${sets} seed ${seed} produced nothing`);
         const { density } = report.metrics!;
+        const floor = PROVISIONAL_REFERENCE.density * .7;
+        const ceiling = PROVISIONAL_REFERENCE.density * 1.4;
         assert.ok(
-          density >= .42 && density <= .68,
-          `${size.label} x${sets} seed ${seed}: density ${density.toFixed(2)} outside 0.42-0.68`,
+          density >= floor && density <= ceiling,
+          `${size.label} x${sets} seed ${seed}: density ${density.toFixed(2)} outside ${floor.toFixed(2)}-${ceiling.toFixed(2)}`,
         );
       });
     });
@@ -719,5 +814,49 @@ test("a complex that does not fill the board builds its own outside wall", () =>
     };
     const bare = [...hull].filter((key) => !covered(key));
     assert.deepEqual(bare, [], `seed ${seed}: ${bare.length} of ${hull.size} exterior edges got no panel`);
+  });
+});
+
+test("a wall end caps a free end and never joins two panels", () => {
+  // A wall end is COSMETIC — it covers the exposed end of a panel that stops in open
+  // floor. It brackets nothing, so it can never be the joint between two panels.
+  //
+  // The build pass used to allow one wherever a single panel END arrived at a node, which
+  // is a different test: a run terminating against the flank of a long panel has one end
+  // arriving there while the long panel covers that node with two more panel edges.
+  // Measured over 18 boards, 51 of 168 caps — 30% — were sitting in exactly that
+  // position, holding a wall onto the side of another wall.
+  //
+  // Asserted on the placed pieces against the plan, because the geometry looked fine from
+  // either side alone: invariant 6 saw a panel end with support under it, and the node
+  // pass saw one panel end arriving.
+  [1, 2, 4].forEach((sets) => {
+    SEEDS.slice(0, 4).forEach((seed) => {
+      const { report } = run({ width:48, height:48, sets, seed });
+      assert.ok(report.plan, `x${sets} seed ${seed}: nothing built`);
+      const lattice = report.lattice!;
+      const state = report.plan!.state;
+      const carriesPanel = (edge:{ axis:"h" | "v"; col:number; row:number }) => {
+        const value = state.get(edgeKey(edge));
+        return value === "wall" || value === "hatch";
+      };
+      const caps = report.pieces.filter((piece) => TERRAIN.find((def) => def.id === piece.defId)!.kind === "end");
+      const misused = caps.filter((piece) => {
+        const def = TERRAIN.find((candidate) => candidate.id === piece.defId)!;
+        const width = piece.rotation === 90 ? def.depth : def.width;
+        const height = piece.rotation === 90 ? def.width : def.depth;
+        const col = Math.round((piece.x + width / 2 - lattice.originX) / lattice.pitchX);
+        const row = Math.round((piece.y + height / 2 - lattice.originY) / lattice.pitchY);
+        const touching = ([
+          { axis:"h", col:col - 1, row }, { axis:"h", col, row },
+          { axis:"v", col, row:row - 1 }, { axis:"v", col, row },
+        ] as { axis:"h" | "v"; col:number; row:number }[]).filter(carriesPanel).length;
+        return touching !== 1;
+      });
+      assert.equal(
+        misused.length, 0,
+        `x${sets} seed ${seed}: ${misused.length} of ${caps.length} wall ends are joining panels rather than capping a free end`,
+      );
+    });
   });
 });

@@ -265,6 +265,18 @@ kbd { padding-left:4px; color:var(--muted); font:11px var(--font-geist-mono, ui-
 .placed-piece:hover { filter:brightness(1.1); }
 .placed-piece.selected { z-index:4; box-shadow:0 0 0 2px var(--focus-halo),0 0 0 4px var(--accent),0 2px 5px rgba(0,0,0,.35); }
 .placed-piece.door { background:var(--door); }
+/* A hatchway panel the plan uses as a WALL, door shut.
+ *
+ * It is the same physical panel as a doorway — 62% of the panels in the box carry a
+ * hatchway, so the tiler substitutes them for solid walls constantly and has to. Drawing
+ * them all as openings made the board look like it was made of doors: 8% of edges were
+ * actually a doorway and 58% of the panels were painted as one.
+ *
+ * Still drawn with a faint outline of its door, because the board is a build guide and
+ * you need to know which panel to reach for. */
+.placed-piece.door.shut { background:var(--wall); }
+.placed-piece.door.shut .terrain-detail { background:transparent; box-shadow:inset 0 0 0 1px color-mix(in srgb, var(--door-frame) 30%, transparent); }
+
 .placed-piece.door .terrain-detail { position:absolute; background:var(--door-void); box-shadow:inset 0 0 0 1px var(--door-frame); }
 .placed-piece.door .terrain-detail { inset:1px 30%; }
 .placed-piece.door.rotated .terrain-detail { inset:30% 1px; }
@@ -302,6 +314,7 @@ kbd { padding-left:4px; color:var(--muted); font:11px var(--font-geist-mono, ui-
 .layout-key span { display:flex; align-items:center; gap:6px; }
 .layout-key i { width:14px; height:5px; background:var(--wall); }
 .layout-key .key-door { height:7px; background:var(--door); }
+.layout-key .key-open { height:7px; background:transparent; box-shadow:inset 0 0 0 1px var(--wall); }
 .layout-key .key-pillar { width:6px; height:6px; background:var(--pillar); }
 .inspector-height { flex:0 0 auto; margin-top:14px; }
 .zone-list { display:grid; gap:5px; margin-top:14px; padding-top:12px; border-top:1px solid var(--line); }

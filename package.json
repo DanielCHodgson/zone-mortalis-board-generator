@@ -13,7 +13,8 @@
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "drizzle-kit generate",
     "soak": "node --experimental-strip-types --no-warnings tests/soak.ts",
-    "eyeball": "node --experimental-strip-types --no-warnings tests/eyeball.ts"
+    "eyeball": "node --experimental-strip-types --no-warnings tests/eyeball.ts",
+    "profile": "node --experimental-strip-types --no-warnings tests/profile.ts"
   },
   "dependencies": {
     "drizzle-orm": "0.45.2",

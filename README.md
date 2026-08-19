@@ -48,6 +48,7 @@ that cannot be assembled from the kit is not representable.
 | `app/validate.ts` | hard invariants, and the metrics |
 | `app/generate.ts` | sizing, anchoring, candidate loop, **the only scorer** |
 | `app/terrain.ts` | the kit catalogue, shared with the tests |
+| `tests/profile.ts` | `npm run profile` — layout shape against the reference photos |
 
 ### Physical invariants
 
@@ -66,6 +67,19 @@ of pieces.
   `MANUFACTURERS[catalogue].joint` is the single place that distinction lives —
   several call sites used to test `catalogue === "boarding"` instead, which gave
   every later straddling range the connector treatment.
+- **Openness is the ground state, and walls are what is left over.** Every
+  compartment gets a MOUTH — one whole face left open — and the mouth is what
+  connects it to the board. A doorway is a deliberate exception: a bulkhead across a
+  street, a store worth sealing, a way in through the hull. The model used to be the
+  other way round, walling every boundary and buying connectivity back one hatchway
+  at a time, which produced 63 doorways a board, 43% of every panel placed, and 100%
+  of compartments sealed with not one open face anywhere. `classifyBoundary` is where
+  this lives.
+- **Surplus terrain becomes cover, not more rooms.** The partition can only spend a
+  panel by making it a compartment boundary, and that bottoms out at `roomMin`. Past
+  it, panels go into SPUR walls standing inside a bay — the stubs and Ls that make
+  the nooks you can put a squad in. Which is what the reference boards do with a big
+  collection; they do not have a finer mesh of rooms.
 - **The outside wall gets built.** A perimeter edge facing open deck is the complex's
   own hull and receives a panel; one lying along the table border does not, because
   the board edge is the wall. `DeckPlan.exterior` is which is which, and `build`
@@ -74,6 +88,13 @@ of pieces.
 - Every panel end stands on a column, or on the board border.
 - Every doorway the plan promised gets a hatchway panel — counted against the
   doorways, not against zero.
+- A spur never seals anything. Connectivity is checked before each one is kept, and a
+  spur that cuts a cell off is rejected rather than repaired.
+- **The kit is sized by its COLUMNS, not by its panels.** A Boarding Actions set holds
+  48 wall-cells of panel against 32 loose columns and 4 wall ends. At a measured 0.9
+  columns per wall-cell those supports bracket about 40 wall-cells, so the last eight
+  panels in the box have nothing to stand on. Sizing solves against the lesser of the
+  two.
 - Every square is reachable from every other, across `open` and `hatch` edges.
 - No firing lane runs the length of the board.
 - A wall run is tiled end to end or the plan is revised — never a hole mid-run.
