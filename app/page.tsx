@@ -1,38 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { generateSpatialLayout } from "./spatial-generator";
-
-type TerrainDef = {
-  id: string;
-  catalogue: "boarding" | "ttcombat";
-  name: string;
-  shortName: string;
-  width: number;
-  depth: number;
-  height: number;
-  limit: number;
-  kind: "wall" | "door" | "pillar" | "connector" | "end" | "floor" | "stair";
-  /** Node-to-node span for kits on a fixed assembly grid. Authoritative for
-   *  spacing; the piece is drawn centred inside it. */
-  span?: number;
-  visual?: "solid" | "grid" | "pipe" | "vertical-pipe" | "reinforced" | "fan" | "floor" | "stair" | "door";
-  note: string;
-};
-
-type CatalogueId = TerrainDef["catalogue"];
-
-type TerrainKit = {
-  id: string;
-  catalogue: CatalogueId;
-  maker: string;
-  name: string;
-  description: string;
-  source: string;
-  sourceUrl: string;
-  inventory: Record<string, number>;
-  caveat?: string;
-};
+import { generate, type Anchor, type GenerateReport } from "./generate.ts";
+import {
+  BOARDING_INVENTORY, BOARD_SIZES, BOARD_STORAGE_KEY, MANUFACTURERS,
+  MM_PER_IN, PALETTE_STORAGE_KEY, TERRAIN, TERRAIN_KITS, getDef,
+  type BoardPreset, type CatalogueId, type TerrainDef,
+} from "./terrain.ts";
 
 type PlacedPiece = {
   uid: string;
@@ -54,95 +28,8 @@ type ReservedZone = {
   height: number;
 };
 
-type ZoneCorner = "nw" | "ne" | "sw" | "se";
+type ZoneCorner = "nw" | "ne" | "sw" | "se";
 
-const MM_PER_IN = 25.4;
-// Gallowdark lays out as a grid of squares — the killzone board is 6 x 7 of them
-// — with each square one wall panel on a side and a pillar straddling every
-// corner, overlapping equally into both squares.
-//
-// The square is the CLEAR FLOOR, so this pitch is the panel plus its pillar, not
-// the bare panel. Taking the 97 mm panel as the pitch put the pillar inside the
-// square and left every corridor 2.7" wide, which is visibly too tight on the
-// table; at this pitch a one-square corridor measures 3.8" clear, which is what
-// it plays like. Approximate pending a caliper measurement — but it is the
-// spacing, not the panel length, that governs where pillars land, so a long
-// panel still spans exactly two squares and the grid stays regular.
-const GALLOWDARK_GRID = 125/25.4;
-const BOARD_SIZES = {
-  // The real Gallowdark killzone: a 6 x 7 grid of squares, each one wall panel
-  // on a side with a pillar straddling every corner. Listed first because it is
-  // the board the kit is cut for, and the one the generator is tuned against.
-  "30x22": { width:30, height:22, label:"30″ × 22″ · Gallowdark" },
-  "24x24": { width:24, height:24, label:"2′ × 2′" },
-  "48x24": { width:48, height:24, label:"4′ × 2′" },
-  "48x48": { width:48, height:48, label:"4′ × 4′" },
-} as const;
-type BoardPreset = keyof typeof BOARD_SIZES;
-const PALETTE_STORAGE_KEY = "mortalis-architect-terrain-palette-v4";
-const BOARD_STORAGE_KEY = "mortalis-architect-board-size-v1";
-
-const MANUFACTURERS: Record<CatalogueId, { name:string; range:string }> = {
-  boarding: { name:"Games Workshop", range:"Boarding Actions" },
-  ttcombat: { name:"TTCombat", range:"Iron Labyrinth" },
-} as const;
-
-// Approximate assembled footprints based on the 97 mm Gallowdark board grid
-// and published physical measurements of ~170 mm / ~80 mm wall sections.
-const TERRAIN: TerrainDef[] = [
-  { id:"short-door-pillars-a", catalogue:"boarding", name:"Short hatchway + pillars A", shortName:"Hatch A", width:3.82, depth:1.1, height:60/MM_PER_IN, limit:4, kind:"door", span:GALLOWDARK_GRID, note:"97 × 28 mm" },
-  { id:"short-door-pillars-b", catalogue:"boarding", name:"Short hatchway + pillars B", shortName:"Hatch B", width:3.82, depth:1.1, height:60/MM_PER_IN, limit:4, kind:"door", span:GALLOWDARK_GRID, note:"97 × 28 mm" },
-  { id:"short-door", catalogue:"boarding", name:"Short wall with hatchway", shortName:"Short hatch", width:3.15, depth:1.1, height:60/MM_PER_IN, limit:4, kind:"door", span:GALLOWDARK_GRID, note:"80 × 28 mm" },
-  { id:"long-door-pillars", catalogue:"boarding", name:"Long hatchway + pillars", shortName:"Long hatch +", width:7.2, depth:1.1, height:60/MM_PER_IN, limit:4, kind:"door", span:GALLOWDARK_GRID*2, note:"183 × 28 mm" },
-  { id:"long-door", catalogue:"boarding", name:"Long wall with hatchway", shortName:"Long hatch", width:6.69, depth:1.1, height:60/MM_PER_IN, limit:4, kind:"door", span:GALLOWDARK_GRID*2, note:"170 × 28 mm" },
-  { id:"long-wall-pillars", catalogue:"boarding", name:"Long wall + pillars", shortName:"Long wall +", width:7.2, depth:1.1, height:60/MM_PER_IN, limit:4, kind:"wall", span:GALLOWDARK_GRID*2, note:"183 × 28 mm" },
-  { id:"long-wall", catalogue:"boarding", name:"Long wall", shortName:"Long wall", width:6.69, depth:1.1, height:60/MM_PER_IN, limit:4, kind:"wall", span:GALLOWDARK_GRID*2, note:"170 × 28 mm" },
-  { id:"short-wall", catalogue:"boarding", name:"Short wall", shortName:"Short wall", width:3.15, depth:1.1, height:60/MM_PER_IN, limit:4, kind:"wall", span:GALLOWDARK_GRID, note:"80 × 28 mm" },
-  // Gallowdark pillars are chunky columns that the wall panels clip into, so the
-  // pillar footprint is wider than the 28 mm wall thickness. At the previous
-  // 25 mm the walls overhung the pillars by 0.06" a side, which read as a
-  // recessed, badly seated joint. Approximate pending a caliper measurement.
-  { id:"pillar", catalogue:"boarding", name:"Pillar", shortName:"Pillar", width:32/MM_PER_IN, depth:32/MM_PER_IN, height:60/MM_PER_IN, limit:32, kind:"pillar", note:"32 × 32 mm approx." },
-  { id:"wall-end", catalogue:"boarding", name:"Wall end", shortName:"Wall end", width:.98, depth:.55, height:60/MM_PER_IN, limit:4, kind:"end", note:"25 × 14 mm approx." },
-
-  { id:"tt-connector", catalogue:"ttcombat", name:"Iron Labyrinth connector block", shortName:"Connector", width:50/MM_PER_IN, depth:50/MM_PER_IN, height:60/MM_PER_IN, limit:24, kind:"connector", note:"50 × 50 mm" },
-  { id:"tt-wall-end", catalogue:"ttcombat", name:"Iron Labyrinth wall end", shortName:"Wall end", width:46/MM_PER_IN, depth:33/MM_PER_IN, height:60/MM_PER_IN, limit:21, kind:"end", note:"46 × 33 mm" },
-  { id:"tt-solid-wall", catalogue:"ttcombat", name:"Iron Labyrinth solid wall", shortName:"Solid wall", width:64/MM_PER_IN, depth:33/MM_PER_IN, height:60/MM_PER_IN, limit:8, kind:"wall", visual:"solid", note:"64 × 33 mm" },
-  { id:"tt-grid-wall", catalogue:"ttcombat", name:"Iron Labyrinth grid wall", shortName:"Grid wall", width:64/MM_PER_IN, depth:33/MM_PER_IN, height:60/MM_PER_IN, limit:2, kind:"wall", visual:"grid", note:"64 × 33 mm" },
-  { id:"tt-solid-pipe-wall", catalogue:"ttcombat", name:"Iron Labyrinth solid pipe wall", shortName:"Solid pipe", width:64/MM_PER_IN, depth:33/MM_PER_IN, height:60/MM_PER_IN, limit:2, kind:"wall", visual:"pipe", note:"64 × 33 mm" },
-  { id:"tt-vertical-pipe-wall", catalogue:"ttcombat", name:"Iron Labyrinth vertical pipe wall", shortName:"Vertical pipe", width:64/MM_PER_IN, depth:33/MM_PER_IN, height:60/MM_PER_IN, limit:2, kind:"wall", visual:"vertical-pipe", note:"64 × 33 mm" },
-  { id:"tt-reinforced-pipe-wall", catalogue:"ttcombat", name:"Iron Labyrinth reinforced pipe wall", shortName:"Reinforced", width:64/MM_PER_IN, depth:33/MM_PER_IN, height:60/MM_PER_IN, limit:2, kind:"wall", visual:"reinforced", note:"64 × 33 mm" },
-  { id:"tt-fan-wall", catalogue:"ttcombat", name:"Iron Labyrinth fan wall", shortName:"Fan wall", width:64/MM_PER_IN, depth:33/MM_PER_IN, height:60/MM_PER_IN, limit:2, kind:"wall", visual:"fan", note:"64 × 33 mm" },
-  { id:"tt-vertical-door", catalogue:"ttcombat", name:"Iron Labyrinth vertical door", shortName:"Vertical door", width:94/MM_PER_IN, depth:33/MM_PER_IN, height:120/MM_PER_IN, limit:2, kind:"door", visual:"door", note:"94 × 33 mm" },
-  { id:"tt-sliding-door", catalogue:"ttcombat", name:"Iron Labyrinth sliding door", shortName:"Sliding door", width:194/MM_PER_IN, depth:50/MM_PER_IN, height:60/MM_PER_IN, limit:2, kind:"door", visual:"door", note:"194 × 50 mm" },
-  { id:"tt-large-floor", catalogue:"ttcombat", name:"Iron Labyrinth large floor", shortName:"Large floor", width:194/MM_PER_IN, depth:194/MM_PER_IN, height:60/MM_PER_IN, limit:1, kind:"floor", visual:"floor", note:"194 × 194 mm" },
-  { id:"tt-small-floor", catalogue:"ttcombat", name:"Iron Labyrinth small floor", shortName:"Small floor", width:94/MM_PER_IN, depth:94/MM_PER_IN, height:60/MM_PER_IN, limit:1, kind:"floor", visual:"floor", note:"94 × 94 mm" },
-  { id:"tt-high-connector", catalogue:"ttcombat", name:"Iron Labyrinth high column", shortName:"High column", width:50/MM_PER_IN, depth:50/MM_PER_IN, height:120/MM_PER_IN, limit:3, kind:"connector", note:"50 × 50 mm" },
-  { id:"tt-high-wall", catalogue:"ttcombat", name:"Iron Labyrinth high wall", shortName:"High wall", width:94/MM_PER_IN, depth:33/MM_PER_IN, height:120/MM_PER_IN, limit:5, kind:"wall", visual:"reinforced", note:"94 × 33 mm" },
-  { id:"tt-stair", catalogue:"ttcombat", name:"Iron Labyrinth stair section", shortName:"Stair section", width:94/MM_PER_IN, depth:160/MM_PER_IN, height:60/MM_PER_IN, limit:2, kind:"stair", visual:"stair", note:"94 × 160 mm" },
-  { id:"tt-dq-column", catalogue:"ttcombat", name:"Death Quadrant column", shortName:"DQ column", width:50/MM_PER_IN, depth:50/MM_PER_IN, height:60/MM_PER_IN, limit:11, kind:"connector", note:"50 × 50 mm" },
-  { id:"tt-dq-single-wall", catalogue:"ttcombat", name:"Death Quadrant single wall", shortName:"Single wall", width:46/MM_PER_IN, depth:33/MM_PER_IN, height:60/MM_PER_IN, limit:4, kind:"wall", visual:"grid", note:"46 × 33 mm" },
-  { id:"tt-dq-double-wall", catalogue:"ttcombat", name:"Death Quadrant double wall", shortName:"Double wall", width:64/MM_PER_IN, depth:33/MM_PER_IN, height:60/MM_PER_IN, limit:4, kind:"wall", visual:"reinforced", note:"64 × 33 mm" },
-  { id:"tt-dq-single-door", catalogue:"ttcombat", name:"Death Quadrant single door", shortName:"Single door", width:46/MM_PER_IN, depth:33/MM_PER_IN, height:60/MM_PER_IN, limit:2, kind:"door", visual:"door", note:"46 × 33 mm · module width" },
-  { id:"tt-dq-double-door", catalogue:"ttcombat", name:"Death Quadrant double door", shortName:"Double door", width:64/MM_PER_IN, depth:33/MM_PER_IN, height:60/MM_PER_IN, limit:1, kind:"door", visual:"door", note:"64 × 33 mm · module width" },
-];
-
-const BOARDING_INVENTORY = Object.fromEntries(TERRAIN.filter((item) => item.catalogue === "boarding").map((item) => [item.id, item.limit]));
-
-const TERRAIN_KITS: TerrainKit[] = [
-  { id:"boarding-actions", catalogue:"boarding", maker:"Games Workshop", name:"Boarding Actions Terrain Set", description:"Complete Gallowdark wall and hatchway set", source:"Physical-kit measurements and assembly instructions", sourceUrl:"https://buildinstructions.com/pdf-downloads/Boarding-Actions-Terrain-Set.pdf", inventory:BOARDING_INVENTORY },
-  { id:"iron-alpha", catalogue:"ttcombat", maker:"TTCombat", name:"Iron Labyrinth Alpha", description:"Lattice and solid-pipe wall sector", source:"TTCombat published dimensions", sourceUrl:"https://ttcombat.com/products/iron-labyrinth-alpha", inventory:{ "tt-connector":5, "tt-wall-end":3, "tt-grid-wall":2, "tt-solid-pipe-wall":2 } },
-  { id:"iron-beta", catalogue:"ttcombat", maker:"TTCombat", name:"Iron Labyrinth Beta", description:"Solid and reinforced wall sector", source:"TTCombat published dimensions", sourceUrl:"https://ttcombat.com/products/iron-labyrinth-beta", inventory:{ "tt-connector":5, "tt-wall-end":3, "tt-solid-wall":2, "tt-reinforced-pipe-wall":2 } },
-  { id:"iron-gamma", catalogue:"ttcombat", maker:"TTCombat", name:"Iron Labyrinth Gamma", description:"Fan and vertical-pipe wall sector", source:"TTCombat published dimensions", sourceUrl:"https://ttcombat.com/products/iron-labyrinth-gamma", inventory:{ "tt-connector":5, "tt-wall-end":3, "tt-vertical-pipe-wall":2, "tt-fan-wall":2 } },
-  { id:"iron-doors", catalogue:"ttcombat", maker:"TTCombat", name:"Iron Labyrinth Doors", description:"Two sliding and two removable vertical doors", source:"TTCombat published dimensions", sourceUrl:"https://ttcombat.com/products/iron-labyrinth-doors", inventory:{ "tt-sliding-door":2, "tt-vertical-door":2 } },
-  { id:"iron-floors", catalogue:"ttcombat", maker:"TTCombat", name:"Iron Labyrinth Floors", description:"One large and one small elevated floor", source:"TTCombat published dimensions", sourceUrl:"https://ttcombat.com/products/iron-labyrinth-floors", inventory:{ "tt-large-floor":1, "tt-small-floor":1 } },
-  { id:"iron-high-walls", catalogue:"ttcombat", maker:"TTCombat", name:"Iron Labyrinth High Walls", description:"Double-height walls and columns", source:"TTCombat published dimensions", sourceUrl:"https://ttcombat.com/products/iron-labyrinth-high-walls", inventory:{ "tt-high-connector":3, "tt-high-wall":5 } },
-  { id:"iron-stairs", catalogue:"ttcombat", maker:"TTCombat", name:"Iron Labyrinth Stairs", description:"Two connector-compatible stair sections", source:"TTCombat published dimensions", sourceUrl:"https://ttcombat.com/products/iron-labyrinth-stairs", inventory:{ "tt-stair":2 } },
-  { id:"iron-death-quadrant", catalogue:"ttcombat", maker:"TTCombat", name:"Iron Labyrinth – Death Quadrant Complex", description:"Dimensioned columns, walls, and door modules", source:"TTCombat published dimensions", sourceUrl:"https://ttcombat.com/products/iron-labyrinth-death-quadrant-complex", inventory:{ "tt-dq-column":11, "tt-dq-double-wall":4, "tt-dq-single-wall":4, "tt-dq-double-door":1, "tt-dq-single-door":2 }, caveat:"Platforms, tiles, ladders, and stairs are listed by TTCombat but omitted from the scaled palette because their footprints are not published." },
-  { id:"iron-ultima", catalogue:"ttcombat", maker:"TTCombat", name:"Iron Labyrinth Ultima Complex", description:"24 connectors, 21 ends, and 18 wall sections", source:"TTCombat published dimensions", sourceUrl:"https://ttcombat.com/products/iron-labyrinth-bundle", inventory:{ "tt-connector":24, "tt-wall-end":21, "tt-solid-wall":8, "tt-grid-wall":2, "tt-solid-pipe-wall":2, "tt-vertical-pipe-wall":2, "tt-reinforced-pipe-wall":2, "tt-fan-wall":2 } },
-];
-
-const getDef = (id: string) => TERRAIN.find((item) => item.id === id)!;
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 
 export default function Home() {
@@ -154,11 +41,24 @@ export default function Home() {
   const [activeKitId, setActiveKitId] = useState("boarding-actions");
   const [snap, setSnap] = useState(true);
   const [smartFit, setSmartFit] = useState(true);
-  const [generationPercent, setGenerationPercent] = useState(60);
+  // Spend the whole palette by default. This used to default to 60% and cap at 60%,
+  // which made every generated board 40% short of what the box could build — and it
+  // was needed back when nothing else stopped the generator cramming terrain in.
+  // The density cap in generate.ts does that job properly now, so this is back to
+  // being what it says: a deliberate way to hold pieces back.
+  const [generationPercent, setGenerationPercent] = useState(100);
   const [gridSize, setGridSize] = useState(1);
   const [theme, setTheme] = useState<"industrial" | "gothic" | "desert">("industrial");
-  const [boardPreset, setBoardPreset] = useState<BoardPreset>("30x22");
+  const [boardPreset, setBoardPreset] = useState<BoardPreset>("card");
   const [boardReady, setBoardReady] = useState(false);
+  // How many copies of the kit are on the table. One Boarding Actions set fills one
+  // card board at real density, so this is what lets a bigger board be filled
+  // instead of thinned: the complex grows its footprint rather than its density.
+  const [sets, setSets] = useState(1);
+  // Where a complex smaller than the board goes. Not cosmetic — the board border is
+  // a free wall, so a corner uses two of them and spends more of the kit on interior
+  // structure, while a centred island has to build its own perimeter.
+  const [anchor, setAnchor] = useState<Anchor>("auto");
   const [enabled, setEnabled] = useState<Record<string, boolean>>(() => Object.fromEntries(TERRAIN.map((item) => [item.id, Boolean(BOARDING_INVENTORY[item.id])])));
   const [limits, setLimits] = useState<Record<string, number>>(() => Object.fromEntries(TERRAIN.map((item) => [item.id, BOARDING_INVENTORY[item.id] || 0])));
   const [kitAddAmounts, setKitAddAmounts] = useState<Record<string, number>>({});
@@ -178,6 +78,7 @@ export default function Home() {
   const [message, setMessage] = useState("Ready to build");
   const uidRef = useRef(0);
   const generationInventoryRef = useRef<Record<string, number> | null>(null);
+  const lastReportRef = useRef<GenerateReport | null>(null);
   const { width:boardWidth, height:boardHeight } = BOARD_SIZES[boardPreset];
 
   const manufacturerKits = useMemo(() => TERRAIN_KITS.filter((kit) => kit.catalogue === activeCatalogue), [activeCatalogue]);
@@ -628,37 +529,34 @@ export default function Home() {
     return accepted.map((piece) => ({ ...piece, uid:nextUid() }));
   };
 
+  // The generator scores its own candidates against a reference board, once, in
+  // app/generate.ts. There is deliberately no scoring here: the previous version
+  // re-ranked 24 finished layouts on `structures * 50 + span * 45 + ...`, which
+  // rewarded raw piece count and table spread and systematically overruled the
+  // inner scorer's judgement about sight lines. Two scorers pulling in different
+  // directions is how boards got worse while every tracked number improved.
   const generateSpatialSystem = (catalogue: CatalogueId) => {
     const override = generationInventoryRef.current;
-    const inventory = Object.fromEntries(TERRAIN.map((def) => [def.id, override ? override[def.id] || 0 : limits[def.id] || 0]));
-    const baseSeed = (Date.now() + uidRef.current * 2654435761 + boardWidth * 101 + boardHeight * 211 + (catalogue === "boarding" ? 17 : 53)) >>> 0;
-    const attempts = Array.from({ length:24 }, (_, attempt) => {
-      const generated = generateSpatialLayout({
-        boardWidth,
-        boardHeight,
-        catalogue,
-        definitions:TERRAIN,
-        inventory,
-        heights:heightDefaults,
-        zones,
-        usage:override ? 1 : generationPercent / 100,
-        seed:(baseSeed + attempt * 2246822519) >>> 0,
-        nextUid,
-      });
-      const structures = generated.filter((piece) => ["wall", "door"].includes(getDef(piece.defId).kind));
-      if (!structures.length) return { generated, score:-Infinity };
-      const rects = structures.map(pieceRect);
-      const bounds = rects.reduce<{ minX:number;minY:number;maxX:number;maxY:number }>((acc, rect) => ({ minX:Math.min(acc.minX, rect.x), minY:Math.min(acc.minY, rect.y), maxX:Math.max(acc.maxX, rect.x + rect.width), maxY:Math.max(acc.maxY, rect.y + rect.height) }), { minX:boardWidth, minY:boardHeight, maxX:0, maxY:0 });
-      const span = ((bounds.maxX - bounds.minX) / boardWidth + (bounds.maxY - bounds.minY) / boardHeight) / 2;
-      const quadrants = new Set(structures.map((piece) => { const centre = pieceCentre(piece); return `${centre.x < boardWidth / 2 ? 0 : 1}-${centre.y < boardHeight / 2 ? 0 : 1}`; })).size;
-      const endpoints = (piece: PlacedPiece) => structuralEndpoints(piece);
-      const junctions = structures.reduce((count, piece, index) => count + structures.slice(index + 1).filter((other) => piece.rotation !== other.rotation && endpoints(piece).some((point) => endpoints(other).some((candidate) => Math.hypot(point.x - candidate.x, point.y - candidate.y) < .18))).length, 0);
-      const doorsUsed = structures.filter((piece) => getDef(piece.defId).kind === "door").length;
-      const score = structures.length * 50 + span * 45 + quadrants * 12 + junctions * 22 + doorsUsed * 10;
-      return { generated, score };
+    const base = Object.fromEntries(TERRAIN.map((def) => [def.id, override ? override[def.id] || 0 : limits[def.id] || 0]));
+    // Regenerating from what is on the board must not multiply it, so the set
+    // multiplier applies only to the palette.
+    const inventory = override ? base : Object.fromEntries(Object.entries(base).map(([id, count]) => [id, count * sets]));
+    const seed = (Date.now() + uidRef.current * 2654435761 + boardWidth * 101 + boardHeight * 211 + (catalogue === "boarding" ? 17 : 53)) >>> 0;
+    const report = generate({
+      boardWidth,
+      boardHeight,
+      catalogue,
+      defs:TERRAIN,
+      inventory,
+      heights:heightDefaults,
+      zones,
+      anchor,
+      usage:override ? 1 : generationPercent / 100,
+      seed,
+      nextUid,
     });
-    attempts.sort((first, second) => second.score - first.score);
-    return attempts[0].generated;
+    lastReportRef.current = report;
+    return report.pieces as PlacedPiece[];
   };
 
   const generateFromPalette = () => {
@@ -668,11 +566,18 @@ export default function Home() {
     if (paletteCatalogues.includes("boarding")) layouts.push(generateSpatialSystem("boarding"));
     if (paletteCatalogues.includes("ttcombat")) layouts.push(generateSpatialSystem("ttcombat"));
     const finalized = layouts.length === 1 ? layouts[0] : mergeGeneratedSystems(layouts);
-    if (!finalized.length) { setMessage("That palette cannot form a supported layout · add compatible walls or connectors"); return; }
+    if (!finalized.length) {
+      // The generator explains why it refused, and the reason is usually
+      // actionable — an unbuildable grid, or a palette with no columns. Passing it
+      // through beats a generic failure message.
+      setMessage(lastReportRef.current?.note || "That palette cannot form a supported layout · add compatible walls or connectors");
+      return;
+    }
     setPieces(finalized);
     selectOnly(null);
     const joined = paletteCatalogues.length > 1 ? " · compatible cross-kit wall joins enabled" : "";
-    setMessage(`${paletteLabel} generated · ${finalized.length} pieces${zones.length ? ` · ${zones.length} zone${zones.length === 1 ? "" : "s"} respected` : ""}${joined}`);
+    const fit = lastReportRef.current?.note ? ` · ${lastReportRef.current.note}` : "";
+    setMessage(`${paletteLabel} generated · ${finalized.length} pieces${zones.length ? ` · ${zones.length} zone${zones.length === 1 ? "" : "s"} respected` : ""}${joined}${fit}`);
   };
 
   const generateLayout = () => {
@@ -1135,7 +1040,7 @@ export default function Home() {
       <a className="skip-link" href="#layout-board">Skip to layout board</a>
       <header className="topbar">
         <div><p className="eyebrow">Horus Heresy layout utility</p><h1>Mortalis Architect</h1></div>
-        <div className="top-actions"><label className="board-size-control"><span>Board</span><select aria-label="Board size" value={boardPreset} onChange={(event) => changeBoardSize(event.target.value as BoardPreset)}>{(Object.entries(BOARD_SIZES) as Array<[BoardPreset, typeof BOARD_SIZES[BoardPreset]]>).map(([value, size]) => <option key={value} value={value}>{size.label}</option>)}</select></label><span className="board-chip">{boardWidth} × {boardHeight} IN</span><button className="export-action" onClick={exportLayoutPng} disabled={!pieces.length} aria-label="Export layout and piece manifest as PNG">Export PNG</button><button className="primary" onClick={generateLayout} disabled={!pieces.length} aria-label="Generate a new layout using every piece currently on the board">Generate layout</button></div>
+        <div className="top-actions"><label className="board-size-control"><span>Board</span><select aria-label="Board size" value={boardPreset} onChange={(event) => changeBoardSize(event.target.value as BoardPreset)}>{(Object.entries(BOARD_SIZES) as Array<[BoardPreset, typeof BOARD_SIZES[BoardPreset]]>).map(([value, size]) => <option key={value} value={value}>{size.label}</option>)}</select></label><span className="board-chip">{boardWidth.toFixed(1)} × {boardHeight.toFixed(1)} IN</span><button className="export-action" onClick={exportLayoutPng} disabled={!pieces.length} aria-label="Export layout and piece manifest as PNG">Export PNG</button><button className="primary" onClick={generateLayout} disabled={!pieces.length} aria-label="Generate a new layout using every piece currently on the board">Generate layout</button></div>
       </header>
 
       <section className="workspace">
@@ -1170,7 +1075,12 @@ export default function Home() {
               <div><p className="eyebrow">Layout inventory</p><h2 id="generator-palette-heading">Current generator palette</h2></div>
               <div className="section-actions"><span className="count">{catalogueTotal} pcs</span><button className="text-action danger" onClick={clearPalette} disabled={!catalogueTotal}>Clear</button></div>
             </div>
-            {catalogueTotal > 0 && <div className="palette-generation-controls"><label className="generation-target palette-generation-target" title="Sets the maximum share of the available terrain the generator may use, preserving only supported joins"><span>Footprint <strong>{generationPercent}%</strong></span><input type="range" min="10" max="60" step="5" value={generationPercent} onChange={(event) => setGenerationPercent(Number(event.target.value))} aria-label="Footprint coverage target" /></label><button className="primary palette-generate" onClick={generateFromPalette} aria-label="Generate layout from current terrain palette">Generate from palette</button></div>}
+            {catalogueTotal > 0 && <div className="palette-generation-controls">
+              <label className="generation-target palette-generation-target" title="Share of the palette the generator may spend. The board is filled to real density regardless; lower this only to deliberately hold pieces back."><span>Spend <strong>{generationPercent}%</strong></span><input type="range" min="20" max="100" step="5" value={generationPercent} onChange={(event) => setGenerationPercent(Number(event.target.value))} aria-label="Footprint coverage target" /></label>
+              <label className="generation-target palette-generation-target" title="How many copies of the kit are on the table. One Boarding Actions set fills one card board at real density, so more sets grow the complex rather than thinning it."><span>Sets <strong>{sets}</strong></span><input type="range" min="1" max="6" step="1" value={sets} onChange={(event) => setSets(Number(event.target.value))} aria-label="Number of terrain sets owned" /></label>
+              <label className="generation-target palette-generation-target" title="Where a complex smaller than the board sits. The board border is a free wall, so a corner spends more of the kit on interior structure; a centred island must build its own perimeter."><span>Placement</span><select value={anchor} onChange={(event) => setAnchor(event.target.value as Anchor)} aria-label="Where to anchor a complex smaller than the board"><option value="auto">Automatic</option><option value="corner">Into a corner</option><option value="edge">Against an edge</option><option value="centre">Centred island</option></select></label>
+              <button className="primary palette-generate" onClick={generateFromPalette} aria-label="Generate layout from current terrain palette">Generate from palette</button>
+            </div>}
             {catalogueTotal > 0 && <div className="palette-range"><span>{paletteMaker}</span><strong>{paletteLabel}</strong><em>{Math.max(0, catalogueTotal - paletteUsed)} unplaced</em></div>}
             <div className="palette-list" aria-label="Current generator terrain palette">
               {!catalogueTotal && <div className="palette-empty"><strong>Your palette is empty</strong><span>Add individual pieces or a full kit below.</span></div>}
@@ -1207,7 +1117,7 @@ export default function Home() {
           <div className="board-area"><div className="board-frame" style={{ "--board-ratio":boardWidth / boardHeight } as CSSProperties}>
             <div className="ruler ruler-top">{Array.from({ length:boardWidth / 12 + 1 }, (_, index) => index * 12).map((inch) => <span key={inch}>{inch}{inch === boardWidth ? "″" : ""}</span>)}</div>
             <div className="ruler ruler-left">{Array.from({ length:boardHeight / 12 + 1 }, (_, index) => index * 12).map((inch) => <span key={inch}>{inch}{inch === boardHeight ? "″" : ""}</span>)}</div>
-            <div id="layout-board" ref={boardRef} style={{ "--minor-x":`${100 / boardWidth}%`, "--minor-y":`${100 / boardHeight}%`, "--major-x":`${1200 / boardWidth}%`, "--major-y":`${1200 / boardHeight}%` } as CSSProperties} className={`board ${theme}-board ${drag ? "dragging" : ""} ${marquee ? "selecting" : ""} ${zoneMode ? "zone-mode" : ""} ${zoneResize ? "resizing-zone" : ""}`} aria-label={`${boardWidth} by ${boardHeight} inch layout board`} aria-describedby="board-help" onDragOver={(event) => event.preventDefault()} onDrop={onDrop} onPointerMove={onBoardPointerMove} onPointerUp={() => { if (zoneDraft) finishZone(); if (marquee) finishMarquee(); if (zoneResize) { const zone = zones.find((item) => item.uid === zoneResize.uid); if (zone) setMessage(`${zone.name} resized · ${zone.width.toFixed(1)} × ${zone.height.toFixed(1)} in`); setZoneResize(null); } setDrag(null); }} onPointerCancel={() => { setZoneDraft(null); setZoneResize(null); setMarquee(null); setDrag(null); }} onPointerDown={beginZone}>
+            <div id="layout-board" ref={boardRef} style={{ "--minor-x":`${100 / boardWidth}%`, "--minor-y":`${100 / boardHeight}%`, "--major-x":`${1200 / boardWidth}%`, "--major-y":`${1200 / boardHeight}%` } as CSSProperties} className={`board ${theme}-board ${drag ? "dragging" : ""} ${marquee ? "selecting" : ""} ${zoneMode ? "zone-mode" : ""} ${zoneResize ? "resizing-zone" : ""}`} aria-label={`${boardWidth.toFixed(1)} by ${boardHeight.toFixed(1)} inch layout board`} aria-describedby="board-help" onDragOver={(event) => event.preventDefault()} onDrop={onDrop} onPointerMove={onBoardPointerMove} onPointerUp={() => { if (zoneDraft) finishZone(); if (marquee) finishMarquee(); if (zoneResize) { const zone = zones.find((item) => item.uid === zoneResize.uid); if (zone) setMessage(`${zone.name} resized · ${zone.width.toFixed(1)} × ${zone.height.toFixed(1)} in`); setZoneResize(null); } setDrag(null); }} onPointerCancel={() => { setZoneDraft(null); setZoneResize(null); setMarquee(null); setDrag(null); }} onPointerDown={beginZone}>
               {pieces.length === 0 && <div className="board-mark"><strong>{BOARD_SIZES[boardPreset].label}</strong><span>{zoneMode ? "DRAG TO RESERVE A CLEAR ZONE" : "DROP TERRAIN TO PLACE"}</span></div>}
               {zones.map((zone) => <div key={zone.uid} role="group" tabIndex={zoneMode ? -1 : 0} aria-label={`${zone.name}, reserved zone ${zone.width.toFixed(1)} by ${zone.height.toFixed(1)} inches`} className={`reserved-zone ${focusedZone === zone.uid ? "focused" : ""} ${zoneResize?.uid === zone.uid ? "resizing" : ""}`} style={{ left:`${zone.x / boardWidth * 100}%`, top:`${zone.y / boardHeight * 100}%`, width:`${zone.width / boardWidth * 100}%`, height:`${zone.height / boardHeight * 100}%` }} onPointerDown={(event) => { if (zoneMode) return; event.stopPropagation(); setFocusedZone(zone.uid); selectOnly(null); setMessage(`${zone.name} selected · drag a corner to resize`); }} onFocus={() => setFocusedZone(zone.uid)}><strong>{zone.name}</strong><span>{zone.width.toFixed(1)} × {zone.height.toFixed(1)}″</span>{!zoneMode && (["nw","ne","sw","se"] as ZoneCorner[]).map((corner) => <button key={corner} className={`zone-handle ${corner}`} aria-label={`Resize ${zone.name} from ${corner} corner`} title="Drag to resize" onPointerDown={(event) => beginZoneResize(event, zone, corner)} />)}</div>)}
               {zoneDraft && (() => { const zone = normaliseZoneDraft(zoneDraft); return <div className="reserved-zone draft" style={{ left:`${zone.x / boardWidth * 100}%`, top:`${zone.y / boardHeight * 100}%`, width:`${zone.width / boardWidth * 100}%`, height:`${zone.height / boardHeight * 100}%` }}><strong>{zoneName.trim() || "Hangar"}</strong><span>{zone.width.toFixed(1)} × {zone.height.toFixed(1)}″</span></div>; })()}

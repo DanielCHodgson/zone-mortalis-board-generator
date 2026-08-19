@@ -1,3 +1,8 @@
+> **HISTORICAL.** This describes generator versions that were replaced when the
+> engine was rebuilt on the deck-partition model. It is kept for the physical
+> measurements and the record of what was tried. For current state see
+> [HANDOFF.md](HANDOFF.md), [PROPOSAL.md](PROPOSAL.md) and the README.
+
 # Mortalis Architect — project state
 
 Last updated: 2026-08-18

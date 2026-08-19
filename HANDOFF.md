@@ -1,169 +1,110 @@
 # Handoff — Zone Mortalis board generator
 
-Written at the end of a long, largely unsuccessful session. Read the honest
-assessment first; it is the most useful part.
+The generator was rebuilt from scratch on the deck-partition model. This file
+records what changed, what is settled, and what is still open. The analysis behind
+it is in [PROPOSAL.md](PROPOSAL.md); the design summary is in the README.
 
-## Honest assessment
+## What was wrong, and what fixed it
 
-**The current implementation is not good and should probably not be built on.**
+**The 125 mm Gallowdark pitch was geometrically impossible, and it was the whole
+bug.** At that pitch a short panel ends 0.256" clear of the pillar it clips into.
+The old code then swept away every orphaned pillar, saw the sealed regions that
+sweep created, and deleted *walls* to reopen them. Twelve seeds of Boarding Actions
+output measured 6–7 panels and 0–3 pillars from a 68-piece box, while all 11 tests
+passed — they took the best of 24 candidates and asserted lower bounds a scatter of
+fragments satisfies.
 
-The session started as a bug-review of the existing generator and turned into
-three successive rewrites, each of which fixed the previous one's visible fault
-and introduced a new one. The output was rejected at every stage. What went
-wrong, so it is not repeated:
+The pitch is **97 mm**, confirmed twice: the terrain is documented as designed
+around a 97 × 97 mm tile on a 6 × 7 grid, and the 704 × 607 mm card board is
+exactly `7 × 97 + 25` by `6 × 97 + 25`. It is now checked by an invariant
+(`panel ≤ pitch < panel + column`) rather than trusted as a constant, and an
+unbuildable grid makes the generator refuse rather than produce something and patch
+it.
 
-1. **Optimised metrics instead of looking at output.** Piece utilisation went
-   from 15/32 to 31/32, shape variety tripled, tests went green — while the
-   boards got *worse*. Every number tracked was the wrong number. Several rounds
-   of work were reported as progress when the boards were plainly bad.
+Four structural changes followed:
 
-2. **Over-corrected, repeatedly.** Floating fragments → so build enclosed rooms →
-   "squares of doom" → so build a strict maze → too sparse to look like a real
-   board. Each swing was a reaction to the last complaint rather than to a model
-   of what the board should be.
+1. **Partition, not maze.** Corridors and compartments, with doorways cut through
+   the boundaries afterward. A maze must leave a spanning tree open, capping walls
+   at `(cols-1)(rows-1)`; a partition has no such ceiling.
+2. **Reject and retry, never repair.** The three repair sweeps are gone. Every
+   invariant fails a candidate outright.
+3. **One scorer.** The UI's outer `structures * 50 + span * 45 + …` re-ranking is
+   gone. Candidates are scored once, by distance to a reference board, so no metric
+   can run away with the result.
+4. **Sizing from the kit.** One set fills one card board. Extra sets grow the
+   footprint; surplus stays in the box.
 
-3. **Built elaborate abstractions instead of copying something known-good.**
-   Tile archetypes, variable-pitch lattices, coverage scoring, spanning-tree
-   mazes. All of it invented from first principles, none of it validated against
-   an actual board until far too late.
+## Settled facts
 
-4. **Asked the user to adjudicate geometry that reference photos would have
-   settled.** The 97 mm-vs-125 mm pitch question cost a lot and was answerable
-   from the box art the whole time.
+- **Pitch 97 mm.** Not the panel-plus-pillar figure. See above.
+- **Iron Labyrinth is a different joint model, and the old code had it right.**
+  Gallowdark's panel slots into a column straddling the corner (pitch = panel);
+  Iron Labyrinth's wall butts between two connectors (pitch = wall + connector =
+  114 mm). `def.span ?? support + def.width` encodes both. Iron Labyrinth sits
+  *exactly* on the upper bound of the pitch invariant, with zero overlap — a butt
+  joint is buildable, so the bound is inclusive.
+- **The inventory was already correct.** The previous handoff was most confident
+  this was fabricated, and it was not: 68 pieces, verified against two sources,
+  matching the coded quantities exactly.
+- **Hatchways are the primary building material.** 20 of the 32 panels carry one —
+  62%. The old `DOOR_SHARE = .13` was off by a factor of five, and the two
+  "door striping regressions" were the tiler being dragged toward the kit's real
+  composition and forced back out. A hatchway blocks sight but passes models, so it
+  is a strict superset of a wall panel: it may always substitute for one, never the
+  reverse.
+- **Columns are the binding constraint, not panels.** 48 wall-cells imply up to 96
+  panel ends against 32 loose columns. This is useful pressure: long panels skip a
+  mid node and junctions serve three or four ends from one column, so economising
+  columns *produces* the long runs and T/X junctions that a good board is made of.
+- **Capacity.** One set = 48 wall-cells. A 7 × 6 lattice has 71 internal edges, so
+  reference density is ~0.62 and one set fills one card board. Two card boards want
+  two sets, a 4' × 4' wants four.
+- **Corrected dimensions.** Columns are 28 × 25 mm and *not square*, so they have
+  an orientation. Panels are 5.5 mm thick, not 28 mm. The long panel is ~176 mm
+  bare (194 mm with moulded pillars), not 170 mm.
 
-## Where to start next time
+## Open questions
 
-**Replicate one real Boarding Actions / Kill Team Gallowdark board exactly, from
-reference photos, before generating anything.**
+Neither blocks anything. Both are one look at the kit.
 
-Concretely:
+1. **Is the moulded pillar on a "+ pillars" panel at one end or both?** Their
+   stated width is exactly one grid square against the bare panel's 80 mm, which
+   says half a pillar at each end with the neighbour supplying the other half — so
+   a column occupant is still placed at every panel end regardless. Only the
+   tiler's preference ordering in `build.ts` depends on the answer.
+2. **Count the printed squares on a card board.** The prediction is 7 × 6 at 97 mm
+   with a 12.5 mm border. It would close the pitch question for good.
 
-- Pick a published board (the Warhammer Community Gallowdark shots are good —
-  full-board overheads showing wall runs, rooms, hatchways and pillars).
-- Hand-transcribe it into a fixture: a list of squares, and for each square edge
-  whether it carries a wall, a hatchway, or nothing.
-- Get the app to render that fixture and compare it against the photo until it
-  matches. That validates the geometry, the piece dimensions and the renderer in
-  one go, with no generation involved.
-- Only then generalise: the fixture becomes the ground truth a generator is
-  judged against — wall density, run lengths, room sizes, hatchway frequency,
-  corridor topology all measured off a board that is known to be right.
+## The one thing still worth doing
 
-This is the step that was skipped, and skipping it is why the session failed.
+**Transcribe a real board into a fixture.** `PROVISIONAL_REFERENCE` in
+`app/validate.ts` is derived from kit arithmetic and published board geometry, not
+from a board known to be right. It is the honest weak point of the current design.
 
-## Hard-won facts worth keeping
+The mechanism is already in place: `generate` takes a `reference` profile, and
+candidates are scored by distance to it. So the work is:
 
-These cost real effort to establish and should not be rediscovered.
+1. Transcribe one board — a published Gallowdark layout, or one of your own
+   photos — as `cols`, `rows` and the state of every edge.
+2. Render it and compare against the photo until it matches. That validates pitch,
+   piece dimensions and renderer together, with no generation involved.
+3. Run `measure()` on it and use the result as the reference profile.
 
-### Geometry
+That replaces a guess with a measurement and retunes the generator without touching
+a line of generation code.
 
-- **The square is the clear floor.** A Gallowdark wall panel sits on a square's
-  edge with a pillar straddling each corner, overlapping equally into both
-  squares. Node-to-node pitch is therefore *panel + pillar*, not the bare panel.
-- `GALLOWDARK_GRID` was `97 mm`, which treated the bare panel as the pitch, put
-  the pillar inside the square and left every corridor **2.72" clear** — visibly
-  far too thin. It is now **125 mm**, giving **3.82" clear** corridors. Target is
-  3.5–4".
-- Long panels span exactly two squares. Keeping the `span` field is what holds
-  the grid regular; removing it fragmented the lattice into irregular columns.
-  The bug was the *value*, never the field's existence.
-- Achievable clear corridor widths, if the pitch is ever revisited:
+## Verification
 
-  | kit | spacing | pitch | clear |
-  |---|---|---|---|
-  | Gallowdark | one square | 4.92" | 3.82" |
-  | Gallowdark | two squares | 9.84" | 8.74" |
-  | Iron Labyrinth | 64 mm wall + connector | 4.49" | 3.19" |
-  | Iron Labyrinth | 94 mm high wall + connector | 5.67" | 4.37" |
+- `npm test` — 23 tests, all passing. Includes a build, rendered-HTML checks, and
+  the generator suite. One rendered-HTML assertion was already failing before this
+  work (a stale `48 by 48` board default) and is now fixed.
+- `npm run lint` — clean.
+- `npx tsc --noEmit` — clean for `app/` and `tests/`, except one pre-existing error
+  at `app/page.tsx:1008` (a `rotation` property on a smart-fit candidate type).
+  Pre-existing errors in `worker/` and `db/` are untouched.
+- Verified live in the browser: both generation paths, no console errors, and all
+  24 pillars confirmed sitting on one lattice grid in the rendered DOM.
 
-### The density ceiling (the unresolved problem)
-
-A maze built as a pure spanning tree over a `c x r` grid has exactly
-**`(c-1)(r-1)`** edges left for walls. A 30x22 board at the current pitch is a
-6x4 grid → **15 wall-cells**, but the Gallowdark kit holds **20**. That is why
-the generator currently produces ~8 panels and looks sparse.
-
-Real boards are much denser than that limit because **hatchways are passable**:
-GW's own board has genuinely enclosed rooms whose connectivity runs *through* a
-hatchway, so its wall count is not bounded by a spanning tree at all.
-
-The likely fix — unvalidated — is to allow walls beyond the tree and restore
-connectivity through hatchways. Do not attempt this before the reference-board
-fixture exists, or it will just be another swing.
-
-### What "good" looks like (from user feedback on real output)
-
-- Long unbroken wall runs meeting at T and cross junctions.
-- Line-of-sight blockers everywhere; you should not see across the table.
-- Corridors 3.5–4" clear.
-- Dense — comparable to the reference photos, not a few pieces on open floor.
-- Enclosed rooms are fine *as part of a dense board*; isolated rectangles on an
-  empty table are not. The rejected outputs were called "squares of doom",
-  "weird rooms of doom" and "a double square made of doors".
-- **Hatchways are the exception, not a building material.** Roughly one panel in
-  eight. Two separate regressions produced runs striped wall/door/wall/door.
-
-### Data problems in `app/page.tsx`
-
-- Every entry in `TERRAIN` has `limit: 4`, giving **20 hatchways to 12 walls**.
-  This is very unlikely to be the real Boarding Actions contents and it distorts
-  everything downstream — it is the direct cause of both door-striping
-  regressions. **Verify the real kit contents; this is cheap and high value.**
-- The "+ pillars" variants (`short-door-pillars-a/b`, `long-wall-pillars`) appear
-  to include their own pillars in the stated width. Nothing in the model knows
-  this, so two of them meeting at a corner double up on pillars. Rare, but a real
-  physical-fit error.
-- `wall-end` pieces: Gallowdark has 4, Iron Labyrinth Ultima has 21. The old
-  generator never placed a single one; the current one does, at run termini.
-
-### Environment
-
-- **`npm run dev` binds port 3000**, not Vite's default 5173, despite no port in
-  `vite.config.ts`. Pointing a preview at 5173 opens a blank tab with no error.
-  `.claude/launch.json` is configured correctly.
-- `npx tsc --noEmit` has pre-existing errors in `worker/`, `db/`, `page.tsx:1107`
-  and the test file's inventory literals. None are from this session's work.
-
-## Current state of the code
-
-Everything below is committed but **should be treated as a starting point to
-replace, not extend**.
-
-| file | state |
-|---|---|
-| `app/floorplan.ts` | **New.** Spanning-tree maze generator. Clean and well-commented, but produces boards that are too sparse. |
-| `app/spatial-generator.ts` | **Rewritten.** Lattice realisation: panels on edges, supports on vertices, variable cell widths, run tiling with long-panel preference, hatchway quota. The geometry layer here is the most likely part to be worth keeping. |
-| `tests/spatial-generator.test.ts` | 11 tests, all passing. Several were rewritten this session — see below. |
-| `app/page.tsx` | `GALLOWDARK_GRID` 97→125 mm; added `30x22` board preset, now the default. |
-| `.claude/launch.json` | **New.** Dev server config on port 3000. |
-
-### Tests
-
-11/11 pass, lint clean. Four were rewritten because they asserted the old model:
-
-- `closed rooms are built, and every one of them has a doorway` — **deleted.** It
-  demanded exactly the sealed rooms the user was rejecting. Replaced with
-  `no firing lane runs unbroken across the board`, which tests the actual game
-  requirement.
-- `a rejected component is retried smaller` — **deleted**, its premise (hit a
-  structural piece target) is obsolete now that panel count is an output of board
-  capacity. Replaced with `hatchways stay a small minority of the wall line`,
-  which guards the door-striping regression that recurred twice.
-- `Iron components leave model-scale corridors` and
-  `Boarding Actions uses several shaped networks` — replaced with
-  `every gap between terrain is either a joint or a walkable corridor` and
-  `every wall runs along a line the supports define`.
-
-Tests worth keeping regardless of what replaces the generator: the physical-fit
-ones (`walls bracketed by a connector`, `supports never narrower than walls`,
-`a grid-kit wall spans exactly one grid pitch`, `no wall lies alongside the board
-border`, `no walled-off dead zone`).
-
-## Tuning dials in the current code
-
-If it is used at all before being replaced:
-
-- `DOOR_SHARE` in `spatial-generator.ts` — hatchway frequency, currently `.13`.
-- `-sight * 12` in the candidate score — how tight the maze is.
-- `buildMaze(..., budgetCells, ...)` — wall count; currently capped by the
-  spanning-tree ceiling described above.
+The generator test suite is **single-shot** — one `generate` call per seed. The
+previous suite's best-of-24 helper is what let a broken generator stay green, so
+please do not reintroduce it.

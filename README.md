@@ -6,10 +6,12 @@ editing, procedural layout generation, layout analysis, and PNG export.
 
 ## Current capabilities
 
-- 2′ × 2′, 4′ × 2′, and 4′ × 4′ boards.
+- One and two Boarding Actions card boards (the real 704 x 607 mm grid), plus
+  30″ × 22″, 2′ × 2′, 4′ × 2′ and 4′ × 4′.
 - Games Workshop Boarding Actions and TTCombat Iron Labyrinth catalogues.
 - Persistent palette quantities and board size.
-- Palette generation with an adjustable 0–60% footprint target.
+- Palette generation with a set multiplier, adjustable palette spend, and corner /
+  edge / centred anchoring for a complex smaller than the board.
 - Regeneration from every terrain piece already placed on the board.
 - Multi-selection, group rotation, duplication, smart connector fitting, and
   configurable grid snapping.
@@ -19,27 +21,71 @@ editing, procedural layout generation, layout analysis, and PNG export.
 
 ## Generator model
 
-The active generator lives in
-`app/spatial-generator.ts`. It builds a small number of connector-node graphs
-using hooked chamber walls, T-junctions, crosses, partial U-shapes, turns, and
-dead ends. Twenty-four candidates are generated and scored by the UI. A
-component that cannot be sited is retried smaller rather than abandoned, so a
-crowded board still spends as much of the kit as its clearance lanes allow.
+The generator treats a board as a **ship deck**, not a maze: through corridors,
+compartments either side of them, hatchways between. It generates the compartment
+**partition** and then cuts the doorways, rather than generating walls directly —
+which is what removes the density ceiling that made every earlier version sparse.
 
-Important physical invariants:
+Everything sits on a node lattice and nothing else exists:
 
-- Every Iron Labyrinth wall is an edge between connectors: connector → wall →
-  connector.
-- Connectors may be shared only at a genuine corner, branch, or continuous join.
-- Iron wall-end pieces are not automatically substituted for connectors.
-- Separate Iron networks retain at least 3.8″ of clearance.
-- Boarding Actions networks retain at least 2.75″ of clearance, with candidate
-  placement normally producing wider lanes.
-- Board edges may act as the opposite side of a corridor.
-- Terrain is never placed inside a reserved zone.
+| | |
+|---|---|
+| **cells** | the clear floor, one grid square each — what models stand on |
+| **edges** | between adjacent cells. `open`, `wall` or `hatch` |
+| **nodes** | the corners. A column stands on any node a panel end reaches |
 
-See [PROJECT_STATE.md](PROJECT_STATE.md) for the detailed implementation
-handoff, verified results, and known limitations.
+A panel is an edge occupant and a column is a node occupant, so alignment,
+non-overlap and "a panel is centred in its span" hold by construction. A layout
+that cannot be assembled from the kit is not representable.
+
+| module | role |
+|---|---|
+| `app/lattice.ts` | geometry, pitch derivation, runs, reachability, sight lines |
+| `app/deckplan.ts` | corridors, compartments, doorways, fit to budget |
+| `app/build.ts` | tiling runs from real stock; columns |
+| `app/validate.ts` | hard invariants, and the metrics |
+| `app/generate.ts` | sizing, anchoring, candidate loop, **the only scorer** |
+| `app/terrain.ts` | the kit catalogue, shared with the tests |
+
+### Physical invariants
+
+Every one of these fails a candidate outright. Nothing is repaired after the
+fact — repairing a finished layout is what reduced earlier versions to a handful
+of pieces.
+
+- **The pitch must be buildable**: `panel ≤ pitch ≤ panel + column`. Gallowdark
+  sits inside this (the panel slots into a column straddling the corner, so the
+  pitch is the 97 mm panel); Iron Labyrinth sits exactly on the upper bound (the
+  wall butts between two 50 mm connectors, so the pitch is 64 + 50 mm).
+- Every panel end stands on a column, or on the board border.
+- Every square is reachable from every other, across `open` and `hatch` edges.
+- No firing lane runs the length of the board.
+- A wall run is tiled end to end or the plan is revised — never a hole mid-run.
+- A planned doorway always receives a hatchway panel; a solid panel may stand in
+  for a hatchway but never the reverse.
+- Per-piece stock is never exceeded, and reserved zones are avoided by moving the
+  complex, not by deleting pieces from it.
+
+### Sizing
+
+One Boarding Actions set is 48 wall-cells and a 7 × 6 card board has 71 internal
+edges, so **one set fills one card board** at real density. Extra sets grow the
+footprint rather than the density; once the complex fills the table, surplus
+terrain stays in the box and the app says how much. A complex smaller than the
+board is anchored into a corner or against an edge, which uses the border as free
+wall and spends more of the kit on interior structure.
+
+Candidates are scored by **distance to a reference board**, so overshooting is
+penalised as much as undershooting and no single metric can run away with the
+result. Piece utilisation is a tiebreak only — it is an output, never a target.
+
+The reference profile in `app/validate.ts` is provisional, derived from the kit
+arithmetic and the published board geometry. Replacing it with one measured from a
+transcribed real board retunes the generator without touching generation code.
+
+See [PROPOSAL.md](PROPOSAL.md) for the analysis this design came from, and
+[PROJECT_STATE.md](PROJECT_STATE.md) for historical notes on the versions it
+replaced.
 
 ## Development
 

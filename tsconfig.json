@@ -6,6 +6,10 @@
     "skipLibCheck": true,
     "strict": true,
     "noEmit": true,
+    // The generator modules are imported with explicit .ts extensions so that the
+    // test suite can run them under node --experimental-strip-types directly, with
+    // no build step between a change and seeing its effect on a board.
+    "allowImportingTsExtensions": true,
     "esModuleInterop": true,
     "module": "esnext",
     "moduleResolution": "bundler",

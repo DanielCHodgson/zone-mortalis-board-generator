@@ -37,14 +37,19 @@ test("server-renders the Mortalis Architect workspace", async () => {
   assert.match(html, /Generate from palette/);
   assert.ok(html.indexOf("Available pieces · selected kit") < html.indexOf("Current generator palette"), "kit pieces should appear before layout inventory");
   assert.doesNotMatch(html, /Generate uses only this persistent list/);
-  assert.match(html, /48 by 48 inch layout board/);
+  // The default board is one Boarding Actions card board, 704 x 607 mm, which is
+  // the board the kit is cut for and the one a single set fills.
+  assert.match(html, /27.7 by 23.9 inch layout board/);
   assert.match(html, /role="toolbar" aria-label="Layout tools"/);
   assert.match(html, /role="status" aria-live="polite"/);
   assert.match(html, /Skip to layout board/);
 });
 
 test("ships the complete first-pass catalogues and planner tools", async () => {
-  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  // The catalogue lives in terrain.ts so the generator tests read the same numbers
+  // the app draws, rather than keeping their own copy of the inventory.
+  const page = await readFile(new URL("../app/terrain.ts", import.meta.url), "utf8")
+    + await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
 
   for (const kit of [
     "Iron Labyrinth Alpha",
