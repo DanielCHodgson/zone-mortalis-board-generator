@@ -17,7 +17,7 @@
  */
 
 import {
-  cellsOfEdge, edgeKey, internalEdgeCount, makeLattice, nodeWorld, pitchIsBuildable, columnBite,
+  cellsOfEdge, edgeKey, internalEdgeCount, makeLattice, nodeWorld, columnBite,
   type Lattice, type LatticeEdge,
 } from "./lattice.ts";
 import { buildDeckPlan, renderPlan, type DeckPlan, type Rect } from "./deckplan.ts";
@@ -33,6 +33,8 @@ export type KitCatalogue = "boarding" | "mortalis" | "deathray" | "ttcombat";
 
 export type KitDef = {
   id:string;
+  /** Only used to name pieces in the report. */
+  name?:string;
   catalogue:KitCatalogue;
   width:number; depth:number; height:number;
   kind:"wall" | "door" | "pillar" | "connector" | "end" | "floor" | "stair" | "scatter";
@@ -127,47 +129,140 @@ export type KitReading = {
   columns:number;
   caps:number;
   buildDefs:BuildDef[];
+  /** Panel ids the palette owns that do not fit the chosen pitch — a different module
+   *  in the same catalogue. Reported so the board can say why they stayed in the box. */
+  excluded:string[];
+  /** Panel ids whose stated geometry fits no pitch at all. A kit holding one of these is
+   *  refused rather than partly built. */
+  unbuildable:string[];
   accessories:KitDef[];
+};
+
+/**
+ * Whether a panel physically fits a span of `cells` squares, and how.
+ *
+ * The two joint models need different tests, and conflating them is what let panels be
+ * placed straight through their own connectors.
+ *
+ *   straddle  the panel slots INTO a column standing on the node, so it may be shorter
+ *             than the span by up to one column's width — that difference is the slot.
+ *             `span - support <= width <= span`.
+ *   butt      the panel sits BETWEEN two connectors, so it must match the clear opening.
+ *             `width == span - support`, near enough to seat.
+ *
+ * A straddling piece is one that states its own span. Everything else butts.
+ */
+export const cellsThatFit = (def:KitDef, pitch:number, support:number):number | null => {
+  const straddles = def.span !== undefined;
+  const seat = .04; // ~1 mm, the slack a butt joint can absorb
+  for (let cells = 1; cells <= 4; cells++) {
+    const span = cells * pitch;
+    if (straddles) {
+      if (def.width <= span + 1e-6 && span - def.width <= support + 1e-6) return cells;
+    } else if (Math.abs(def.width - (span - support)) <= seat) {
+      return cells;
+    }
+  }
+  return null;
 };
 
 export const readKit = (defs:KitDef[], inventory:Record<string, number>, catalogue:KitCatalogue):KitReading | null => {
   const owned = defs.filter((def) => def.catalogue === catalogue && (inventory[def.id] ?? 0) > 0);
-  const panels = owned.filter((def) => def.kind === "wall" || def.kind === "door");
+  const allPanels = owned.filter((def) => def.kind === "wall" || def.kind === "door");
   const supports = owned.filter((def) => def.kind === "pillar" || def.kind === "connector");
   const caps = owned.filter((def) => def.kind === "end");
-  if (!panels.length || !supports.length) return null;
+  if (!allPanels.length || !supports.length) return null;
 
   const support = Math.max(...supports.map((def) => Math.max(def.width, def.depth)));
-  // The shortest panel defines one square; the longer ones are whole multiples of
-  // it. That is how every one of these kits is cut, and it is why the long Gallowdark panel is
-  // two squares rather than a cell width of its own — offering it as its own cell
-  // put the whole board on a 7.6" pitch, which halved the cell count and left the
-  // short panels with nothing to fill.
-  const pitch = Math.min(...panels.map((def) => spanOf(def, support)));
-  const cells = new Map(panels.map((def) => [def.id, Math.max(1, Math.round(spanOf(def, support) / pitch))]));
+
+  /**
+   * Choose the pitch that makes the MOST of the palette usable.
+   *
+   * This was `Math.min(...panels.map(spanOf))` — the shortest panel dictated the grid for
+   * everything else, and `pitchIsBuildable` only ever checked that one panel. On a mixed
+   * TTCombat palette the consequences were severe rather than cosmetic. A Death Quadrant
+   * single wall is 46 mm and an Iron Labyrinth wall is 64 mm; both butt between 50 mm
+   * connectors, so they want a 96 mm and a 114 mm pitch respectively. Taking the minimum
+   * put the whole board on 96 mm, which leaves a 46 mm opening — and then six of the
+   * thirteen panel types were placed into it 64 mm wide, overlapping their connectors by
+   * 9 mm at each end. That is panels running straight through the connectors, and nothing
+   * checked for it.
+   *
+   * It also made the output erratic in a way that looked random: the pitch jumped between
+   * 96 mm and 114 mm depending on whether one 46 mm piece happened to be in the palette,
+   * and the whole board changed with it. With the full palette nothing built at all.
+   *
+   * So each distinct span is tried as a pitch, every panel is tested against it, and the
+   * pitch that yields the most buildable wall-cells wins. Pieces from a different module
+   * stay in the box and are reported. Ties go to the smaller pitch, which gives a finer
+   * lattice and more room to compose.
+   */
+  const candidates = [...new Set(allPanels.map((def) => spanOf(def, support)))].sort((first, second) => first - second);
+  let chosen:{ pitch:number; cells:Map<string, number>; capacity:number } | null = null;
+  for (const pitch of candidates) {
+    const cells = new Map<string, number>();
+    let capacity = 0;
+    allPanels.forEach((def) => {
+      const fits = cellsThatFit(def, pitch, support);
+      if (fits === null) return;
+      cells.set(def.id, fits);
+      capacity += (inventory[def.id] ?? 0) * fits;
+    });
+    if (!cells.size) continue;
+    if (!chosen || capacity > chosen.capacity) chosen = { pitch, cells, capacity };
+  }
+  if (!chosen) return null;
+
+  const { pitch, cells } = chosen;
+  const panels = allPanels.filter((def) => cells.has(def.id));
+  const excluded = allPanels.filter((def) => !cells.has(def.id));
+
+  /**
+   * Panels that fit NO pitch the palette offers, which is a different thing from a panel
+   * belonging to a different module.
+   *
+   * A 46 mm Death Quadrant wall does not fit a 114 mm Iron Labyrinth board, but it fits a
+   * 96 mm one perfectly — it is a different module, and setting it aside is correct. A
+   * panel that fits nothing at all means its stated geometry is incoherent: its own
+   * declared span cannot hold it.
+   *
+   * That distinction is what keeps the 125 mm regression refused. At that pitch a bare
+   * 80 mm Gallowdark panel ends 0.9" short of a 28 mm pillar and there is no whole number
+   * of squares at which it reaches, so the kit is unbuildable and the honest answer is to
+   * refuse. Without this, the per-panel fit quietly built a board out of the four panel
+   * types that did fit — an eight-panel board, which is the exact symptom this generator
+   * was rewritten to stop producing.
+   */
+  const unbuildable = excluded.filter((def) =>
+    !candidates.some((candidate) => cellsThatFit(def, candidate, support) !== null));
 
   const buildDefs:BuildDef[] = [
     ...panels.map((def) => ({
       id:def.id, kind:def.kind as "wall" | "door", length:def.width, depth:def.depth,
       cells:cells.get(def.id)!, ownColumns:def.ownColumns ?? 0, height:def.height,
+      straddles:def.span !== undefined,
     })),
     ...supports.map((def) => ({
       id:def.id, kind:def.kind as "pillar" | "connector", length:Math.max(def.width, def.depth),
       depth:Math.min(def.width, def.depth), cells:0, ownColumns:0 as const, height:def.height,
+      straddles:false,
     })),
     ...caps.map((def) => ({
       id:def.id, kind:"end" as const, length:Math.max(def.width, def.depth),
       depth:Math.min(def.width, def.depth), cells:0, ownColumns:0 as const, height:def.height,
+      straddles:false,
     })),
   ];
 
   return {
     pitch, support, cells,
-    capacity:panels.reduce((sum, def) => sum + (inventory[def.id] ?? 0) * cells.get(def.id)!, 0),
+    unbuildable:unbuildable.map((def) => def.id),
+    capacity:chosen.capacity,
     doorways:panels.filter((def) => def.kind === "door").reduce((sum, def) => sum + (inventory[def.id] ?? 0), 0),
     columns:supports.reduce((sum, def) => sum + (inventory[def.id] ?? 0), 0),
     caps:caps.reduce((sum, def) => sum + (inventory[def.id] ?? 0), 0),
     buildDefs,
+    excluded:excluded.map((def) => def.id),
     accessories:owned.filter((def) => def.kind === "floor" || def.kind === "stair"),
   };
 };
@@ -442,14 +537,19 @@ export const generate = (input:GenerateInput):GenerateReport => {
   const kit = readKit(defs, inventory, catalogue);
   if (!kit) return empty("the palette has no walls, or no columns to bracket them");
 
-  const shortest = Math.min(...kit.buildDefs.filter((def) => def.cells === 1).map((def) => def.length));
-  if (!pitchIsBuildable(shortest, kit.pitch, kit.support)) {
-    // Refusing to build is the right answer here. A pitch outside this range
-    // cannot be assembled from the kit, and every board the previous generator
-    // produced was downstream of exactly this going unchecked.
+  // Refusing to build is the right answer when a panel's stated geometry fits no grid the
+  // palette can form. A pitch outside the buildable range cannot be assembled, and every
+  // board the previous generator produced was downstream of exactly this going unchecked.
+  //
+  // Checked per panel now, against every pitch the palette offers, rather than once
+  // against the shortest panel on the pitch that panel happened to dictate.
+  if (kit.unbuildable.length) {
+    const worst = kit.unbuildable[0];
+    const def = defs.find((candidate) => candidate.id === worst)!;
     return empty(
-      `unbuildable grid: a ${shortest.toFixed(2)}" panel on a ${kit.pitch.toFixed(2)}" pitch with `
-      + `${kit.support.toFixed(2)}" columns leaves ${columnBite(shortest, kit.pitch, kit.support).toFixed(3)}" of joint`,
+      `unbuildable grid: a ${def.width.toFixed(2)}" panel fits no whole number of squares on any `
+      + `pitch this palette can form, with ${kit.support.toFixed(2)}" columns — `
+      + `at ${kit.pitch.toFixed(2)}" it leaves ${Math.abs(columnBite(def.width, kit.pitch, kit.support)).toFixed(3)}" of joint`,
     );
   }
 
@@ -830,11 +930,21 @@ export const generate = (input:GenerateInput):GenerateReport => {
 
   const fills = Math.round(Math.min(1, greed) * 100);
   const grid = `${best.lattice.cols} x ${best.lattice.rows} squares`;
-  const note = greed < .95
+  // A palette can hold pieces from two incompatible modules — TTCombat's 46 mm Death
+  // Quadrant walls and 64 mm Iron Labyrinth walls both butt between 50 mm connectors, so
+  // they want different pitches and cannot share a lattice. The board is built on the
+  // pitch that uses the most of the palette; saying which pieces were left out is the
+  // difference between "the generator consumed a random amount" and a stated reason.
+  const setAside = kit.excluded.length
+    ? ` · ${kit.excluded.length} piece type${kit.excluded.length === 1 ? "" : "s"} `
+      + `(${kit.excluded.map((id) => defs.find((def) => def.id === id)?.name ?? id).join(", ")}) `
+      + `belong to a different module at this pitch and stay in the box`
+    : "";
+  const note = (greed < .95
     ? `${grid} — this palette fills about ${fills}% of the board at real density; ${setsToFill} sets would fill it`
     : leftover > 2
       ? `${grid}, filling the board at real density — ${leftover} panels stay in the box`
-      : `${grid}, filling the board`;
+      : `${grid}, filling the board`) + setAside;
   return {
     pieces, metrics:best.metrics, lattice:best.lattice, plan:best.plan,
     greed, anchor, setsToFill, score:best.score, rejected, leftover, note,

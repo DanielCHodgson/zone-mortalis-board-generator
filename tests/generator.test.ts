@@ -18,15 +18,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { TERRAIN, BOARDING_INVENTORY, BOARD_SIZES, GALLOWDARK_GRID } from "../app/terrain.ts";
-import { generate, readKit, type KitDef } from "../app/generate.ts";
+import {
+  TERRAIN, TERRAIN_KITS, BOARDING_INVENTORY, BOARD_SIZES, GALLOWDARK_GRID, MM_PER_IN as MM,
+  type CatalogueId,
+} from "../app/terrain.ts";
+import { cellsThatFit, generate, readKit, type KitDef } from "../app/generate.ts";
 import { invariants, measure, PROVISIONAL_REFERENCE } from "../app/validate.ts";
 import {
   columnBite, edgeKey, edgeRuns, fullyConnected, internalEdgeCount, isBorderEdge, nodesOfEdge,
   pitchIsBuildable, sightLines, spanWorld,
 } from "../app/lattice.ts";
 
-const MM = 25.4;
 const SEEDS = [1, 2, 3, 4, 5, 6, 7, 8];
 
 let counter = 0;
@@ -40,7 +42,7 @@ const scaled = (sets:number) =>
 
 const run = (options:{
   width?:number; height?:number; sets?:number; seed?:number;
-  catalogue?:"boarding" | "ttcombat"; inventory?:Record<string, number>;
+  catalogue?:CatalogueId; inventory?:Record<string, number>;
   anchor?:"auto" | "corner" | "edge" | "centre";
 } = {}) => {
   const width = options.width ?? BOARD_SIZES.card.width;
@@ -859,4 +861,101 @@ test("a wall end caps a free end and never joins two panels", () => {
       );
     });
   });
+});
+
+test("every panel the generator will place seats in its span without overlapping a support", () => {
+  // The bug this pins was severe and invisible. `readKit` took the pitch as
+  // `min(spanOf)` — the shortest panel dictated the grid for every other — and
+  // `pitchIsBuildable` was then applied ONCE, to that same shortest panel. Nothing checked
+  // the rest.
+  //
+  // On a mixed TTCombat palette that put the whole board on a 96 mm pitch, because a Death
+  // Quadrant single wall is 46 mm and butts between 50 mm connectors. The 64 mm Iron
+  // Labyrinth walls were then placed into the resulting 46 mm opening, overlapping their
+  // connectors by 9 mm at each end — six of the thirteen panel types, running straight
+  // through the connectors they were supposed to sit between.
+  //
+  // Checked here for every kit in the catalogue, on the piece geometry rather than on a
+  // generated board, so a data error in a newly added range fails immediately.
+  TERRAIN_KITS.forEach((kit) => {
+    const reading = readKit(defs, kit.inventory, kit.catalogue);
+    if (!reading) return; // door sets, floors, stairs: no walls or no columns of their own
+    assert.deepEqual(
+      reading.unbuildable, [],
+      `${kit.name}: panels whose geometry fits no pitch at all`,
+    );
+    reading.buildDefs
+      .filter((def) => def.kind === "wall" || def.kind === "door")
+      .forEach((def) => {
+        const span = def.cells * reading.pitch;
+        if (def.straddles) {
+          // Slots into a column standing on the node: may be shorter than its span by up
+          // to one column, and that difference is the slot.
+          assert.ok(
+            def.length <= span + 1e-6 && span - def.length <= reading.support + 1e-6,
+            `${kit.name}/${def.id}: ${(def.length * MM).toFixed(0)}mm panel does not slot into a ${(span * MM).toFixed(0)}mm span`,
+          );
+        } else {
+          // Butts between two connectors: must match the clear opening, or it overlaps them.
+          const opening = span - reading.support;
+          assert.ok(
+            def.length <= opening + .04,
+            `${kit.name}/${def.id}: ${(def.length * MM).toFixed(0)}mm panel in a ${(opening * MM).toFixed(0)}mm opening — it overlaps its connectors by ${((def.length - opening) * MM / 2).toFixed(0)}mm each end`,
+          );
+        }
+      });
+  });
+});
+
+test("a palette holding two incompatible modules builds the larger one, consistently", () => {
+  // The reported symptom was "it seems random how much it consumes": three generations from
+  // the same 382-piece TTCombat palette produced 108, 21 and 55 pieces.
+  //
+  // The cause was the pitch flipping between 96 mm and 114 mm depending on whether one
+  // 46 mm piece happened to be in the palette, which changed the whole board with it — and
+  // with the full palette nothing built at all. TTCombat genuinely ships two modules that
+  // cannot share a lattice: 46 mm Death Quadrant walls and 64 mm Iron Labyrinth walls, both
+  // butting between 50 mm connectors.
+  //
+  // The pitch is now the one that makes the most of the palette usable, and the other
+  // module stays in the box and is named in the report. Asserted as consistency across
+  // seeds, because "random" was the complaint.
+  const palette = Object.fromEntries(
+    TERRAIN.filter((def) => def.catalogue === "ttcombat").map((def) => [def.id, def.limit * 6]),
+  );
+  const counts = SEEDS.map((seed) => {
+    const { report } = run({ width:48, height:48, catalogue:"ttcombat", inventory:palette, seed });
+    assert.ok(report.plan, `seed ${seed}: nothing built — ${report.note}`);
+    return { pieces:report.pieces.length, cells:report.lattice!.cols * report.lattice!.rows };
+  });
+  const sizes = new Set(counts.map((entry) => entry.cells));
+  assert.equal(sizes.size, 1, `footprint varied across seeds: ${[...sizes].join(", ")} cells`);
+  const low = Math.min(...counts.map((entry) => entry.pieces));
+  const high = Math.max(...counts.map((entry) => entry.pieces));
+  assert.ok(
+    high - low <= high * .25,
+    `piece count varied from ${low} to ${high} across seeds — the palette is being consumed erratically`,
+  );
+
+  // And it has to pick the module that uses the MOST of the palette, not merely a coherent
+  // one. Taking the smallest pitch is coherent too — it just leaves 138 wall-cells of Iron
+  // Labyrinth wall in the box to build 36 cells of Death Quadrant instead. Enumerated here
+  // rather than hard-coded, so editing the catalogue cannot silently invalidate it.
+  const reading = readKit(defs, palette, "ttcombat")!;
+  const panels = defs.filter((def) => def.catalogue === "ttcombat"
+    && (def.kind === "wall" || def.kind === "door") && (palette[def.id] ?? 0) > 0);
+  const capacityAt = (pitch:number) => panels.reduce((sum, def) => {
+    const cells = cellsThatFit(def, pitch, reading.support);
+    return sum + (cells === null ? 0 : palette[def.id] * cells);
+  }, 0);
+  const alternatives = [...new Set(panels.map((def) => def.span ?? reading.support + def.width))];
+  const best = Math.max(...alternatives.map(capacityAt));
+  assert.equal(
+    reading.capacity, best,
+    `chose a ${(reading.pitch * MM).toFixed(0)}mm pitch worth ${reading.capacity} wall-cells when ${best} were available`,
+  );
+  // And the report has to say which pieces were set aside, or an under-spent palette looks
+  // arbitrary to whoever is holding the box.
+  const { report } = run({ width:48, height:48, catalogue:"ttcombat", inventory:palette, seed:1 });
+  assert.match(report.note, /different module/);
 });

@@ -226,3 +226,58 @@ Two notes for whoever touches this next:
 - **`COLUMNS_PER_WALL_CELL` moves when panel choice changes.** That experiment took the
   measured ratio from 0.92 to 0.79, and a stale constant mis-sizes every board on the
   first attempt. Re-measure after any change to how panels are chosen.
+
+## Fourth pass: the pitch was set by one piece
+
+Reported as "Iron Labyrinth makes good layouts but it's not using enough of the palette
+sometimes — it seems random how much it consumes". Three generations from the same
+382-piece TTCombat palette gave 108, 21 and 55 pieces. Reported alongside it: "long
+hatches going through connectors". Same cause.
+
+`readKit` took the pitch as `min(spanOf)` — the SHORTEST panel dictated the grid for every
+other panel — and `pitchIsBuildable` was then applied once, to that same shortest panel.
+Nothing checked the rest.
+
+TTCombat ships two modules that cannot share a lattice: a 46 mm Death Quadrant wall and a
+64 mm Iron Labyrinth wall, both butting between 50 mm connectors, so they want a 96 mm and
+a 114 mm pitch. Taking the minimum put the whole board on 96 mm, which leaves a 46 mm
+opening — and six of the thirteen panel types were then placed into it 64 mm wide,
+**overlapping their connectors by 9 mm at each end**. That is the hatches-through-connectors
+bug. The erratic consumption is the same thing: the pitch flipped between 96 mm and 114 mm
+depending on whether one 46 mm piece happened to be in the palette, and the whole board
+changed with it. With the full palette, nothing built at all.
+
+Three changes:
+
+1. **The pitch is the one that makes the most of the palette usable**, chosen by trying
+   every distinct span and measuring buildable wall-cells. Ties go to the smaller pitch.
+2. **Every panel is fitted individually, against the joint it actually makes.** A
+   straddling panel may be up to a column shorter than its span — that difference is the
+   slot. A butting panel must match the clear opening, or it overlaps the connectors it is
+   meant to sit between. `BuildDef.straddles` carries which.
+3. **Pieces from the other module stay in the box and are named in the report**, so an
+   under-spent palette explains itself instead of looking arbitrary.
+
+Result: the full TTCombat palette went from building nothing to 150-160 pieces on a
+consistent 10 x 10, every seed, no rejections.
+
+A distinction that matters, and which cost a test failure to find: a panel fitting a
+DIFFERENT pitch is a different module and is set aside; a panel fitting NO pitch has
+incoherent geometry and the whole kit is refused. Without that split, the 125 mm regression
+came back — the per-panel fit quietly built an eight-panel board out of the four panel
+types that happened to fit, which is the exact symptom this generator was rewritten to
+stop producing. `KitReading.unbuildable` is the second case.
+
+### Two open data questions this exposed
+
+Both are dimensions, not code, and the generator now handles either answer honestly.
+
+- **Iron Labyrinth's own doors fit nothing.** The vertical door (94 mm) and sliding door
+  (194 mm) match neither the 114 mm wall module nor any other, so an Iron Labyrinth board
+  currently has no doorways at all — every opening is an open archway. Either the
+  dimensions are wrong, or those pieces are meant to replace a connector-plus-wall unit and
+  should carry an explicit `span` the way the Gallowdark "+ pillars" panels do.
+- **Death Quadrant sets aside its own double wall and double door.** Its 46 mm "single" and
+  64 mm "double" walls resolve to different pitches, so a DQ-only palette builds the 46 mm
+  module and shelves the 64 mm one. If "single" and "double" mean one and two modules, one
+  of those two figures is wrong — two 46 mm modules would be about 92 mm, not 64 mm.

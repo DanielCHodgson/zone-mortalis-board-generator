@@ -70,6 +70,16 @@ export type BuildDef = {
    */
   ownColumns:0 | 1 | 2;
   height:number;
+  /**
+   * Which joint this piece makes: true if it slots INTO a column standing on the node,
+   * false if it butts BETWEEN two connectors.
+   *
+   * Carried here so `invariants` can check the right condition. The two allow different
+   * geometry — a straddling panel may be up to a column's width shorter than its span,
+   * because that difference is the slot; a butting panel must match the clear opening
+   * exactly or it overlaps the connectors it is supposed to sit between.
+   */
+  straddles:boolean;
 };
 
 export type BuiltPiece = {

@@ -20,7 +20,7 @@
 
 import {
   cellInside, cellKey, cellRegions, edgeKey, edgeRuns, internalEdgeCount, isBorderEdge,
-  nodeKey, nodesOfEdge, passable, sightLines,
+  nodeKey, nodesOfEdge, passable, pitchIsBuildable, sightLines,
   type LatticeCell, type LatticeEdge,
 } from "./lattice.ts";
 import type { DeckPlan } from "./deckplan.ts";
@@ -434,7 +434,37 @@ export const invariants = ({ plan, pieces, defs, inventory, boardWidth, boardHei
     failures.push({ rule:"bracketed", detail:`${unsupported.length} panel ends stand on nothing` });
   }
 
-  // 7. A wall-end cap covers a free end, and nothing else.
+  // 7. Every panel seats in its span, for the joint it actually makes.
+  //
+  //    A straddling panel slots into a column standing on the node, so it may be up to one
+  //    column's width shorter than its span — that difference IS the slot. A butting panel
+  //    sits between two connectors and must match the clear opening; longer, and it runs
+  //    straight through the connectors it is supposed to sit between.
+  //
+  //    Nothing checked this per panel. `pitchIsBuildable` was applied once, to the
+  //    SHORTEST panel in the kit, and the pitch itself came from `min(spanOf)` — so one
+  //    46 mm Death Quadrant wall in a TTCombat palette put the whole board on a 96 mm
+  //    pitch, and six of the thirteen panel types were then placed into a 46 mm opening
+  //    64 mm wide, overlapping their connectors by 9 mm at each end.
+  const pitch = Math.max(lattice.pitchX, lattice.pitchY);
+  const support = Math.max(0, ...[...defs.values()]
+    .filter((def) => def.kind === "pillar" || def.kind === "connector")
+    .map((def) => Math.max(def.length, def.depth)));
+  const misseated = [...new Set(structural.map((piece) => piece.defId))].filter((defId) => {
+    const def = defs.get(defId);
+    if (!def) return false;
+    const span = def.cells * pitch;
+    if (def.straddles) return !pitchIsBuildable(def.length, span, support);
+    return def.length > span - support + .04;
+  });
+  if (misseated.length) {
+    failures.push({
+      rule:"seating",
+      detail:`${misseated.join(", ")} do not seat in their span — a panel is overlapping its supports`,
+    });
+  }
+
+  // 8. A wall-end cap covers a free end, and nothing else.
   //
   //    A wall end is cosmetic — it hides the exposed end of a panel that stops in open
   //    floor. It brackets nothing, so it can never be the joint between two panels.
@@ -468,7 +498,7 @@ export const invariants = ({ plan, pieces, defs, inventory, boardWidth, boardHei
     });
   }
 
-  // 8. Reserved zones stay clear.
+  // 9. Reserved zones stay clear.
   //
   // A rule, not a hope. The generator previously "respected" zones by nudging the
   // whole complex to overlap them less, which silently gave up whenever the complex

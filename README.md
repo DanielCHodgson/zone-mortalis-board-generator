@@ -90,6 +90,15 @@ of pieces.
   doorways, not against zero.
 - A spur never seals anything. Connectivity is checked before each one is kept, and a
   spur that cuts a cell off is rejected rather than repaired.
+- **The pitch is chosen, not inherited from the shortest panel.** Every distinct span is
+  tried as a pitch and the one yielding the most buildable wall-cells wins. A palette can
+  hold two modules that cannot share a lattice — TTCombat's 46 mm Death Quadrant and 64 mm
+  Iron Labyrinth walls both butt between 50 mm connectors — and the pieces from the other
+  module stay in the box and are named in the report.
+- **Every panel seats in its span, for the joint it makes.** A straddling panel may be up
+  to a column shorter than its span, because that difference is the slot; a butting panel
+  must match the clear opening or it overlaps the connectors. `min(spanOf)` plus a single
+  check on the shortest panel used to put 64 mm walls into 46 mm openings.
 - **The kit is sized by its COLUMNS, not by its panels.** A Boarding Actions set holds
   48 wall-cells of panel against 32 loose columns and 4 wall ends. At a measured 0.9
   columns per wall-cell those supports bracket about 40 wall-cells, so the last eight
