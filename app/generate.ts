@@ -44,6 +44,14 @@ export type KitDef = {
   ownColumns?:0 | 1 | 2;
 };
 
+/**
+ * Width of a 32 mm round base, in inches.
+ *
+ * The unit of "can anything actually happen here". Used to decide whether a strip
+ * of deck is playable space or just a margin.
+ */
+const MODEL_BASE = 32 / 25.4;
+
 /** Where a complex smaller than the board is put. */
 export type Anchor = "auto" | "corner" | "edge" | "centre";
 
@@ -255,13 +263,24 @@ const sizeLattice = (
  *            rooms. Right when you want a free-standing structure with deck all
  *            round; expensive otherwise.
  */
-const resolveAnchor = (requested:Anchor, greed:number):Anchor => {
+const resolveAnchor = (requested:Anchor, slackX:number, slackY:number):Anchor => {
   if (requested !== "auto") return requested;
-  // Enough terrain to fill the table: it is centred because there is nowhere else
-  // for it to go, and all four sides are the table edge. Short of that, the
-  // cheapest hull wins, so a small complex goes into a corner.
-  if (greed >= .95) return "centre";
-  return greed < .8 ? "corner" : "edge";
+  // Centring is only free when the complex genuinely reaches the table edges — that
+  // is, when halving the slack still leaves a strip too narrow to stand a model in.
+  //
+  // Deciding this on coverage alone was wrong, and 30 x 22 showed it plainly: a 7 x 5
+  // lattice covers that board well enough to look full, but leaves 1.65" outside each
+  // side, so centring made it build all four hull sides — 24 of its 48 panels — and
+  // the interior it could then afford came out at 0.41 density with almost no
+  // junctions. Hugging a corner borrows two of those sides from the table and spends
+  // the difference on rooms.
+  const reaches = (slack:number) => slack / 2 <= MODEL_BASE;
+  if (reaches(slackX) && reaches(slackY)) return "centre";
+  // Otherwise the cheapest hull wins, because every panel not spent on the outside
+  // wall is a panel available for a bulkhead. "edge" is only preferred where one axis
+  // already reaches, so the choice costs nothing.
+  if (reaches(slackX) || reaches(slackY)) return "edge";
+  return "corner";
 };
 
 const originsFor = (anchor:Anchor, slackX:number, slackY:number, inset:number, random:() => number) => {
@@ -299,7 +318,15 @@ const exteriorEdges = (lattice:Lattice, boardWidth:number, boardHeight:number, s
   // it as open deck makes a complex that fills the table build a second hull just
   // inside the table edge, which swallowed the entire panel budget and left the
   // interior almost unsubdivided.
-  const tolerance = support / 2 + .2;
+  //
+  // The test is PLAYABILITY, not exact coincidence with the table edge. A strip of
+  // deck narrower than a model's base is not somewhere anyone can stand or shoot
+  // from, so a perimeter that close to the edge is the hull and needs no panel. A
+  // 12 x 12 complex on a 4' table leaves 1.1" behind it once centred; measuring that
+  // as open deck made it build a 48-panel outside wall against a wall it already
+  // had, which is most of a set spent on nothing and an interior it then could not
+  // afford to subdivide.
+  const tolerance = Math.max(support / 2 + .2, MODEL_BASE);
   const atBoard = (value:number, limit:number) => value <= tolerance || value >= limit - tolerance;
   const exterior = new Set<string>();
   for (let col = 0; col < lattice.cols; col++) {
@@ -388,7 +415,14 @@ export const generate = (input:GenerateInput):GenerateReport => {
   const boardEdges = internalEdgeCount(roughCols, roughRows);
   const greed = spendable / Math.max(1, boardEdges * reference.density);
   const setsToFill = Math.max(1, Math.ceil(1 / Math.max(greed, 1e-6)));
-  const anchor = resolveAnchor(input.anchor ?? "auto", greed);
+  // Judged on the slack the LARGEST possible lattice would leave. Sizing may then
+  // pick something smaller, which only ever leaves more slack — so a complex judged
+  // not to reach the edges never turns out to reach them after all.
+  const anchor = resolveAnchor(
+    input.anchor ?? "auto",
+    Math.max(0, boardWidth - roughCols * kit.pitch),
+    Math.max(0, boardHeight - roughRows * kit.pitch),
+  );
 
   const sized = sizeLattice(boardWidth, boardHeight, kit.pitch, kit.support, spendable, reference.density, anchor);
   if (!sized) return empty("the board is smaller than one grid square");
@@ -407,8 +441,16 @@ export const generate = (input:GenerateInput):GenerateReport => {
   // density gives a compartment per square and a wall on nearly every edge, which
   // is not a denser board so much as a solid one. Terrain left over is a normal
   // outcome and is reported rather than forced onto the deck.
-  const densityCap = Math.round(internalEdgeCount(sized.cols, sized.rows) * Math.min(1, reference.density * 1.15));
-  let budget = Math.min(spendable, densityCap);
+  //
+  // Counted on INTERIOR edges only, and the hull is added per candidate below. The
+  // deck plan measures its budget against every panel it places, hull included, so
+  // handing it an interior-only figure made the outside wall compete with the rooms
+  // for the same allowance: an inset complex spent 24 of a 35-panel budget on its
+  // own perimeter and had 11 left for the entire interior. That is why 30 x 22 came
+  // out identical at one, two and four sets — the cap, not the kit, was the limit —
+  // and why every inset board sat at 0.38 interior density against a 0.52 target.
+  const interiorCap = Math.round(internalEdgeCount(sized.cols, sized.rows) * Math.min(1, reference.density * 1.15));
+  let interiorBudget = Math.min(spendable, interiorCap);
   let best:{ pieces:BuiltPiece[]; metrics:Metrics; lattice:Lattice; plan:DeckPlan; score:number } | null = null;
   const maxSight = Math.max(3, Math.round(reference.longestSight + 2));
 
@@ -428,11 +470,15 @@ export const generate = (input:GenerateInput):GenerateReport => {
         .sort((first, second) => second.covered - first.covered)[0].option
       : originsFor(anchor, slackX, slackY, inset, random);
     const lattice = makeLattice(sized.cols, sized.rows, kit.pitch, kit.pitch, origin.x, origin.y);
+    // The outside wall is not optional and not negotiable, so it is added on top of
+    // the interior allowance rather than taken out of it — capped by what the kit
+    // actually holds, so a hull it cannot afford still fails honestly in `build`.
+    const exterior = exteriorEdges(lattice, boardWidth, boardHeight, kit.support);
     const plan = buildDeckPlan({
       lattice,
-      wallEdgeBudget:budget,
+      wallEdgeBudget:Math.min(spendable, interiorBudget + exterior.size),
       hatchSupply:kit.doorways,
-      exterior:exteriorEdges(lattice, boardWidth, boardHeight, kit.support),
+      exterior,
       reserved:reservedRects(lattice, zones),
       random,
     });
@@ -444,7 +490,7 @@ export const generate = (input:GenerateInput):GenerateReport => {
       // Out of stock at this size. Ask for a slightly smaller plan rather than
       // abandoning the board: fewer, larger compartments is a real board, and a
       // plan the kit cannot finish is not.
-      budget = Math.max(4, Math.floor(budget * .92));
+      interiorBudget = Math.max(4, Math.floor(interiorBudget * .92));
       continue;
     }
 

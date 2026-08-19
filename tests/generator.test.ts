@@ -504,3 +504,123 @@ test("internal edge counts are what the density budget assumes", () => {
   assert.equal(kit.doorways, 20);
   assert.equal(kit.columns, 32);
 });
+
+// ---------------------------------------------------------------------------
+// Regressions found by soaking the generator (tests/soak.ts).
+//
+// Each of these was invisible to a single-seed suite and obvious across a few
+// hundred runs, which is the whole argument for the soak rig existing.
+// ---------------------------------------------------------------------------
+
+test("a remix is lossless, so repeated regeneration cannot drain the board", () => {
+  // THE bug this block exists for. `Generate layout` used to take its inventory
+  // from the pieces on the board. The generator deliberately leaves surplus in the
+  // box, so every remix placed fewer pieces than it was offered, and feeding that
+  // thinned board back in as the next remix's stock shrank the stock each click:
+  // four presses took a full card board down to a handful of panels and a fifth
+  // emptied it. Stock now comes from the palette, so a remix is stationary.
+  const palette = scaled(1);
+  let placed:Record<string, number> = {};
+  const counts:number[] = [];
+  for (let step = 0; step < 12; step++) {
+    // Exactly the rule page.tsx applies: the palette, or the board, whichever holds
+    // more of each piece.
+    const inventory = Object.fromEntries(
+      Object.keys(palette).map((id) => [id, Math.max(palette[id] ?? 0, placed[id] ?? 0)]),
+    );
+    const { report } = run({ inventory, seed:step * 7919 + 3 });
+    placed = report.pieces.reduce<Record<string, number>>(
+      (acc, piece) => ({ ...acc, [piece.defId]:(acc[piece.defId] ?? 0) + 1 }), {},
+    );
+    counts.push(report.pieces.length);
+  }
+  const first = counts[0];
+  assert.ok(
+    Math.min(...counts) >= first * .75,
+    `remix decayed: ${counts.join(" -> ")}`,
+  );
+});
+
+test("the outside wall is paid for on top of the interior, not out of it", () => {
+  // The deck plan budgets every panel it places, hull included, so handing it an
+  // interior-only allowance made the outside wall compete with the rooms. An inset
+  // complex spent 24 of a 35-panel budget on its own perimeter and had 11 left for
+  // the interior, which is why 30 x 22 came out identical at one, two and four sets.
+  const density = (sets:number) => {
+    const { report } = run({ width:30, height:22, sets, seed:11 });
+    assert.ok(report.metrics, "30 x 22 should build");
+    return report.metrics!.density;
+  };
+  const one = density(1);
+  const two = density(2);
+  assert.ok(one >= .45, `one set on 30 x 22 reached only ${one.toFixed(2)} interior density`);
+  assert.ok(two > one + .02, `extra sets bought nothing: ${one.toFixed(2)} then ${two.toFixed(2)}`);
+});
+
+test("a complex that all but fills the board borrows the table edge as its hull", () => {
+  // A 12 x 12 lattice leaves 1.1" outside it on a four-foot table once centred. That
+  // strip is narrower than a 32 mm base, so nothing can stand there and it needs no
+  // wall — but it was being measured as open deck, and the complex built a redundant
+  // 48-panel outside wall against a wall it already had.
+  const { report } = run({ width:48, height:48, sets:4, seed:7 });
+  assert.ok(report.plan, "4' x 4' with four sets should build");
+  const built = report.plan!.panelEdges.filter((edge) => report.plan!.lattice.cols === 0
+    || edge.axis === "h"
+      ? edge.row === 0 || edge.row === report.plan!.lattice.rows
+      : edge.col === 0 || edge.col === report.plan!.lattice.cols).length;
+  assert.equal(built, 0, `${built} perimeter panels built against the table edge`);
+});
+
+test("long bulkheads get doors, so no stretch of blank wall spans the table", () => {
+  // Measured on SOLID panels. A wall line counted THROUGH its hatchways is long by
+  // design — 20 of the 32 panels in the box carry a doorway, and a bulkhead spanning a
+  // deck is what a ship has — so the thing worth bounding is unbroken blank wall.
+  //
+  // Subdivision splits a block with a bulkhead spanning the whole block, and the first
+  // block is nearly the whole lattice, so a four-foot complex reliably grew a 7-8 panel
+  // stretch: 26-30" of blank wall on a 48" table. Asserted as an average across seeds
+  // as well as a hard cap, because the average is what actually moved (6.3 to 4.3 on
+  // 48x48 x2) and a cap alone passes even with the fix reverted.
+  ([[BOARD_SIZES.card.width, BOARD_SIZES.card.height, 1], [48, 48, 2], [48, 48, 4]] as const)
+    .forEach(([width, height, sets]) => {
+      const longest = SEEDS.map((seed) => {
+        const { report } = run({ width, height, sets, seed });
+        assert.ok(report.plan, `${width}x${height} x${sets} seed ${seed} should build`);
+        const solid = report.plan!.panelEdges.filter((edge) => report.plan!.state.get(edgeKey(edge)) === "wall");
+        return Math.max(0, ...edgeRuns(solid).map((line) => line.length));
+      });
+      const mean = longest.reduce((sum, value) => sum + value, 0) / longest.length;
+      assert.ok(
+        mean <= 5,
+        `${width}x${height} x${sets}: mean longest blank wall ${mean.toFixed(1)} panels (${longest.join(",")})`,
+      );
+      // The hard cap is looser than the average on purpose. Where the kit's hatchway
+      // panels are exhausted a long wall has to stand, and that is a limit of the box
+      // rather than a defect — 48x48 with two sets spends nearly all 40 of its
+      // hatchways on doorways before this pass gets a look in.
+      assert.ok(
+        Math.max(...longest) <= 9,
+        `${width}x${height} x${sets}: ${Math.max(...longest)} panels of unbroken blank wall`,
+      );
+    });
+});
+
+test("every board on every preset lands near the reference density", () => {
+  // The headline result of the soak, pinned. Interior density across the whole matrix
+  // used to run from 0.37 to 0.60 depending on how much of the budget the hull ate;
+  // it now sits in a narrow band around the 0.52 reference on every combination.
+  const presets = Object.values(BOARD_SIZES);
+  presets.forEach((size) => {
+    [1, 2].forEach((sets) => {
+      SEEDS.slice(0, 4).forEach((seed) => {
+        const { report } = run({ width:size.width, height:size.height, sets, seed });
+        assert.ok(report.metrics, `${size.label} x${sets} seed ${seed} produced nothing`);
+        const { density } = report.metrics!;
+        assert.ok(
+          density >= .42 && density <= .68,
+          `${size.label} x${sets} seed ${seed}: density ${density.toFixed(2)} outside 0.42-0.68`,
+        );
+      });
+    });
+  });
+});

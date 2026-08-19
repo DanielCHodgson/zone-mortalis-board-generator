@@ -32,9 +32,23 @@ export type Metrics = {
   /** Mean and worst-case firing lane, in cells. */
   meanSight:number;
   longestSight:number;
-  /** Mean length of a wall run, in cells, and the longest one. */
+  /** Mean length of a wall run, in cells. */
   meanRun:number;
-  longestRun:number;
+  /**
+   * Longest run of SOLID panels, uninterrupted by a doorway, in cells.
+   *
+   * Measured on solid panels rather than on the whole wall line, deliberately. A
+   * wall line counted through its hatchways runs 9-12 cells on a four-foot complex
+   * and is bounded only by the lattice, which made it look like a defect when it is
+   * simply what a bulkhead spanning a deck IS — and 20 of the 32 panels in the box
+   * carry a hatchway, so a long line is expected to be full of doors.
+   *
+   * What would genuinely look wrong is a long stretch of unbroken solid wall, so
+   * that is what is measured. It also happens to be scale-invariant in a way the
+   * full wall line is not: it depends on how doorways are distributed, not on how
+   * big the board is.
+   */
+  longestSolidRun:number;
   /** Nodes where three or four panels meet, as a share of all panelled nodes. */
   junctionShare:number;
   /** Mean compartment size in cells, and the spread across compartments. */
@@ -74,7 +88,11 @@ export const PROVISIONAL_REFERENCE:ReferenceProfile = {
   meanSight:2.3,
   longestSight:4.5,
   meanRun:2.8,
-  longestRun:6,
+  // A long SOLID stretch is what looks wrong. Hatchways are 62% of the box, so a
+  // wall line is expected to be broken up by doors every couple of panels. Four
+  // panels is about 15", which is as far as a bulkhead runs on a real board before a
+  // hatchway appears in it, and it is the limit `breakLongBulkheads` enforces.
+  longestSolidRun:4,
   junctionShare:.4,
   meanRoom:3,
   roomSpread:1.6,
@@ -83,7 +101,7 @@ export const PROVISIONAL_REFERENCE:ReferenceProfile = {
   // Sight lines and run structure are what separate a deck from a scatter, so they
   // carry the most weight. Density matters but is largely fixed by the box.
   weights:{
-    density:1, meanSight:2.5, longestSight:2, meanRun:2, longestRun:.75,
+    density:1, meanSight:2.5, longestSight:2, meanRun:2, longestSolidRun:1.25,
     junctionShare:1.5, meanRoom:.75, roomSpread:.5, deadEndShare:1, hatchShare:.5,
   },
 };
@@ -93,6 +111,9 @@ export const measure = (plan:DeckPlan):Metrics => {
   const panels = plan.panelEdges.filter((edge) => !isBorderEdge(lattice, edge));
   const runs = edgeRuns(panels);
   const runLengths = runs.map((run) => run.length);
+  // Split the wall lines wherever a doorway interrupts them, so what is measured is
+  // unbroken solid wall rather than wall-line length.
+  const solidLengths = edgeRuns(panels.filter((edge) => state.get(edgeKey(edge)) === "wall")).map((run) => run.length);
   const sight = sightLines(lattice, state);
 
   const nodeDegree = new Map<string, number>();
@@ -124,7 +145,7 @@ export const measure = (plan:DeckPlan):Metrics => {
     meanSight:sight.mean,
     longestSight:sight.longest,
     meanRun:runLengths.length ? runLengths.reduce((sum, length) => sum + length, 0) / runLengths.length : 0,
-    longestRun:runLengths.length ? Math.max(...runLengths) : 0,
+    longestSolidRun:solidLengths.length ? Math.max(...solidLengths) : 0,
     junctionShare:nodeDegree.size ? junctions / nodeDegree.size : 0,
     meanRoom, roomSpread,
     deadEndShare:deadEnds / Math.max(1, lattice.cols * lattice.rows),

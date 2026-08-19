@@ -11,7 +11,9 @@
     "start": "vinext start",
     "test": "npm run build && node --experimental-strip-types --test tests/rendered-html.test.mjs tests/generator.test.ts",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
-    "db:generate": "drizzle-kit generate"
+    "db:generate": "drizzle-kit generate",
+    "soak": "node --experimental-strip-types --no-warnings tests/soak.ts",
+    "eyeball": "node --experimental-strip-types --no-warnings tests/eyeball.ts"
   },
   "dependencies": {
     "drizzle-orm": "0.45.2",

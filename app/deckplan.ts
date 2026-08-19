@@ -24,7 +24,11 @@
  * Three consequences of the partition model that are worth stating, because they
  * are what makes the output look like a board:
  *
- * 1. A corridor's two flanks are single long unbroken runs by construction.
+ * 1. A corridor's flanks are long unbroken runs by construction, broken where the
+ *    corridor takes a dog-leg. Note that this is NOT what stops a wall running the
+ *    length of the table — the longest wall on a board comes from the compartment
+ *    split lines, and `breakLongBulkheads` is what handles those. Dog-legs are here
+ *    for the shape of the passage, not for the run length.
  * 2. Every compartment boundary that meets a corridor flank is a T-junction, and
  *    every split line that meets another is a cross. Junctions are not placed;
  *    they are what a partition is made of.
@@ -33,7 +37,7 @@
  */
 
 import {
-  allEdges, cellInside, cellKey, edgeKey, edgesOfCell, internalEdges, isBorderEdge, makeLattice,
+  allEdges, cellInside, cellKey, edgeKey, edgeRuns, edgesOfCell, internalEdges, isBorderEdge, makeLattice,
   type EdgeState, type LatticeCell, type LatticeEdge, type Lattice,
 } from "./lattice.ts";
 
@@ -206,6 +210,53 @@ const undoableSplits = (node:SplitNode, into:SplitNode[] = []):SplitNode[] => {
 type Corridor = { axis:"h" | "v"; at:number };
 
 /**
+ * A corridor as the rectangles it occupies.
+ *
+ * A long corridor takes a dog-leg: it runs part of the way in one lane, steps
+ * sideways by a square, and carries on. Each leg is still a rectangle, so the block
+ * subdivision either side needs no special handling — it subtracts rectangles exactly
+ * as it does for a reserved hall.
+ *
+ * This is here for the SHAPE of the passage: a street that jogs around whatever is in
+ * the way reads like a deck, where one ruled straight across the board reads like a
+ * diagram. It was originally added on the theory that it would stop a wall running
+ * the length of the table, and measured against 240 boards it did nothing of the kind
+ * — the longest wall comes from the compartment split lines, not the corridor flanks,
+ * and `breakLongBulkheads` is what deals with those. Kept for the shape, with the
+ * claim corrected.
+ */
+const corridorLegs = (lattice:Lattice, corridor:Corridor, random:() => number):Rect[] => {
+  const extent = corridor.axis === "h" ? lattice.cols : lattice.rows;
+  const lanes = corridor.axis === "h" ? lattice.rows : lattice.cols;
+  const asRect = (at:number, from:number, to:number):Rect => corridor.axis === "h"
+    ? { col:from, row:at, cols:to - from, rows:1 }
+    : { col:at, row:from, cols:1, rows:to - from };
+
+  // Only worth jogging if the run would otherwise be long enough to look wrong, and
+  // only if there is a neighbouring lane to jog into.
+  const legs:Rect[] = [];
+  let lane = corridor.at;
+  let from = 0;
+  // One step roughly every five or six squares.
+  const steps = Math.max(0, Math.floor((extent - 3) / 5));
+  for (let step = 0; step < steps; step++) {
+    const remaining = extent - from;
+    if (remaining < 6) break;
+    const at = from + 3 + Math.floor(random() * Math.max(1, remaining - 5));
+    const direction = random() < .5 ? -1 : 1;
+    const next = lane + direction;
+    // Keep the corridor off the very edge lanes, or the jog seals a one-cell strip
+    // between the passage and the hull.
+    if (next < 1 || next > lanes - 2) continue;
+    legs.push(asRect(lane, from, at));
+    lane = next;
+    from = at;
+  }
+  legs.push(asRect(lane, from, extent));
+  return legs.filter(rectArea);
+};
+
+/**
  * Carve the through corridors.
  *
  * These are the streets, and they are what stop the board reading as an
@@ -264,24 +315,6 @@ const subtractRect = (rect:Rect, hole:Rect):Rect[] => {
   ].filter(rectArea);
 };
 
-/** Remove the corridor bands from a set of rectangles, leaving the blocks
- *  between them to be subdivided into compartments. */
-const carve = (rects:Rect[], corridor:Corridor):Rect[] =>
-  rects.flatMap((rect) => {
-    if (corridor.axis === "h") {
-      if (corridor.at < rect.row || corridor.at >= rect.row + rect.rows) return [rect];
-      return [
-        { col:rect.col, row:rect.row, cols:rect.cols, rows:corridor.at - rect.row },
-        { col:rect.col, row:corridor.at + 1, cols:rect.cols, rows:rect.row + rect.rows - corridor.at - 1 },
-      ].filter(rectArea);
-    }
-    if (corridor.at < rect.col || corridor.at >= rect.col + rect.cols) return [rect];
-    return [
-      { col:rect.col, row:rect.row, cols:corridor.at - rect.col, rows:rect.rows },
-      { col:corridor.at + 1, row:rect.row, cols:rect.col + rect.cols - corridor.at - 1, rows:rect.rows },
-    ].filter(rectArea);
-  });
-
 // ---------------------------------------------------------------------------
 // Regions and walls
 // ---------------------------------------------------------------------------
@@ -300,18 +333,21 @@ const carve = (rects:Rect[], corridor:Corridor):Rect[] =>
  * between them is therefore a wall, and the doorway pass puts a hatchway in it
  * because the spanning tree has to reconnect them.
  */
-const chooseBulkheads = (lattice:Lattice, corridors:Corridor[], random:() => number) => {
+const chooseBulkheads = (legs:Rect[], random:() => number) => {
   const bulkheads = new Set<string>();
-  corridors.forEach((corridor) => {
-    const extent = corridor.axis === "h" ? lattice.cols : lattice.rows;
-    // Roughly one break every three or four squares, and never at the very ends
-    // where it would seal a single cell off the end of the street.
-    const wanted = Math.max(1, Math.round(extent / 3.5) - 1);
+  legs.forEach((leg) => {
+    const horizontal = leg.cols > leg.rows;
+    const extent = horizontal ? leg.cols : leg.rows;
+    const from = horizontal ? leg.col : leg.row;
+    // Roughly one break every three or four squares of leg, and never at a leg's own
+    // ends — a bulkhead there would seal the corner where it turns into the next leg.
+    const wanted = Math.max(extent >= 4 ? 1 : 0, Math.round(extent / 3.5) - 1);
     for (let attempt = 0, made = 0; attempt < 12 && made < wanted; attempt++) {
-      const at = 2 + Math.floor(random() * Math.max(1, extent - 3));
-      const edge:LatticeEdge = corridor.axis === "h"
-        ? { axis:"v", col:at, row:corridor.at }
-        : { axis:"h", col:corridor.at, row:at };
+      const step = 1 + Math.floor(random() * Math.max(1, extent - 1));
+      if (step <= 0 || step >= extent) continue;
+      const edge:LatticeEdge = horizontal
+        ? { axis:"v", col:from + step, row:leg.row }
+        : { axis:"h", col:leg.col, row:from + step };
       const key = edgeKey(edge);
       if (bulkheads.has(key)) continue;
       bulkheads.add(key);
@@ -479,6 +515,58 @@ const cutDoorways = (
   return doorways;
 };
 
+/**
+ * Put doors in the long bulkheads.
+ *
+ * Recursive subdivision splits a block with a bulkhead spanning the whole block, and
+ * the first block is nearly the whole lattice — so a four-foot complex reliably grew
+ * a stretch of unbroken solid wall 7 or 8 panels long, which is 26 to 30 inches of
+ * blank wall on a 48 inch table. Nothing on a real Gallowdark board looks like that;
+ * a bulkhead that long has hatchways along it.
+ *
+ * Worth being precise about what this does and does not fix, because an earlier
+ * attempt at it missed: dog-legging the corridors breaks the CORRIDOR FLANK runs, but
+ * the longest wall on the board comes from the split lines instead, so it moved the
+ * aggregate not at all. This pass addresses the split lines directly, which is where
+ * the problem actually was.
+ *
+ * Doors are placed on the longest runs first and spaced along them, so the panels go
+ * where they buy the most. Where the hatchway supply runs out the wall simply stays
+ * long — that is honest, and better than punching an open hole and opening a firing
+ * lane through it.
+ */
+const MAX_SOLID_RUN = 4;
+
+const breakLongBulkheads = (
+  boundary:LatticeEdge[], state:Map<string, EdgeState>, hatchSupply:number, random:() => number,
+) => {
+  const used = [...state.values()].filter((value) => value === "hatch").length;
+  let spare = Math.max(0, hatchSupply - used);
+  if (!spare) return;
+
+  const solid = () => boundary.filter((edge) => state.get(edgeKey(edge)) === "wall");
+  // Longest first, so a limited supply of hatchways goes to the worst offenders.
+  const runs = edgeRuns(solid())
+    .filter((run) => run.length > MAX_SOLID_RUN)
+    .sort((first, second) => second.length - first.length);
+
+  for (const run of runs) {
+    if (!spare) break;
+    // Enough doors to bring every resulting segment inside the limit, spaced evenly
+    // along the run rather than clustered at one end.
+    const wanted = Math.min(spare, Math.floor(run.length / (MAX_SOLID_RUN + 1)) || 1);
+    const stride = run.length / (wanted + 1);
+    for (let index = 0; index < wanted && spare; index++) {
+      const jitter = Math.floor(random() * 2);
+      const at = Math.min(run.length - 1, Math.max(0, Math.round(stride * (index + 1)) - 1 + jitter));
+      const edge = run[at];
+      if (state.get(edgeKey(edge)) !== "wall") continue;
+      state.set(edgeKey(edge), "hatch");
+      spare--;
+    }
+  }
+};
+
 // ---------------------------------------------------------------------------
 // The plan
 // ---------------------------------------------------------------------------
@@ -493,6 +581,7 @@ export const buildDeckPlan = (input:DeckPlanInput):DeckPlan => {
   const reserved = (input.reserved ?? []).filter(rectArea);
 
   const corridors = chooseCorridors(lattice, random);
+  const legs = corridors.flatMap((corridor) => corridorLegs(lattice, corridor, random));
   const reservedCells = new Set<string>();
   reserved.forEach((rect) => {
     for (let row = rect.row; row < rect.row + rect.rows; row++) for (let col = rect.col; col < rect.col + rect.cols; col++) {
@@ -501,9 +590,10 @@ export const buildDeckPlan = (input:DeckPlanInput):DeckPlan => {
   });
 
   const corridorCells = new Set<string>();
-  corridors.forEach((corridor) => {
-    if (corridor.axis === "h") for (let col = 0; col < lattice.cols; col++) corridorCells.add(cellKey({ col, row:corridor.at }));
-    else for (let row = 0; row < lattice.rows; row++) corridorCells.add(cellKey({ col:corridor.at, row }));
+  legs.forEach((leg) => {
+    for (let row = leg.row; row < leg.row + leg.rows; row++) for (let col = leg.col; col < leg.col + leg.cols; col++) {
+      corridorCells.add(cellKey({ col, row }));
+    }
   });
   // A reserved hall takes precedence over a street running through it. The corridor
   // simply arrives at the hall and stops, which is what a corridor meeting a hangar
@@ -511,10 +601,10 @@ export const buildDeckPlan = (input:DeckPlanInput):DeckPlan => {
   reservedCells.forEach((key) => corridorCells.delete(key));
 
   let blocks:Rect[] = [{ col:0, row:0, cols:lattice.cols, rows:lattice.rows }];
-  corridors.forEach((corridor) => { blocks = carve(blocks, corridor); });
+  legs.forEach((leg) => { blocks = blocks.flatMap((block) => subtractRect(block, leg)); });
   reserved.forEach((rect) => { blocks = blocks.flatMap((block) => subtractRect(block, rect)); });
 
-  const bulkheads = chooseBulkheads(lattice, corridors, random);
+  const bulkheads = chooseBulkheads(legs, random);
   const trees = blocks.map((rect) => subdivide(rect, 0, roomMax, splitChance, random));
 
   // Roughly one way in per four squares of outside wall, so a small blockhouse has
@@ -562,6 +652,8 @@ export const buildDeckPlan = (input:DeckPlanInput):DeckPlan => {
 
   const state = new Map<string, EdgeState>();
   boundary.forEach((edge) => state.set(edgeKey(edge), doorways.get(edgeKey(edge)) ?? "wall"));
+
+  breakLongBulkheads(boundary, state, hatchSupply, random);
 
   const panelEdges = boundary.filter((edge) => state.get(edgeKey(edge)) !== "open");
 

@@ -613,7 +613,23 @@ export default function Home() {
 
   const generateLayout = () => {
     if (!pieces.length) { setMessage("Place terrain on the board before generating a new layout"); return; }
-    const inventory = pieces.reduce<Record<string, number>>((counts, piece) => ({ ...counts, [piece.defId]:(counts[piece.defId] || 0) + 1 }), {});
+    const placed = pieces.reduce<Record<string, number>>((counts, piece) => ({ ...counts, [piece.defId]:(counts[piece.defId] || 0) + 1 }), {});
+    // Remix stock is the palette OR what is on the board, whichever holds more of
+    // each piece — never the board alone.
+    //
+    // Taking the board alone made this button destructive. The generator
+    // deliberately leaves surplus in the box, so a remix always places fewer pieces
+    // than it was offered; feeding that thinned board back in as the next remix's
+    // inventory shrinks the stock every click. Four presses took a full board down
+    // to a couple of panels and a fifth emptied it. The palette is the inventory —
+    // the board is a result — so a remix draws from the palette and is lossless.
+    //
+    // The max() covers the case the palette cannot: pieces dragged on by hand when
+    // the palette is empty or smaller than the board, which would otherwise have
+    // nothing to remix from.
+    const inventory = Object.fromEntries(TERRAIN.map((def) => [
+      def.id, Math.max(limits[def.id] || 0, placed[def.id] || 0),
+    ]));
     const sourceHeights = pieces.reduce<Record<string, number[]>>((heights, piece) => ({ ...heights, [piece.defId]:[...(heights[piece.defId] || []), piece.height] }), {});
     const catalogues = [...new Set(pieces.map((piece) => getDef(piece.defId).catalogue))];
     generationInventoryRef.current = inventory;
