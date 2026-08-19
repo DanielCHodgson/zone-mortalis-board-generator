@@ -257,10 +257,21 @@ export const invariants = ({ plan, pieces, defs, inventory, boardWidth, boardHei
   // 3. Every doorway the plan promised actually got a hatchway panel. A solid
   //    panel standing in for one would seal a route the connectivity check above
   //    assumed was open.
-  const hatchEdges = plan.panelEdges.filter((edge) => state.get(edgeKey(edge)) === "hatch");
+  //
+  //    Counted against the doorways, not against zero. The test read
+  //    `doorPanels < 1 && hatchEdges.length`, which only ever caught a board with no
+  //    hatchway panels at all — one door against twenty planned doorways passed, and a
+  //    board sealed at nineteen of them would have gone out looking fine. The tiler
+  //    gives every doorway edge its own door panel, so one apiece is the real floor.
+  //
+  //    Restricted to the edges `build` is responsible for, which is the interior plus
+  //    the hull: a perimeter edge lying along the table border is left to the board
+  //    edge and never receives a panel of any kind.
+  const buildable = (edge:LatticeEdge) => !isBorderEdge(lattice, edge) || plan.exterior.has(edgeKey(edge));
+  const hatchEdges = plan.panelEdges.filter((edge) => buildable(edge) && state.get(edgeKey(edge)) === "hatch");
   const doorPanels = pieces.filter((piece) => defs.get(piece.defId)?.kind === "door").length;
-  if (doorPanels < 1 && hatchEdges.length) {
-    failures.push({ rule:"doorways", detail:`${hatchEdges.length} doorways planned, no hatchway panels placed` });
+  if (doorPanels < hatchEdges.length) {
+    failures.push({ rule:"doorways", detail:`${hatchEdges.length} doorways planned, ${doorPanels} hatchway panels placed` });
   }
 
   // 4. Stock. Never more of a piece than the palette owns.

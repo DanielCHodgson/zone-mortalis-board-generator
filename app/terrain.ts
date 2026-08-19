@@ -8,7 +8,7 @@
 
 export type TerrainDef = {
   id: string;
-  catalogue: "boarding" | "ttcombat";
+  catalogue: "boarding" | "mortalis" | "deathray" | "ttcombat";
   name: string;
   shortName: string;
   width: number;
@@ -71,6 +71,35 @@ export const MM_PER_IN = 25.4;
 //
 //     panel_length <= pitch <= panel_length + pillar_width
 export const GALLOWDARK_GRID = 97/25.4;
+
+// Zone Mortalis — the Necromunda range the project is named after — is a DIFFERENT
+// system from Gallowdark, on half the pitch. Its column straddles the intersection
+// exactly as Gallowdark's pillar does, so the same `span` semantics apply; only the
+// number changes.
+//
+// THE PITCH IS 50 MM, and three independent readings agree on it:
+//
+//   - The floor tile is 289 mm square over a 6 x 6 grid. The printed square measures
+//     43 mm with a ~7 mm spacer between squares, and 43 + 7 = 50: the columns sit on
+//     the spacer lines, not inside the squares.
+//   - The kit pairs each piece type in a 1:2 ratio — a 50 mm standard wall and a
+//     95 mm wide wall, a 50 mm standard door and a 95 mm wide door. A 1:2 ratio is
+//     only meaningful against a module, and 95 <= 2 x 50 with 5 mm of slot to spare.
+//   - Death Ray Designs, an independent range built for the same GW tiles, lands on
+//     a flat 2 inch column and 2 inch single wall.
+//
+// Note that 289/6 = 48.16 mm, so the walls do NOT register to the tile edge — five
+// and a bit modules cross a tile. That is correct for the real terrain: the columns
+// are placed by eye on the printed grid, they do not clip to it.
+export const MORTALIS_GRID = 50/25.4;
+// Death Ray Designs' Deadbolt's Derelict works the same joint on a flat 2 inch
+// module: a 2 x 2 in column straddling the node, a 2 in single wall spanning one
+// module, and a 3.7 in double wall spanning two (94 mm into a 101.6 mm span, so it
+// bites 3.8 mm into the column at each end). Kept as its own catalogue rather than
+// folded into `mortalis` because 50.8 vs 50 mm drifts a full 8 mm over ten bays —
+// close enough to mix by hand on a real table, not close enough to put on one
+// lattice.
+export const DEATHRAY_GRID = 50.8/25.4;
 export const BOARD_SIZES = {
   // The card board that ships in the box: 704 x 607 mm. It is a 7 x 6 grid of
   // 97 mm squares with a 12.5 mm border, which checks exactly — 7 x 97 = 679 and
@@ -94,9 +123,24 @@ export const APPEARANCE_STORAGE_KEY = "mortalis-architect-appearance-v1";
  *  which describes what the terrain is made of, not how the app is lit. */
 export type Appearance = "light" | "dark";
 
-export const MANUFACTURERS: Record<CatalogueId, { name:string; range:string }> = {
-  boarding: { name:"Games Workshop", range:"Boarding Actions" },
-  ttcombat: { name:"TTCombat", range:"Iron Labyrinth" },
+/**
+ * `joint` is the assembly model, and it is the only structural difference between
+ * the catalogues that the app's snapping has to care about:
+ *
+ *   straddle — the column sits ON the node, overlapping both squares, and the panel
+ *              slots into it. Pitch = panel length. Gallowdark, Zone Mortalis and
+ *              Deadbolt's Derelict all work this way.
+ *   butt     — the panel butts BETWEEN two connectors. Pitch = panel + connector.
+ *              Iron Labyrinth works this way.
+ *
+ * Two entries share the maker name "Games Workshop", so anything listing
+ * manufacturers must show the range too or the two are indistinguishable.
+ */
+export const MANUFACTURERS: Record<CatalogueId, { name:string; range:string; joint:"straddle" | "butt" }> = {
+  boarding: { name:"Games Workshop", range:"Boarding Actions", joint:"straddle" },
+  mortalis: { name:"Games Workshop", range:"Zone Mortalis", joint:"straddle" },
+  deathray: { name:"Death Ray Designs", range:"Deadbolt's Derelict", joint:"straddle" },
+  ttcombat: { name:"TTCombat", range:"Iron Labyrinth", joint:"butt" },
 } as const;
 
 // Quantities are the verified contents of the Boarding Actions Terrain Set: 68
@@ -148,6 +192,46 @@ export const TERRAIN: TerrainDef[] = [
   { id:"scatter-container", catalogue:"boarding", name:"Munitorum container", shortName:"Container", width:120/MM_PER_IN, depth:60/MM_PER_IN, height:60/MM_PER_IN, limit:0, kind:"scatter", scatter:"large", visual:"container", note:"120 × 60 mm · halls only" },
   { id:"scatter-tank", catalogue:"boarding", name:"Storage tank", shortName:"Storage tank", width:90/MM_PER_IN, depth:110/MM_PER_IN, height:120/MM_PER_IN, limit:0, kind:"scatter", scatter:"large", visual:"tank", note:"90 × 110 mm · halls only" },
 
+  // ---------------------------------------------------------------------------
+  // Zone Mortalis (Games Workshop, Necromunda)
+  //
+  // Pitch 50 mm — see MORTALIS_GRID above. The set is 6 columns, 4 standard walls,
+  // 1 wide wall, 2 standard doors and 2 wide doors, which is 3 column sprues, a
+  // small-wall sprue, a long-wall sprue and a door sprue. The sprue naming is what
+  // settles which of the two wall lengths is "standard": the four come off the SMALL
+  // wall sprue, so standard is the one-module 50 mm piece and wide is the two-module
+  // 95 mm one. Doors come one of each width, two apiece.
+  //
+  // Panel thickness is not published for this range. 10 mm is taken from the visible
+  // proportion of the wall against its 50 mm column and is the one figure here that
+  // is an estimate rather than a reading — it affects only how thick the wall draws,
+  // never where it sits.
+  { id:"zm-column", catalogue:"mortalis", name:"Zone Mortalis column", shortName:"ZM column", width:50/MM_PER_IN, depth:50/MM_PER_IN, height:60/MM_PER_IN, limit:6, kind:"pillar", note:"50 × 50 mm · chamfered corners" },
+  { id:"zm-wall", catalogue:"mortalis", name:"Zone Mortalis standard wall", shortName:"ZM wall", width:50/MM_PER_IN, depth:10/MM_PER_IN, height:60/MM_PER_IN, limit:4, kind:"wall", span:MORTALIS_GRID, visual:"solid", note:"50 × 60 mm · one square" },
+  { id:"zm-wide-wall", catalogue:"mortalis", name:"Zone Mortalis wide wall", shortName:"ZM wide wall", width:95/MM_PER_IN, depth:10/MM_PER_IN, height:60/MM_PER_IN, limit:1, kind:"wall", span:MORTALIS_GRID*2, visual:"reinforced", note:"95 × 60 mm · two squares" },
+  { id:"zm-door", catalogue:"mortalis", name:"Zone Mortalis standard door", shortName:"ZM door", width:50/MM_PER_IN, depth:10/MM_PER_IN, height:60/MM_PER_IN, limit:2, kind:"door", span:MORTALIS_GRID, visual:"door", note:"50 × 60 mm · one square" },
+  { id:"zm-wide-door", catalogue:"mortalis", name:"Zone Mortalis wide door", shortName:"ZM wide door", width:95/MM_PER_IN, depth:10/MM_PER_IN, height:60/MM_PER_IN, limit:2, kind:"door", span:MORTALIS_GRID*2, visual:"door", note:"95 × 60 mm · two squares" },
+
+  // ---------------------------------------------------------------------------
+  // Deadbolt's Derelict (Death Ray Designs, MDF)
+  //
+  // The one range here whose dimensions the maker publishes outright, in inches:
+  // 2 x 2 x 2.75 in columns, 1.3 x 2 x 2.75 in single walls, 1.3 x 3.7 x 2.75 in
+  // doubles. Taller than the GW ranges at 70 mm, and much thicker at 33 mm, because
+  // MDF walls are built as a laminated box rather than moulded as a panel.
+  { id:"drd-column", catalogue:"deathray", name:"Corridor column", shortName:"DRD column", width:50.8/MM_PER_IN, depth:50.8/MM_PER_IN, height:70/MM_PER_IN, limit:24, kind:"pillar", note:"2″ × 2″ × 2.75″" },
+  { id:"drd-single-wall", catalogue:"deathray", name:"Corridor single wall", shortName:"DRD single", width:50.8/MM_PER_IN, depth:33/MM_PER_IN, height:70/MM_PER_IN, limit:20, kind:"wall", span:DEATHRAY_GRID, visual:"solid", note:"2″ long · one module" },
+  { id:"drd-double-wall", catalogue:"deathray", name:"Corridor double wall", shortName:"DRD double", width:94/MM_PER_IN, depth:33/MM_PER_IN, height:70/MM_PER_IN, limit:18, kind:"wall", span:DEATHRAY_GRID*2, visual:"reinforced", note:"3.7″ long · two modules" },
+  // The door set is the weakest data in this file. Death Ray Designs lists the narrow
+  // door with the same 1.3 x 3.7 x 2.75 in figures as the double wall, which cannot be
+  // right for a piece described as narrow, and gives nothing for the wide door. What
+  // is certain is the count — five wide, two narrow — and that they are "fully
+  // compatible with the main set", which on a 2 in module can only mean they occupy
+  // the same one- and two-module widths as the walls. Encoded that way: narrow = one
+  // module, wide = two. Correct with a ruler if you buy the set.
+  { id:"drd-narrow-door", catalogue:"deathray", name:"Corridor narrow door", shortName:"DRD narrow door", width:50.8/MM_PER_IN, depth:33/MM_PER_IN, height:70/MM_PER_IN, limit:2, kind:"door", span:DEATHRAY_GRID, visual:"door", note:"one module · width inferred" },
+  { id:"drd-wide-door", catalogue:"deathray", name:"Corridor wide door", shortName:"DRD wide door", width:94/MM_PER_IN, depth:33/MM_PER_IN, height:70/MM_PER_IN, limit:5, kind:"door", span:DEATHRAY_GRID*2, visual:"door", note:"two modules · width inferred" },
+
   { id:"tt-connector", catalogue:"ttcombat", name:"Iron Labyrinth connector block", shortName:"Connector", width:50/MM_PER_IN, depth:50/MM_PER_IN, height:60/MM_PER_IN, limit:24, kind:"connector", note:"50 × 50 mm" },
   { id:"tt-wall-end", catalogue:"ttcombat", name:"Iron Labyrinth wall end", shortName:"Wall end", width:46/MM_PER_IN, depth:33/MM_PER_IN, height:60/MM_PER_IN, limit:21, kind:"end", note:"46 × 33 mm" },
   { id:"tt-solid-wall", catalogue:"ttcombat", name:"Iron Labyrinth solid wall", shortName:"Solid wall", width:64/MM_PER_IN, depth:33/MM_PER_IN, height:60/MM_PER_IN, limit:8, kind:"wall", visual:"solid", note:"64 × 33 mm" },
@@ -174,6 +258,9 @@ export const BOARDING_INVENTORY = Object.fromEntries(TERRAIN.filter((item) => it
 
 export const TERRAIN_KITS: TerrainKit[] = [
   { id:"boarding-actions", catalogue:"boarding", maker:"Games Workshop", name:"Boarding Actions Terrain Set", description:"Complete Gallowdark wall and hatchway set", source:"Physical-kit measurements and assembly instructions", sourceUrl:"https://buildinstructions.com/pdf-downloads/Boarding-Actions-Terrain-Set.pdf", inventory:BOARDING_INVENTORY },
+  { id:"zm-columns-and-walls", catalogue:"mortalis", maker:"Games Workshop", name:"Zone Mortalis: Columns & Walls", description:"Six columns, five walls and four doors on a 50 mm module", source:"GW published contents; wall and column sizes from community measurement of the range", sourceUrl:"https://www.warhammer.com/en-US/shop/Zone-Mortalis-Columns-And-Walls-2020", inventory:{ "zm-column":6, "zm-wall":4, "zm-wide-wall":1, "zm-door":2, "zm-wide-door":2 }, caveat:"Games Workshop publishes the contents but no dimensions. The 50 mm column, 50 mm standard and 95 mm wide panels are community measurements that three sources agree on; the 10 mm panel thickness is an estimate. The sprues also carry terminals, tanks and pipe connectors that GW does not itemise and nobody has measured — omitted rather than guessed." },
+  { id:"drd-corridors", catalogue:"deathray", maker:"Death Ray Designs", name:"Deadbolt's Derelict: Corridors Bundle", description:"24 columns, 20 single and 18 double walls, sized for the GW Underhive tiles", source:"Maker-published dimensions", sourceUrl:"https://deathraydesigns.com/product/deadbolts-derelict-corridors-bundle/", inventory:{ "drd-column":24, "drd-single-wall":20, "drd-double-wall":18 } },
+  { id:"drd-doors", catalogue:"deathray", maker:"Death Ray Designs", name:"Deadbolt's Derelict: Door Set", description:"Five wide and two narrow doors, each a door in a wall section", source:"Maker-published contents; widths inferred from the module", sourceUrl:"https://deathraydesigns.com/product/deadbolts-derelict-door-set/", inventory:{ "drd-wide-door":5, "drd-narrow-door":2 }, caveat:"Death Ray Designs lists the narrow door with the double wall's dimensions, which cannot be right, and gives none for the wide door. Widths here are inferred from the range's own 2″ module — see terrain.ts." },
   { id:"iron-alpha", catalogue:"ttcombat", maker:"TTCombat", name:"Iron Labyrinth Alpha", description:"Lattice and solid-pipe wall sector", source:"TTCombat published dimensions", sourceUrl:"https://ttcombat.com/products/iron-labyrinth-alpha", inventory:{ "tt-connector":5, "tt-wall-end":3, "tt-grid-wall":2, "tt-solid-pipe-wall":2 } },
   { id:"iron-beta", catalogue:"ttcombat", maker:"TTCombat", name:"Iron Labyrinth Beta", description:"Solid and reinforced wall sector", source:"TTCombat published dimensions", sourceUrl:"https://ttcombat.com/products/iron-labyrinth-beta", inventory:{ "tt-connector":5, "tt-wall-end":3, "tt-solid-wall":2, "tt-reinforced-pipe-wall":2 } },
   { id:"iron-gamma", catalogue:"ttcombat", maker:"TTCombat", name:"Iron Labyrinth Gamma", description:"Fan and vertical-pipe wall sector", source:"TTCombat published dimensions", sourceUrl:"https://ttcombat.com/products/iron-labyrinth-gamma", inventory:{ "tt-connector":5, "tt-wall-end":3, "tt-vertical-pipe-wall":2, "tt-fan-wall":2 } },

@@ -27,6 +27,7 @@
 
 import { cellCentreWorld, edgeKey, edgesOfCell, type LatticeCell } from "./lattice.ts";
 import type { DeckPlan, RegionKind } from "./deckplan.ts";
+import { shuffle } from "./random.ts";
 
 export type ScatterTier = "small" | "medium" | "large";
 
@@ -65,15 +66,6 @@ const overlaps = (
   gap:number,
 ) => first.x < second.x + second.width + gap && first.x + first.width > second.x - gap
   && first.y < second.y + second.height + gap && first.y + first.height > second.y - gap;
-
-const shuffle = <T,>(values:T[], random:() => number) => {
-  const result = [...values];
-  for (let index = result.length - 1; index > 0; index--) {
-    const other = Math.floor(random() * (index + 1));
-    [result[index], result[other]] = [result[other], result[index]];
-  }
-  return result;
-};
 
 export const placeScatter = ({ plan, defs, stock, heights, occupied, nextUid, random }:ScatterInput):ScatterPiece[] => {
   const { lattice } = plan;

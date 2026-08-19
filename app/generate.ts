@@ -17,18 +17,19 @@
  */
 
 import {
-  edgeKey, internalEdgeCount, makeLattice, nodeWorld, pitchIsBuildable, columnBite,
-  type Lattice,
+  cellsOfEdge, edgeKey, internalEdgeCount, makeLattice, nodeWorld, pitchIsBuildable, columnBite,
+  type Lattice, type LatticeEdge,
 } from "./lattice.ts";
 import { buildDeckPlan, renderPlan, type DeckPlan, type Rect } from "./deckplan.ts";
 import { build, type BuildDef, type BuiltPiece } from "./build.ts";
 import { placeScatter, type ScatterTier } from "./scatter.ts";
+import { randomFactory } from "./random.ts";
 import {
   distanceFromReference, invariants, measure,
   PROVISIONAL_REFERENCE, type Metrics, type ReferenceProfile,
 } from "./validate.ts";
 
-export type KitCatalogue = "boarding" | "ttcombat";
+export type KitCatalogue = "boarding" | "mortalis" | "deathray" | "ttcombat";
 
 export type KitDef = {
   id:string;
@@ -92,17 +93,6 @@ export type GenerateReport = {
   note:string;
 };
 
-const randomFactory = (seed:number) => {
-  let state = seed >>> 0;
-  return () => {
-    state += 0x6D2B79F5;
-    let value = state;
-    value = Math.imul(value ^ value >>> 15, value | 1);
-    value ^= value + Math.imul(value ^ value >>> 7, value | 61);
-    return ((value ^ value >>> 14) >>> 0) / 4294967296;
-  };
-};
-
 // ---------------------------------------------------------------------------
 // Reading the kit
 // ---------------------------------------------------------------------------
@@ -110,11 +100,12 @@ const randomFactory = (seed:number) => {
 /**
  * Node-to-node length a piece occupies.
  *
- * The two kits meet their columns differently and this is the only place the
- * difference lives. Gallowdark states a span because the panel slots INTO a column
- * straddling the corner, so the square is the panel length. Iron Labyrinth states
- * none because the wall sits BETWEEN two connector blocks, so the square is the
- * wall plus a connector.
+ * The catalogues meet their columns in one of two ways and this is the only place
+ * the difference lives. A straddling range states a span, because the panel slots
+ * INTO a column sitting on the corner, so the square is the panel length —
+ * Gallowdark, Zone Mortalis and Deadbolt's Derelict. A butting range states none,
+ * because the wall sits BETWEEN two connector blocks, so the square is the wall plus
+ * a connector — Iron Labyrinth.
  */
 const spanOf = (def:KitDef, support:number) => def.span ?? support + def.width;
 
@@ -148,7 +139,7 @@ export const readKit = (defs:KitDef[], inventory:Record<string, number>, catalog
 
   const support = Math.max(...supports.map((def) => Math.max(def.width, def.depth)));
   // The shortest panel defines one square; the longer ones are whole multiples of
-  // it. That is how both kits are cut, and it is why the long Gallowdark panel is
+  // it. That is how every one of these kits is cut, and it is why the long Gallowdark panel is
   // two squares rather than a cell width of its own — offering it as its own cell
   // put the whole board on a 7.6" pitch, which halved the cell count and left the
   // short panels with nothing to fill.
@@ -311,6 +302,12 @@ const rectsOverlap = (
  * them bare is the difference between a sectioned-off structure and a patch of
  * corridors with stubs hanging off it.
  */
+/** `exteriorEdges` returns keys; this reads one back. */
+const parseEdge = (key:string):LatticeEdge => {
+  const [axis, col, row] = key.split(":");
+  return { axis:axis as "h" | "v", col:Number(col), row:Number(row) };
+};
+
 const exteriorEdges = (lattice:Lattice, boardWidth:number, boardHeight:number, support:number) => {
   // The lattice is deliberately inset by half a column wherever it meets a border,
   // so that a column centred on a perimeter node sits hard against the table edge
@@ -343,6 +340,22 @@ const exteriorEdges = (lattice:Lattice, boardWidth:number, boardHeight:number, s
   }
   return exterior;
 };
+
+/**
+ * Whether a perimeter edge borders a reserved cell.
+ *
+ * Decided on the CELL rather than on where the panel's own midpoint would fall.
+ * Midpoints look like the right test — the zone invariant uses them — but they only
+ * describe a panel once its length is known, and the tiler chooses that later: two
+ * adjacent one-cell edges either side of a thin zone both have midpoints outside it,
+ * and the long panel the tiler merges them into has its midpoint square in the
+ * middle. Asking whether the cell is reserved settles it before tiling gets a say.
+ */
+const edgeBordersReserved = (lattice:Lattice, edge:LatticeEdge, reserved:Rect[]) =>
+  reserved.length > 0 && cellsOfEdge(lattice, edge).some((cell) => cell !== null && reserved.some(
+    (rect) => cell.col >= rect.col && cell.col < rect.col + rect.cols
+      && cell.row >= rect.row && cell.row < rect.row + rect.rows,
+  ));
 
 /**
  * Reserved zones, expressed as whole lattice cells.
@@ -509,6 +522,7 @@ export const generate = (input:GenerateInput):GenerateReport => {
     }
   }
 
+  const free = excluding ? largestFreeRect(boardWidth, boardHeight, zones) : null;
   const random = randomFactory(seed);
   const candidates = input.candidates ?? 40;
   // Spend up to reference density and no further, with a little headroom for
@@ -525,8 +539,9 @@ export const generate = (input:GenerateInput):GenerateReport => {
   // own perimeter and had 11 left for the entire interior. That is why 30 x 22 came
   // out identical at one, two and four sets — the cap, not the kit, was the limit —
   // and why every inset board sat at 0.38 interior density against a 0.52 target.
-  const interiorCap = Math.round(internalEdgeCount(sized.cols, sized.rows) * Math.min(1, reference.density * 1.15));
-  let interiorBudget = Math.min(spendable, interiorCap);
+  const interiorCapFor = (atCols:number, atRows:number) =>
+    Math.round(internalEdgeCount(atCols, atRows) * Math.min(1, reference.density * 1.15));
+  let interiorBudget = Math.min(spendable, interiorCapFor(cols, rows));
   let best:{ pieces:BuiltPiece[]; metrics:Metrics; lattice:Lattice; plan:DeckPlan; score:number } | null = null;
   const maxSight = Math.max(3, Math.round(reference.longestSight + 2));
 
@@ -549,7 +564,6 @@ export const generate = (input:GenerateInput):GenerateReport => {
     // origins are drawn from the clear area rather than from the board as a whole.
     // Flush-and-centre positions relative to the whole board will happily never land in
     // the clear area at all.
-    const free = excluding ? largestFreeRect(boardWidth, boardHeight, zones) : null;
     const options = free
       ? Array.from({ length:12 }, () => ({
         x:free.x + random() * Math.max(0, free.width - gridWidth),
@@ -568,13 +582,24 @@ export const generate = (input:GenerateInput):GenerateReport => {
     // The outside wall is not optional and not negotiable, so it is added on top of
     // the interior allowance rather than taken out of it — capped by what the kit
     // actually holds, so a hull it cannot afford still fails honestly in `build`.
-    const exterior = exteriorEdges(lattice, boardWidth, boardHeight, kit.support);
+    // ...minus the stretches of it that border a reserved cell. Reserved cells are
+    // rounded outward and then clamped to the lattice, so a zone drawn overhanging the
+    // complex leaves its own boundary sitting exactly on the lattice perimeter — and
+    // that perimeter is inside the rectangle the user drew. Walling it puts panels in a
+    // zone whose entire promise is that nothing is generated in it, which the zone
+    // invariant then rejects, seed after seed. Leaving the gap open is the right answer
+    // as well as the passing one: the zone is an apron, and the complex opens onto it.
+    const reserved = reservedRects(lattice, zones);
+    const exterior = new Set(
+      [...exteriorEdges(lattice, boardWidth, boardHeight, kit.support)]
+        .filter((key) => !edgeBordersReserved(lattice, parseEdge(key), reserved)),
+    );
     const plan = buildDeckPlan({
       lattice,
       wallEdgeBudget:Math.min(spendable, interiorBudget + exterior.size),
       hatchSupply:kit.doorways,
       exterior,
-      reserved:reservedRects(lattice, zones),
+      reserved,
       random,
     });
 
@@ -582,20 +607,33 @@ export const generate = (input:GenerateInput):GenerateReport => {
     const built = build({ plan, defs:kit.buildDefs, stock, heights, nextUid, seed:seed + attempt * 7919 });
     if (!built.ok) {
       rejected[built.reason.replace(/\d+/g, "n")] = (rejected[built.reason.replace(/\d+/g, "n")] ?? 0) + 1;
-      // Out of stock at this size. Ask for a slightly smaller plan rather than
-      // abandoning the board: fewer, larger compartments is a real board, and a
-      // plan the kit cannot finish is not.
-      interiorBudget = Math.max(4, Math.floor(interiorBudget * .92));
-      // Trimming the budget cannot help when the problem is the FOOTPRINT: a reserved
-      // hall's own boundary walls are not compartments, so no amount of merging removes
-      // them, and a zone that swallows the lattice leaves nothing to partition at all.
-      // Both stall until the lattice itself gets smaller. Shrinking the long axis keeps
-      // the proportions sane while it looks for a size that fits beside the zone.
-      if (attempt % 4 === 3) {
+      // Two levers, and which one is right depends on what ran out.
+      //
+      // Trimming the interior budget merges compartments, and fewer larger rooms is a
+      // real board — but it can ONLY reduce interior density, so it is the wrong lever
+      // whenever density is already at the reference. Shrinking the lattice is the
+      // other way round: it cuts the hull and the node count, which is what a complex
+      // short of columns or paying for a big perimeter actually needs.
+      //
+      // So the budget gives way down to the reference density and no further, and past
+      // that the FOOTPRINT gives way instead. Pulling the budget lever regardless is
+      // how a 4' board with one set came out at its full footprint with a 0.37 interior
+      // where a smaller complex would have hit 0.52 properly — and a column shortage
+      // never responds to it at all, because a hull and a reserved hall's boundary are
+      // not compartments and no amount of merging removes them.
+      const shrink = () => {
         if (cols >= rows && cols > 3) cols--;
         else if (rows > 3) rows--;
         else if (cols > 2) cols--;
-      }
+        else return false;
+        interiorBudget = Math.min(spendable, interiorCapFor(cols, rows));
+        return true;
+      };
+      const atReference = interiorBudget <= internalEdgeCount(cols, rows) * reference.density;
+      const shrinkFirst = built.reason.startsWith("out of columns") || atReference;
+      // Once the lattice is down to its floor there is nothing left to give but the
+      // budget, so keep trimming rather than spinning through the remaining attempts.
+      if (!shrinkFirst || !shrink()) interiorBudget = Math.max(4, Math.floor(interiorBudget * .92));
       continue;
     }
 
@@ -626,8 +664,7 @@ export const generate = (input:GenerateInput):GenerateReport => {
   // off the lattice that was actually kept rather than the size sizing first proposed.
   const gridWidth = best.lattice.cols * best.lattice.pitchX;
   const gridHeight = best.lattice.rows * best.lattice.pitchY;
-  const builtCells = best.metrics ? best.plan.panelEdges.length : 0;
-  const leftover = Math.max(0, kit.capacity - builtCells);
+  const leftover = Math.max(0, kit.capacity - best.plan.panelEdges.length);
 
   // Scatter dresses the finished deck: crates in the corridors, machinery in the
   // halls. Placed last, after the layout has passed every invariant, so it cannot
@@ -638,16 +675,25 @@ export const generate = (input:GenerateInput):GenerateReport => {
       id:def.id, width:def.width, depth:def.depth, height:def.height,
       tier:def.scatter ?? tierFor(def.width, def.depth),
     }));
+  // The plan-space footprint of a placed piece. Scatter and accessories both need it
+  // to keep off the terrain already on the board.
+  //
+  // Measured against the WHOLE catalogue, not `kit.buildDefs`. buildDefs holds only
+  // panels, columns and caps, so every scatter piece missed the lookup and fell back
+  // to a 0.5" stub — which let the open-deck pass drop a 120 mm container on top of a
+  // conduit it had placed moments earlier, because it thought both were half-inch dots.
+  // `length` in buildDefs is `width` here, so the catalogue serves both.
+  const sizeOf = new Map(defs.map((def) => [def.id, { along:def.width, across:def.depth }]));
+  const boxOf = (piece:BuiltPiece) => {
+    const size = sizeOf.get(piece.defId);
+    const along = size?.along ?? .5;
+    const across = size?.across ?? .5;
+    return piece.rotation === 90
+      ? { x:piece.x, y:piece.y, width:across, height:along }
+      : { x:piece.x, y:piece.y, width:along, height:across };
+  };
+
   if (scatterDefs.length) {
-    const defMap = new Map(kit.buildDefs.map((def) => [def.id, def]));
-    const boxOf = (piece:BuiltPiece) => {
-      const def = defMap.get(piece.defId);
-      const along = def?.length ?? .5;
-      const across = def?.depth ?? .5;
-      return piece.rotation === 90
-        ? { x:piece.x, y:piece.y, width:across, height:along }
-        : { x:piece.x, y:piece.y, width:along, height:across };
-    };
     const wanted = Object.fromEntries(scatterDefs.map((def) => [def.id, Math.round((inventory[def.id] ?? 0) * usage)]));
     const inside = placeScatter({
       plan:best.plan, defs:scatterDefs, stock:wanted, heights,
@@ -717,7 +763,7 @@ export const generate = (input:GenerateInput):GenerateReport => {
             width, height,
           };
           if (rectsOverlap(rect, complex) || zoneOverlapArea(rect, zones) > 0) continue;
-          if (pieces.some((piece) => rectsOverlap(rect, { x:piece.x, y:piece.y, width, height }))) continue;
+          if (pieces.some((piece) => rectsOverlap(rect, boxOf(piece)))) continue;
           pieces.push({
             uid:nextUid(), defId:def.id, x:rect.x, y:rect.y, rotation,
             height:heights[def.id] ?? def.height,

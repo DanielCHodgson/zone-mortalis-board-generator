@@ -37,6 +37,7 @@ import {
   type EdgeState, type LatticeEdge, type LatticeNode, type Lattice,
 } from "./lattice.ts";
 import type { DeckPlan } from "./deckplan.ts";
+import { randomFactory, shuffle } from "./random.ts";
 
 export type PanelKind = "wall" | "door";
 export type NodeKind = "pillar" | "connector" | "end";
@@ -78,7 +79,7 @@ export type BuiltPiece = {
 };
 
 export type BuildResult =
-  | { ok:true; pieces:BuiltPiece[]; panels:number; doorPanels:number; looseColumns:number; caps:number; spent:number }
+  | { ok:true; pieces:BuiltPiece[] }
   | { ok:false; reason:string };
 
 export type BuildInput = {
@@ -89,26 +90,6 @@ export type BuildInput = {
   heights:Record<string, number>;
   nextUid:() => string;
   seed:number;
-};
-
-const randomFactory = (seed:number) => {
-  let state = seed >>> 0;
-  return () => {
-    state += 0x6D2B79F5;
-    let value = state;
-    value = Math.imul(value ^ value >>> 15, value | 1);
-    value ^= value + Math.imul(value ^ value >>> 7, value | 61);
-    return ((value ^ value >>> 14) >>> 0) / 4294967296;
-  };
-};
-
-const shuffle = <T,>(values:T[], random:() => number) => {
-  const result = [...values];
-  for (let index = result.length - 1; index > 0; index--) {
-    const other = Math.floor(random() * (index + 1));
-    [result[index], result[other]] = [result[other], result[index]];
-  }
-  return result;
 };
 
 /** A panel as placed: which edges it covers, and which nodes it terminates on. */
@@ -219,7 +200,21 @@ export const build = ({ plan, defs, stock, heights, nextUid, seed }:BuildInput):
   const random = randomFactory(seed);
   const working = new Map(stock);
 
-  const panelEdges = plan.panelEdges.filter((edge) => !isBorderEdge(lattice, edge));
+  // Interior edges, plus the perimeter edges the plan marked as the complex's own
+  // outside wall.
+  //
+  // This dropped EVERY perimeter edge, which silently threw the hull away. A centred
+  // 5 x 6 complex on a four-foot table plans 47 wall-cells of which 22 are its own
+  // exterior, so two fifths of the plan was budgeted for, validated, drawn in the
+  // ASCII map — and then never placed. The result was an unenclosed patch of interior
+  // walls with stubs hanging off it, which is precisely the failure `exteriorEdges`
+  // exists to prevent, and the interior was starved by the hull's worth of budget it
+  // had been charged for and did not spend.
+  //
+  // A perimeter edge NOT in `exterior` is one lying along the table edge, and that
+  // one genuinely needs no panel: the board border is the wall.
+  const panelEdges = plan.panelEdges.filter((edge) =>
+    !isBorderEdge(lattice, edge) || plan.exterior.has(edgeKey(edge)));
   if (!panelEdges.length) return { ok:false, reason:"plan carries no panels" };
 
   // Runs are tiled in a shuffled order. Tiling them as listed let one orientation
@@ -263,8 +258,6 @@ export const build = ({ plan, defs, stock, heights, nextUid, seed }:BuildInput):
 
   const columnDefs = defs.filter((def) => def.kind === "pillar" || def.kind === "connector");
   const capDefs = defs.filter((def) => def.kind === "end");
-  let looseColumns = 0;
-  let caps = 0;
 
   for (const entry of [...ends.values()].sort((first, second) => second.count - first.count)) {
     // A node with a single panel arriving is a run terminus, and that is what a
@@ -276,7 +269,6 @@ export const build = ({ plan, defs, stock, heights, nextUid, seed }:BuildInput):
       return { ok:false, reason:`out of columns: ${ends.size} nodes need one` };
     }
     working.set(def.id, working.get(def.id)! - 1);
-    if (cap) caps++; else looseColumns++;
 
     const world = nodeWorld(lattice, entry.node);
     // The Gallowdark column is 28 x 25 mm — not square — so it is turned to run
@@ -291,9 +283,5 @@ export const build = ({ plan, defs, stock, heights, nextUid, seed }:BuildInput):
     });
   }
 
-  const doorPanels = placements.filter((placement) => placement.def.kind === "door").length;
-  return {
-    ok:true, pieces, panels:placements.length, doorPanels, looseColumns, caps,
-    spent:placements.length + looseColumns + caps,
-  };
+  return { ok:true, pieces };
 };

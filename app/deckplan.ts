@@ -37,9 +37,10 @@
  */
 
 import {
-  allEdges, cellInside, cellKey, edgeKey, edgeRuns, edgesOfCell, internalEdges, isBorderEdge, makeLattice,
+  allEdges, cellInside, cellKey, edgeKey, edgeRuns, internalEdges, isBorderEdge,
   type EdgeState, type LatticeCell, type LatticeEdge, type Lattice,
 } from "./lattice.ts";
+import { shuffle as shuffled } from "./random.ts";
 
 export type Rect = { col:number; row:number; cols:number; rows:number };
 
@@ -56,6 +57,14 @@ export type DeckPlan = {
   cellRegion:Int32Array;
   /** Edges carrying a panel of any kind, in no particular order. */
   panelEdges:LatticeEdge[];
+  /**
+   * Perimeter edges that face open deck, as edge keys, and so are the complex's own
+   * outside wall rather than the table edge.
+   *
+   * Carried on the plan because `build` cannot tell the two apart from the lattice
+   * alone: both are `isBorderEdge`, and the difference is where the board ends.
+   */
+  exterior:Set<string>;
   corridorCount:number;
 };
 
@@ -108,15 +117,6 @@ type SplitNode = {
 };
 
 const rectArea = (rect:Rect) => rect.cols * rect.rows;
-
-const shuffled = <T,>(values:T[], random:() => number) => {
-  const result = [...values];
-  for (let index = result.length - 1; index > 0; index--) {
-    const other = Math.floor(random() * (index + 1));
-    [result[index], result[other]] = [result[other], result[index]];
-  }
-  return result;
-};
 
 /**
  * Recursively subdivide a rectangle with straight bulkheads.
@@ -659,7 +659,7 @@ export const buildDeckPlan = (input:DeckPlanInput):DeckPlan => {
 
   return {
     lattice, state, regions:assigned.regions, cellRegion:assigned.cellRegion,
-    panelEdges, corridorCount:corridors.length,
+    panelEdges, exterior, corridorCount:corridors.length,
   };
 };
 
@@ -705,13 +705,3 @@ export const renderPlan = (plan:DeckPlan) => {
   return lines.join("\n");
 };
 
-/** A lattice sized to a board, for callers that only have inches. */
-export const latticeForBoard = (
-  cols:number, rows:number, pitchX:number, pitchY:number, boardWidth:number, boardHeight:number,
-) => makeLattice(
-  cols, rows, pitchX, pitchY,
-  (boardWidth - cols * pitchX) / 2, (boardHeight - rows * pitchY) / 2,
-);
-
-export { leavesOf as compartmentsOf };
-export const edgesAroundCell = edgesOfCell;

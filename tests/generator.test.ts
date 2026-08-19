@@ -23,7 +23,7 @@ import { generate, readKit, type KitDef } from "../app/generate.ts";
 import { invariants, measure } from "../app/validate.ts";
 import {
   columnBite, edgeKey, edgeRuns, fullyConnected, internalEdgeCount, nodesOfEdge,
-  pitchIsBuildable, sightLines,
+  pitchIsBuildable, sightLines, spanWorld,
 } from "../app/lattice.ts";
 
 const MM = 25.4;
@@ -682,4 +682,42 @@ test("generating with a zone drawn works for every shape a person might drag out
       });
     });
   }));
+});
+
+test("a complex that does not fill the board builds its own outside wall", () => {
+  // `build` filtered out EVERY perimeter edge, so the hull was planned, budgeted and
+  // drawn in the ASCII map, then silently never placed. A centred 5 x 6 complex on a
+  // four-foot table plans 22 of its 44 wall-cells as exterior, so two fifths of the
+  // plan went missing and what came out was an unenclosed patch of interior walls with
+  // stubs hanging off it — while the interior was starved by the hull's worth of budget
+  // it had been charged for and did not spend.
+  //
+  // Asserted on the pieces rather than on the plan, because the plan was always right.
+  SEEDS.forEach((seed) => {
+    const { report } = run({ width:48, height:48, sets:1, seed, anchor:"centre" });
+    const lattice = report.lattice!;
+    assert.ok(report.plan, `seed ${seed}: nothing built`);
+
+    const hull = report.plan!.exterior;
+    assert.ok(hull.size > 0, `seed ${seed}: a centred complex on a 4' board should have an exterior`);
+
+    // A panel covers its span; a two-cell panel sits centred across the node between
+    // its edges. So an exterior edge is served if any panel's rectangle covers the
+    // midpoint of that edge.
+    const covered = (key:string) => {
+      const [axis, col, row] = key.split(":");
+      const edge = { axis:axis as "h" | "v", col:Number(col), row:Number(row) };
+      const mid = spanWorld(lattice, edge).centre;
+      return report.pieces.some((piece) => {
+        const def = TERRAIN.find((candidate) => candidate.id === piece.defId)!;
+        if (def.kind !== "wall" && def.kind !== "door") return false;
+        const width = piece.rotation === 90 ? def.depth : def.width;
+        const height = piece.rotation === 90 ? def.width : def.depth;
+        return mid.x >= piece.x - .05 && mid.x <= piece.x + width + .05
+          && mid.y >= piece.y - .05 && mid.y <= piece.y + height + .05;
+      });
+    };
+    const bare = [...hull].filter((key) => !covered(key));
+    assert.deepEqual(bare, [], `seed ${seed}: ${bare.length} of ${hull.size} exterior edges got no panel`);
+  });
 });

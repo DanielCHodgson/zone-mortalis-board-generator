@@ -30,7 +30,18 @@ type ReservedZone = {
 
 type ZoneCorner = "nw" | "ne" | "sw" | "se";
 
+/** One way a dragged piece could meet a fixed one: the offset that joins them, and
+ *  the rotation the move implies where the joint only works at right angles (a wall
+ *  end capping a run, or a wall meeting a connector face). */
+type ConnectionCandidate = { dx:number; dy:number; rotation?:0 | 90 };
+
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+
+/** Decorrelates the seeds of the several lattices a mixed board generates, so two
+ *  catalogues on the same table at the same size do not come out mirror-identical.
+ *  Derived from the id so a new catalogue needs nothing added here. */
+const catalogueSalt = (catalogue: CatalogueId) =>
+  [...catalogue].reduce((hash, character) => (hash * 31 + character.charCodeAt(0)) >>> 0, 17);
 
 export default function Home() {
   const boardRef = useRef<HTMLDivElement>(null);
@@ -95,8 +106,18 @@ export default function Home() {
   const catalogueTotal = catalogueTerrain.reduce((sum, item) => sum + (limits[item.id] || 0), 0);
   const activeKitTotal = kitTerrain.reduce((sum, item) => sum + (activeCatalogueMeta.inventory[item.id] || 0), 0);
   const paletteMaker = paletteCatalogues.length ? paletteCatalogues.map((catalogue) => MANUFACTURERS[catalogue].name).join(" + ") : null;
-  const paletteLabel = paletteCatalogues.length > 1 ? "Mixed terrain palette" : paletteCatalogues[0] === "boarding" ? "Boarding Actions palette" : paletteCatalogues[0] === "ttcombat" ? "Iron Labyrinth palette" : "Empty palette";
+  // Named from the catalogue rather than spelled out per range: with the two names
+  // hard-coded, a Zone Mortalis or Deadbolt's Derelict palette fell through to
+  // "Empty palette" while holding a full kit.
+  const paletteLabel = paletteCatalogues.length > 1
+    ? "Mixed terrain palette"
+    : paletteCatalogues[0] ? `${MANUFACTURERS[paletteCatalogues[0]].range} palette` : "Empty palette";
   const generationCatalogue = paletteCatalogues[0] || activeCatalogue;
+  // Whether the generated board is described in straddling-column or butting-
+  // connector terms. Was `generationCatalogue === "boarding"`, so Zone Mortalis and
+  // Deadbolt's Derelict — both straddling ranges — got Iron Labyrinth's copy.
+  const generationJoint = MANUFACTURERS[generationCatalogue].joint;
+  const generationRange = MANUFACTURERS[generationCatalogue].range;
   const selectedPiece = pieces.find((piece) => piece.uid === selected) || null;
   const used = useMemo(() => pieces.reduce<Record<string, number>>((acc, piece) => ({ ...acc, [piece.defId]: (acc[piece.defId] || 0) + 1 }), {}), [pieces]);
   const paletteUsed = catalogueTerrain.reduce((sum, def) => sum + Math.min(used[def.id] || 0, limits[def.id] || 0), 0);
@@ -260,21 +281,26 @@ export default function Home() {
       : [{ x:rect.x + rect.width / 2, y:rect.y }, { x:rect.x + rect.width / 2, y:rect.y + rect.height }];
   };
   const connectorFaces = (piece: PlacedPiece) => { const rect = pieceRect(piece); return [{ x:rect.x, y:rect.y + rect.height / 2 }, { x:rect.x + rect.width, y:rect.y + rect.height / 2 }, { x:rect.x + rect.width / 2, y:rect.y }, { x:rect.x + rect.width / 2, y:rect.y + rect.height }]; };
-  const connectionCandidates = (moving: PlacedPiece, fixed: PlacedPiece) => {
+  const connectionCandidates = (moving: PlacedPiece, fixed: PlacedPiece): ConnectionCandidate[] => {
     const movingDef = getDef(moving.defId);
     const fixedDef = getDef(fixed.defId);
     const movingStructural = ["wall", "door"].includes(movingDef.kind);
     const fixedStructural = ["wall", "door"].includes(fixedDef.kind);
     if (movingDef.catalogue !== fixedDef.catalogue) {
       const hasSpecialFace = (def: TerrainDef) => ["pipe", "vertical-pipe", "floor", "stair"].includes(def.visual || "");
-      if (!movingStructural || !fixedStructural || hasSpecialFace(movingDef) || hasSpecialFace(fixedDef)) return [] as Array<{ dx:number;dy:number;rotation?:0|90 }>;
-      if (Math.abs(movingDef.depth - fixedDef.depth) > .55) return [] as Array<{ dx:number;dy:number;rotation?:0|90 }>;
+      if (!movingStructural || !fixedStructural || hasSpecialFace(movingDef) || hasSpecialFace(fixedDef)) return [];
+      if (Math.abs(movingDef.depth - fixedDef.depth) > .55) return [];
       return structuralEndpoints(moving).flatMap((movingPoint) => structuralEndpoints(fixed).map((fixedPoint) => ({ dx:fixedPoint.x - movingPoint.x, dy:fixedPoint.y - movingPoint.y })));
     }
     let movingPoints: Array<{x:number;y:number}> = [];
     let fixedPoints: Array<{x:number;y:number}> = [];
     let rotation: 0 | 90 | undefined;
-    if (movingDef.catalogue === "boarding") {
+    // Branch on the JOINT MODEL, not the maker. A straddling column takes panel
+    // ends at its centre; a butting connector takes them at its faces. Gallowdark,
+    // Zone Mortalis and Deadbolt's Derelict all straddle, so keying this on
+    // `=== "boarding"` silently gave the two new straddling ranges the connector
+    // treatment and snapped their panels half a column out of place.
+    if (MANUFACTURERS[movingDef.catalogue].joint === "straddle") {
       if (movingStructural && fixedStructural) { movingPoints = structuralEndpoints(moving); fixedPoints = structuralEndpoints(fixed); }
       else if (movingStructural && fixedDef.kind === "pillar") { movingPoints = structuralEndpoints(moving); fixedPoints = [pieceCentre(fixed)]; }
       else if (movingDef.kind === "pillar" && fixedStructural) { movingPoints = [pieceCentre(moving)]; fixedPoints = structuralEndpoints(fixed); }
@@ -571,7 +597,7 @@ export default function Home() {
     // The palette IS the inventory. Wanting a second set means adding it from the kit
     // browser above, which is where quantities belong.
     const inventory = Object.fromEntries(TERRAIN.map((def) => [def.id, override ? override[def.id] || 0 : limits[def.id] || 0]));
-    const seed = (Date.now() + uidRef.current * 2654435761 + boardWidth * 101 + boardHeight * 211 + (catalogue === "boarding" ? 17 : 53)) >>> 0;
+    const seed = (Date.now() + uidRef.current * 2654435761 + boardWidth * 101 + boardHeight * 211 + catalogueSalt(catalogue)) >>> 0;
     const report = generate({
       boardWidth,
       boardHeight,
@@ -594,8 +620,13 @@ export default function Home() {
     if (!catalogueTotal) { setMessage("Add terrain to the current palette before generating"); return; }
     if (!catalogueTerrain.some((def) => ["wall", "door", "floor", "stair"].includes(def.kind))) { setMessage("Add at least one wall, door, floor, or stair piece before generating"); return; }
     const layouts: PlacedPiece[][] = [];
-    if (paletteCatalogues.includes("boarding")) layouts.push(generateSpatialSystem("boarding"));
-    if (paletteCatalogues.includes("ttcombat")) layouts.push(generateSpatialSystem("ttcombat"));
+    // Every catalogue in the palette, not the two that used to be named here. With
+    // the pair hard-coded, adding a Zone Mortalis or Deadbolt's Derelict kit built a
+    // palette the button then silently ignored — it generated the Boarding Actions
+    // half of a mixed palette and left the new range sitting in the inventory.
+    (Object.keys(MANUFACTURERS) as CatalogueId[])
+      .filter((id) => paletteCatalogues.includes(id))
+      .forEach((id) => layouts.push(generateSpatialSystem(id)));
     const finalized = layouts.length === 1 ? layouts[0] : mergeGeneratedSystems(layouts);
     if (!finalized.length) {
       // The generator explains why it refused, and the reason is usually
@@ -635,8 +666,11 @@ export default function Home() {
     generationInventoryRef.current = inventory;
     try {
       const layouts: PlacedPiece[][] = [];
-      if (catalogues.includes("boarding")) layouts.push(generateSpatialSystem("boarding"));
-      if (catalogues.includes("ttcombat")) layouts.push(generateSpatialSystem("ttcombat"));
+      // Every catalogue on the table gets its own lattice. This was two hard-coded
+      // lines, so a board built from any later-added range generated nothing at all.
+      (Object.keys(MANUFACTURERS) as CatalogueId[])
+        .filter((id) => catalogues.includes(id))
+        .forEach((id) => layouts.push(generateSpatialSystem(id)));
       const generated = layouts.length === 1 ? layouts[0] : mergeGeneratedSystems(layouts);
       // Use the layout the generator actually built.
       //
@@ -1109,7 +1143,7 @@ export default function Home() {
       <section className="workspace">
         <aside className="catalogue panel">
           <div className="catalogue-selectors" aria-label="Terrain source">
-            <label><span>Manufacturer</span><select value={activeCatalogue} onChange={(event) => selectManufacturer(event.target.value as CatalogueId)}>{(Object.keys(MANUFACTURERS) as CatalogueId[]).map((catalogueId) => <option key={catalogueId} value={catalogueId}>{MANUFACTURERS[catalogueId].name}</option>)}</select></label>
+            <label><span>Manufacturer</span><select value={activeCatalogue} onChange={(event) => selectManufacturer(event.target.value as CatalogueId)}>{(Object.keys(MANUFACTURERS) as CatalogueId[]).map((catalogueId) => <option key={catalogueId} value={catalogueId}>{MANUFACTURERS[catalogueId].name} · {MANUFACTURERS[catalogueId].range}</option>)}</select></label>
             <label><span>Kit</span><select value={activeKitId} onChange={(event) => selectKit(event.target.value)}>{manufacturerKits.map((kit) => <option key={kit.id} value={kit.id}>{kit.name}</option>)}</select></label>
           </div>
           <section className="kit-browser" aria-labelledby="kit-browser-heading">
@@ -1209,16 +1243,16 @@ export default function Home() {
           <div className="metric"><span>Generator palette</span><strong>{paletteMaker || "None"}</strong></div>
           <div className="metric"><span>Footprint coverage</span><strong>{coverage.toFixed(1)}%</strong></div><div className="meter"><i style={{ width:`${Math.min(coverage * 5, 100)}%` }} /></div>
           <div className="metric"><span>Reserved clear space</span><strong>{zones.length} · {reservedCoverage.toFixed(1)}%</strong></div>
-          <div className="metric"><span>{paletteCatalogues.length > 1 ? "Walls + hatchways" : generationCatalogue === "boarding" ? "Operable hatchways" : "Wall modules"}</span><strong>{paletteCatalogues.length > 1 ? wallPieces.length : generationCatalogue === "boarding" ? doors : wallPieces.length}</strong></div><div className="metric"><span>Corridor loops</span><strong>{loops}</strong></div><div className="metric"><span>Open chambers</span><strong>{chambers}</strong></div>
+          <div className="metric"><span>{paletteCatalogues.length > 1 ? "Walls + hatchways" : generationJoint === "straddle" ? "Operable doorways" : "Wall modules"}</span><strong>{paletteCatalogues.length > 1 ? wallPieces.length : generationJoint === "straddle" ? doors : wallPieces.length}</strong></div><div className="metric"><span>Corridor loops</span><strong>{loops}</strong></div><div className="metric"><span>Open chambers</span><strong>{chambers}</strong></div>
           <div className="divider" />
-          <p className="inspector-copy">{paletteCatalogues.length > 1 ? "Each terrain system keeps its physical assembly rules, then compatible ordinary wall faces are aligned across kits. Special pipes, floors, stairs, caps, and proprietary connectors remain system-specific." : generationCatalogue === "boarding" ? "The planner scores 24 connector-node layouts, builds hooked chambers and branching junctions, and keeps separate wall networks at least 2.75 inches apart so the board retains long playable lanes." : "The planner scores 24 connector-node layouts. Every Iron Labyrinth wall is generated as a connector-to-connector edge, while separate networks retain at least 3.8 inches of walkable clearance."}</p>
-          <div className="layout-key">{paletteCatalogues.length > 1 ? <><span><i className="key-wall" /> Compatible wall</span><span><i className="key-door" /> Door / hatch</span><span><i className="key-pillar" /> System support</span></> : generationCatalogue === "boarding" ? <><span><i className="key-wall" /> Wall</span><span><i className="key-door" /> Hatchway</span><span><i className="key-pillar" /> Pillar</span></> : <><span><i className="key-wall" /> Wall</span><span><i className="key-door" /> Wall end</span><span><i className="key-pillar" /> Connector</span></>}</div>
+          <p className="inspector-copy">{paletteCatalogues.length > 1 ? "Each terrain system keeps its physical assembly rules, then compatible ordinary wall faces are aligned across kits. Special pipes, floors, stairs, caps, and proprietary connectors remain system-specific." : generationJoint === "straddle" ? `The planner scores 24 column-node layouts, builds hooked chambers and branching junctions, and keeps separate wall networks far enough apart that the board retains long playable lanes. Every ${generationRange} panel slots into the columns straddling its span.` : `The planner scores 24 connector-node layouts. Every ${generationRange} wall is generated as a connector-to-connector edge, while separate networks retain at least 3.8 inches of walkable clearance.`}</p>
+          <div className="layout-key">{paletteCatalogues.length > 1 ? <><span><i className="key-wall" /> Compatible wall</span><span><i className="key-door" /> Door / hatch</span><span><i className="key-pillar" /> System support</span></> : generationJoint === "straddle" ? <><span><i className="key-wall" /> Wall</span><span><i className="key-door" /> Doorway</span><span><i className="key-pillar" /> Column</span></> : <><span><i className="key-wall" /> Wall</span><span><i className="key-door" /> Wall end</span><span><i className="key-pillar" /> Connector</span></>}</div>
           {catalogueTotal > 0 && <details className="height-settings inspector-height">
             <summary><span><strong>Advanced dimensions</strong><small>3D and export height defaults</small></span><em>Z axis · mm</em></summary>
             <p className="height-explainer">Optional vertical dimensions. They do not change the bird&apos;s-eye footprint.</p>
             <div className="height-grid">
               {familyIsAvailable("wall") && <label><span>Structures</span><input aria-label={`${paletteLabel} structure default height`} type="number" min="10" max="300" step="1" value={familyHeightMm("wall")} onChange={(event) => setFamilyHeightMm("wall", Number(event.target.value))} /></label>}
-              {familyIsAvailable("support") && <label><span>{paletteCatalogues.length > 1 ? "Supports" : generationCatalogue === "boarding" ? "Pillars" : "Connectors"}</span><input aria-label={`${paletteLabel} support default height`} type="number" min="10" max="300" step="1" value={familyHeightMm("support")} onChange={(event) => setFamilyHeightMm("support", Number(event.target.value))} /></label>}
+              {familyIsAvailable("support") && <label><span>{paletteCatalogues.length > 1 ? "Supports" : generationJoint === "straddle" ? "Columns" : "Connectors"}</span><input aria-label={`${paletteLabel} support default height`} type="number" min="10" max="300" step="1" value={familyHeightMm("support")} onChange={(event) => setFamilyHeightMm("support", Number(event.target.value))} /></label>}
               {familyIsAvailable("end") && <label><span>Wall ends</span><input aria-label={`${paletteLabel} end default height`} type="number" min="10" max="300" step="1" value={familyHeightMm("end")} onChange={(event) => setFamilyHeightMm("end", Number(event.target.value))} /></label>}
             </div>
           </details>}

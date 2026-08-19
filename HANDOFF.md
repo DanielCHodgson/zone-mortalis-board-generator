@@ -108,3 +108,45 @@ a line of generation code.
 The generator test suite is **single-shot** — one `generate` call per seed. The
 previous suite's best-of-24 helper is what let a broken generator stay green, so
 please do not reintroduce it.
+
+## Second pass: catalogues added, and the bugs that surfaced
+
+Zone Mortalis (50 mm) and Deadbolt's Derelict (50.8 mm) were added as straddling
+catalogues alongside Gallowdark and Iron Labyrinth. Adding them found seven bugs, in
+rough order of how much they mattered.
+
+1. **`build` never placed the outside wall.** It filtered out every perimeter edge, so
+   a centred 5 x 6 complex on a four-foot board planned 22 of its 44 wall-cells as
+   exterior and placed none of them — an unenclosed patch of interior walls, with the
+   interior starved by the hull budget it had been charged for and did not spend.
+   `DeckPlan` now carries `exterior` and `build` honours it.
+2. **The doorway invariant was toothless.** `doorPanels < 1 && hatchEdges.length` only
+   fired on a board with no hatchway panels at all; one door against twenty planned
+   doorways passed. Now counted against the doorways. This independently catches (1).
+3. **The retry loop pulled the wrong lever.** Trimming the interior budget can only
+   ever reduce interior density, so it was the wrong response to a shortage of columns
+   or a big hull — a 4' board with one set sat at its full footprint with a 0.37
+   interior. The budget now gives way down to the reference density and the FOOTPRINT
+   gives way past that.
+4. **The hull was built through reserved zones.** Reserved cells round outward and then
+   clamp to the lattice, so a zone overhanging the complex left its boundary on the
+   lattice perimeter — inside the drawn rectangle. Perimeter edges bordering a reserved
+   cell are no longer walled. Decided on the CELL, not the panel midpoint: two one-cell
+   edges either side of a thin zone both have midpoints outside it, and the long panel
+   the tiler merges them into does not.
+5. **`boxOf` could not measure scatter**, because it read `kit.buildDefs` (panels,
+   columns and caps only). Every scatter piece fell back to a 0.5" stub, so the
+   open-deck pass dropped a 120 mm container on top of a conduit. Now reads the
+   catalogue.
+6. **The accessory overlap test used the candidate's own dimensions for every existing
+   piece** — a 194 mm floor tile tested itself against 194 mm boxes centred on every
+   wall and pillar on the board.
+7. **`interiorCap` was frozen at the pre-shrink lattice size**, so the density ceiling
+   stopped applying once a lattice shrank.
+
+Four UI call sites hard-coded `catalogue === "boarding"` or named the two catalogues
+literally; the worst made "Generate from palette" silently ignore any later-added
+range. The joint model now lives in `MANUFACTURERS[...].joint` and nothing branches on
+a maker name. `randomFactory` and `shuffle` were four byte-identical copies across four
+modules and are now `app/random.ts`; seven dead exports and five unread `BuildResult`
+fields are gone.

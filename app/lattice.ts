@@ -72,9 +72,6 @@ export const makeLattice = (
   cols:number, rows:number, pitchX:number, pitchY:number, originX:number, originY:number,
 ):Lattice => ({ cols, rows, pitchX, pitchY, originX, originY });
 
-export const latticeWidth = (lattice:Lattice) => lattice.cols * lattice.pitchX;
-export const latticeHeight = (lattice:Lattice) => lattice.rows * lattice.pitchY;
-
 // ---------------------------------------------------------------------------
 // Keys. String keys throughout: the plan is a map from edge to state, and it is
 // read far more often than it is built.
@@ -83,11 +80,6 @@ export const latticeHeight = (lattice:Lattice) => lattice.rows * lattice.pitchY;
 export const edgeKey = (edge:LatticeEdge) => `${edge.axis}:${edge.col}:${edge.row}`;
 export const cellKey = (cell:LatticeCell) => `${cell.col}:${cell.row}`;
 export const nodeKey = (node:LatticeNode) => `${node.col}:${node.row}`;
-
-export const parseEdgeKey = (key:string):LatticeEdge => {
-  const [axis, col, row] = key.split(":");
-  return { axis:axis as EdgeAxis, col:Number(col), row:Number(row) };
-};
 
 // ---------------------------------------------------------------------------
 // Topology
@@ -141,17 +133,6 @@ export const edgesOfCell = (cell:LatticeCell):LatticeEdge[] => [
   { axis:"v", col:cell.col, row:cell.row },
   { axis:"v", col:cell.col + 1, row:cell.row },
 ];
-
-/** The (up to four) edges meeting at a node. */
-export const edgesAtNode = (lattice:Lattice, node:LatticeNode):LatticeEdge[] =>
-  ([
-    { axis:"h", col:node.col - 1, row:node.row },
-    { axis:"h", col:node.col, row:node.row },
-    { axis:"v", col:node.col, row:node.row - 1 },
-    { axis:"v", col:node.col, row:node.row },
-  ] as LatticeEdge[]).filter((edge) => edge.axis === "h"
-    ? edge.col >= 0 && edge.col < lattice.cols && edge.row >= 0 && edge.row <= lattice.rows
-    : edge.row >= 0 && edge.row < lattice.rows && edge.col >= 0 && edge.col <= lattice.cols);
 
 /** The next edge along the same straight line, in the positive direction. */
 export const nextEdgeAlong = (edge:LatticeEdge):LatticeEdge =>

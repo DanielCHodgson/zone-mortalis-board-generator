@@ -8,28 +8,32 @@
  * Legend: `---`/`|` wall, `-o-`/`o` hatchway, `###`/`#` built outside wall,
  * `===`/`:` free table edge, ` . ` corridor cell, ` Z ` reserved hall.
  *
- * Run: node --experimental-strip-types tests/eyeball.ts [preset] [sets] [count]
+ * Run: node --experimental-strip-types tests/eyeball.ts [preset] [sets] [count] [catalogue]
  */
 
-import { TERRAIN, BOARD_SIZES, type BoardPreset } from "../app/terrain.ts";
+import { TERRAIN, BOARD_SIZES, type BoardPreset, type CatalogueId } from "../app/terrain.ts";
 import { generate } from "../app/generate.ts";
 import { renderPlan } from "../app/deckplan.ts";
 import { edgeRuns } from "../app/lattice.ts";
 
-const BOARDING = Object.fromEntries(
-  TERRAIN.filter((def) => def.catalogue === "boarding" && def.kind !== "scatter").map((def) => [def.id, def.limit]),
-);
-const setsOf = (sets:number) => Object.fromEntries(Object.entries(BOARDING).map(([id, count]) => [id, count * sets]));
-
 const preset = (process.argv[2] ?? "card") as BoardPreset;
 const sets = Number(process.argv[3] ?? 1);
 const count = Number(process.argv[4] ?? 3);
+// Which catalogue to build from. Was hard-coded to Boarding Actions, which meant the
+// only range anyone could eyeball was the one already known to work.
+const catalogue = (process.argv[5] ?? "boarding") as CatalogueId;
+
+const setsOf = (sets:number) => Object.fromEntries(
+  TERRAIN
+    .filter((def) => def.catalogue === catalogue && def.kind !== "scatter")
+    .map((def) => [def.id, def.limit * sets]),
+);
 const { width, height } = BOARD_SIZES[preset];
 
 for (let index = 0; index < count; index++) {
   let uid = 0;
   const report = generate({
-    boardWidth:width, boardHeight:height, catalogue:"boarding",
+    boardWidth:width, boardHeight:height, catalogue,
     defs:TERRAIN, inventory:setsOf(sets), heights:{}, zones:[], anchor:"auto",
     seed:(index * 2654435761 + 7) >>> 0, nextUid:() => `u${uid++}`,
   });

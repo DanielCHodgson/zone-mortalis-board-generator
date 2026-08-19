@@ -8,7 +8,9 @@ editing, procedural layout generation, layout analysis, and PNG export.
 
 - One and two Boarding Actions card boards (the real 704 x 607 mm grid), plus
   30″ × 22″, 2′ × 2′, 4′ × 2′ and 4′ × 4′.
-- Games Workshop Boarding Actions and TTCombat Iron Labyrinth catalogues.
+- Four terrain catalogues, on three different pitches: Games Workshop Boarding
+  Actions (97 mm), Games Workshop Zone Mortalis (50 mm), Death Ray Designs
+  Deadbolt's Derelict (50.8 mm) and TTCombat Iron Labyrinth (114 mm).
 - Persistent palette quantities and board size.
 - Palette generation with a set multiplier, adjustable palette spend, and corner /
   edge / centred anchoring for a complex smaller than the board.
@@ -56,8 +58,22 @@ of pieces.
 - **The pitch must be buildable**: `panel ≤ pitch ≤ panel + column`. Gallowdark
   sits inside this (the panel slots into a column straddling the corner, so the
   pitch is the 97 mm panel); Iron Labyrinth sits exactly on the upper bound (the
-  wall butts between two 50 mm connectors, so the pitch is 64 + 50 mm).
+  wall butts between two 50 mm connectors, so the pitch is 64 + 50 mm). Zone
+  Mortalis and Deadbolt's Derelict are straddling ranges like Gallowdark, on a
+  50 mm and 50.8 mm module.
+- **The joint model, not the maker, decides how pieces meet.** A straddling column
+  takes panel ends at its centre; a butting connector takes them at its faces.
+  `MANUFACTURERS[catalogue].joint` is the single place that distinction lives —
+  several call sites used to test `catalogue === "boarding"` instead, which gave
+  every later straddling range the connector treatment.
+- **The outside wall gets built.** A perimeter edge facing open deck is the complex's
+  own hull and receives a panel; one lying along the table border does not, because
+  the board edge is the wall. `DeckPlan.exterior` is which is which, and `build`
+  reads it — it used to drop every perimeter edge, so the hull was planned, budgeted
+  and drawn in the ASCII map but never placed.
 - Every panel end stands on a column, or on the board border.
+- Every doorway the plan promised gets a hatchway panel — counted against the
+  doorways, not against zero.
 - Every square is reachable from every other, across `open` and `hatch` edges.
 - No firing lane runs the length of the board.
 - A wall run is tiled end to end or the plan is revised — never a hole mid-run.
@@ -105,5 +121,10 @@ generator invariant tests.
 
 - [Official Zone Mortalis additional rules](https://assets.warhammer-community.com/eng_06-11_additionalrules_thehorusheresy_zone-mortalis-05ydhlu5wp-vllnduuxzc.pdf)
 - [TTCombat Iron Labyrinth dimensions](https://ttcombat.com/products/iron-labyrinth-death-quadrant-complex)
+- [Zone Mortalis: Columns & Walls contents](https://www.warhammer.com/en-US/shop/Zone-Mortalis-Columns-And-Walls-2020)
+  — contents only; the 50 mm pitch comes from community measurement, cross-checked
+  against the 289 mm floor tile and against Death Ray Designs' independent 2″ module
+- [Death Ray Designs: Deadbolt's Derelict Corridors](https://deathraydesigns.com/product/deadbolts-derelict-corridors-bundle/)
+  — the only range here whose maker publishes dimensions outright
 - [Growing Tree maze generation](https://weblog.jamisbuck.org/2011/1/27/maze-generation-growing-tree-algorithm)
 - [Breadth-first dungeon generation](https://www.redblobgames.com/x/2043-bfs-dungeons/)
