@@ -274,6 +274,8 @@ kbd { padding-left:4px; color:var(--muted); font:11px var(--font-geist-mono, ui-
 .zone-handle.sw { left:-4px; bottom:-4px; cursor:nesw-resize; }
 .zone-handle.se { right:-4px; bottom:-4px; cursor:nwse-resize; }
 .board.resizing-zone,.board.resizing-zone .zone-handle { cursor:grabbing; }
+.board-resize-handle { position:absolute; z-index:4; right:0; bottom:0; width:16px; height:16px; padding:0; border:0; background:linear-gradient(135deg,transparent 0 42%,var(--line-strong) 42% 52%,transparent 52%),linear-gradient(135deg,transparent 0 64%,var(--line-strong) 64% 74%,transparent 74%); cursor:nwse-resize; touch-action:none; opacity:.7; transition:opacity .1s; }
+.board-resize-handle:hover,.board-resize-handle.resizing { opacity:1; }
 .ruler { position:absolute; color:var(--muted); font:500 10px var(--font-geist-mono, ui-monospace),monospace; display:flex; justify-content:space-between; }
 .ruler-top { top:0; left:16px; right:0; }
 .ruler-left { left:0; top:16px; bottom:0; flex-direction:column; }

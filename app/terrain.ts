@@ -153,6 +153,7 @@ export const BOARD_SIZES = {
   "24x24": { width:24, height:24, label:"2′ × 2′" },
   "48x24": { width:48, height:24, label:"4′ × 2′" },
   "48x48": { width:48, height:48, label:"4′ × 4′" },
+  "60x48": { width:60, height:48, label:"5′ × 4′" },
 } as const;
 export type BoardPreset = keyof typeof BOARD_SIZES;
 export const PALETTE_STORAGE_KEY = "mortalis-architect-terrain-palette-v4";

@@ -33,6 +33,10 @@ type ReservedZone = {
 
 type ZoneCorner = "nw" | "ne" | "sw" | "se";
 
+const MIN_BOARD_SIZE = 12;
+const MAX_BOARD_WIDTH = BOARD_SIZES["60x48"].width;
+const MAX_BOARD_HEIGHT = BOARD_SIZES["60x48"].height;
+
 /** A piece being dragged toward the board. "palette" drags an existing palette
  *  entry (already counted in `limits`); "catalogue" drags a not-yet-added kit
  *  piece, which drops with `amount` copies added to the palette on release. */
@@ -69,8 +73,13 @@ export default function Home() {
   const [generationPercent, setGenerationPercent] = useState(100);
   const [gridSize, setGridSize] = useState(1);
   const [theme, setTheme] = useState<"industrial" | "gothic" | "desert">("industrial");
-  const [boardPreset, setBoardPreset] = useState<BoardPreset>("card");
+  const [boardPreset, setBoardPreset] = useState<BoardPreset | "custom">("card");
   const [boardReady, setBoardReady] = useState(false);
+  // Only meaningful while boardPreset is "custom" — set the moment a drag resize
+  // starts (from whatever the board size was at that point) and kept in sync on
+  // every pointer move. Picking a preset from the dropdown ignores this entirely.
+  const [customBoardSize, setCustomBoardSize] = useState<{ width:number; height:number }>(BOARD_SIZES.card);
+  const [boardResize, setBoardResize] = useState<{ scale:number; startX:number; startY:number; startWidth:number; startHeight:number } | null>(null);
   // Light or dark for the whole application, distinct from the board STYLE below
   // (industrial / gothic / desert), which is what the terrain is made of rather than
   // how the interface is lit. Starts from the operating system and is remembered
@@ -105,7 +114,7 @@ export default function Home() {
   const uidRef = useRef(0);
   const generationInventoryRef = useRef<Record<string, number> | null>(null);
   const lastReportRef = useRef<GenerateReport | null>(null);
-  const { width:boardWidth, height:boardHeight } = BOARD_SIZES[boardPreset];
+  const { width:boardWidth, height:boardHeight } = boardPreset === "custom" ? customBoardSize : BOARD_SIZES[boardPreset];
 
   const manufacturerKits = useMemo(() => TERRAIN_KITS.filter((kit) => kit.catalogue === activeCatalogue), [activeCatalogue]);
   const activeCatalogueMeta = TERRAIN_KITS.find((kit) => kit.id === activeKitId) || TERRAIN_KITS[0];
@@ -227,7 +236,9 @@ export default function Home() {
   }, [appearance, appearanceReady]);
 
   useEffect(() => {
-    if (!boardReady) return;
+    // A drag-resized "custom" board isn't a BOARD_SIZES key, so it can't be
+    // restored — leave the last preset on disk rather than an unresolvable value.
+    if (!boardReady || boardPreset === "custom") return;
     try { window.localStorage.setItem(BOARD_STORAGE_KEY, boardPreset); } catch { /* Board size persistence is optional. */ }
   }, [boardPreset, boardReady]);
 
@@ -280,9 +291,7 @@ export default function Home() {
     const def = getDef(piece.defId);
     return { x:piece.x, y:piece.y, width:piece.rotation === 90 ? def.depth : def.width, height:piece.rotation === 90 ? def.width : def.depth };
   };
-  const changeBoardSize = (preset: BoardPreset) => {
-    const next = BOARD_SIZES[preset];
-    setBoardPreset(preset);
+  const fitTerrainToBoardSize = (next: { width:number; height:number }) => {
     setPieces((current) => current.map((piece) => {
       const rect = pieceRect(piece);
       return { ...piece, x:clamp(piece.x, 0, Math.max(0, next.width - rect.width)), y:clamp(piece.y, 0, Math.max(0, next.height - rect.height)) };
@@ -292,8 +301,40 @@ export default function Home() {
       const height = Math.min(zone.height, next.height);
       return { ...zone, width, height, x:clamp(zone.x, 0, next.width - width), y:clamp(zone.y, 0, next.height - height) };
     }));
+  };
+  const changeBoardSize = (preset: BoardPreset) => {
+    const next = BOARD_SIZES[preset];
+    setBoardPreset(preset);
+    fitTerrainToBoardSize(next);
     selectOnly(null);
     setMessage(`Board changed to ${next.label} · existing terrain kept within bounds`);
+  };
+  // The floor a manual drag can shrink to — unlike picking a preset from the
+  // dropdown, dragging must never move or clip terrain that's already on the
+  // board, so it can only shrink as far as the furthest piece or reserved zone
+  // edge allows.
+  const minimumBoardWidth = () => Math.max(MIN_BOARD_SIZE, ...pieces.map((piece) => { const rect = pieceRect(piece); return rect.x + rect.width; }), ...zones.map((zone) => zone.x + zone.width));
+  const minimumBoardHeight = () => Math.max(MIN_BOARD_SIZE, ...pieces.map((piece) => { const rect = pieceRect(piece); return rect.y + rect.height; }), ...zones.map((zone) => zone.y + zone.height));
+  const beginBoardResize = (event: React.PointerEvent<HTMLButtonElement>) => {
+    if (!boardRef.current) return;
+    event.preventDefault();
+    event.stopPropagation();
+    try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* Pointer capture may be unavailable in embedded browsers. */ }
+    const rect = boardRef.current.getBoundingClientRect();
+    setBoardResize({ scale:rect.width / boardWidth, startX:event.clientX, startY:event.clientY, startWidth:boardWidth, startHeight:boardHeight });
+    setMessage(pieces.length || zones.length ? `Resizing board · terrain already placed blocks it from shrinking past that · max ${MAX_BOARD_WIDTH}″ × ${MAX_BOARD_HEIGHT}″` : `Resizing board · max ${MAX_BOARD_WIDTH}″ × ${MAX_BOARD_HEIGHT}″`);
+  };
+  const onBoardResizeMove = (event: React.PointerEvent<HTMLButtonElement>) => {
+    if (!boardResize) return;
+    const width = clamp(quantize(boardResize.startWidth + (event.clientX - boardResize.startX) / boardResize.scale), minimumBoardWidth(), MAX_BOARD_WIDTH);
+    const height = clamp(quantize(boardResize.startHeight + (event.clientY - boardResize.startY) / boardResize.scale), minimumBoardHeight(), MAX_BOARD_HEIGHT);
+    setBoardPreset("custom");
+    setCustomBoardSize({ width, height });
+  };
+  const finishBoardResize = () => {
+    if (!boardResize) return;
+    setBoardResize(null);
+    setMessage(`Board resized to ${boardWidth.toFixed(1)}″ × ${boardHeight.toFixed(1)}″`);
   };
   const pieceCentre = (piece: PlacedPiece) => { const rect = pieceRect(piece); return { x:rect.x + rect.width / 2, y:rect.y + rect.height / 2 }; };
   const structuralEndpoints = (piece: PlacedPiece) => {
@@ -1204,7 +1245,7 @@ export default function Home() {
       <a className="skip-link" href="#layout-board">Skip to layout board</a>
       <header className="topbar">
         <div><p className="eyebrow">Horus Heresy layout utility</p><h1>Mortalis Architect</h1></div>
-        <div className="top-actions"><div className="appearance-switch" role="group" aria-label="Appearance">{(["light", "dark"] as const).map((mode) => <button key={mode} className={appearance === mode ? "active" : ""} aria-pressed={appearance === mode} onClick={() => setAppearance(mode)}>{mode}</button>)}</div><label className="board-size-control"><span>Board</span><select aria-label="Board size" value={boardPreset} onChange={(event) => changeBoardSize(event.target.value as BoardPreset)}>{(Object.entries(BOARD_SIZES) as Array<[BoardPreset, typeof BOARD_SIZES[BoardPreset]]>).map(([value, size]) => <option key={value} value={value}>{size.label}</option>)}</select></label><span className="board-chip">{boardWidth.toFixed(1)} × {boardHeight.toFixed(1)} IN</span><button className="export-action" onClick={exportLayoutPng} disabled={!pieces.length} aria-label="Export layout and piece manifest as PNG">Export PNG</button><button className="primary" onClick={generateLayout} disabled={!pieces.length} aria-label="Generate a new layout using every piece currently on the board">Generate layout</button></div>
+        <div className="top-actions"><div className="appearance-switch" role="group" aria-label="Appearance">{(["light", "dark"] as const).map((mode) => <button key={mode} className={appearance === mode ? "active" : ""} aria-pressed={appearance === mode} onClick={() => setAppearance(mode)}>{mode}</button>)}</div><label className="board-size-control"><span>Board</span><select aria-label="Board size" value={boardPreset} onChange={(event) => changeBoardSize(event.target.value as BoardPreset)}>{boardPreset === "custom" && <option value="custom">{boardWidth.toFixed(1)}″ × {boardHeight.toFixed(1)}″ · custom</option>}{(Object.entries(BOARD_SIZES) as Array<[BoardPreset, typeof BOARD_SIZES[BoardPreset]]>).map(([value, size]) => <option key={value} value={value}>{size.label}</option>)}</select></label><span className="board-chip">{boardWidth.toFixed(1)} × {boardHeight.toFixed(1)} IN</span><button className="export-action" onClick={exportLayoutPng} disabled={!pieces.length} aria-label="Export layout and piece manifest as PNG">Export PNG</button><button className="primary" onClick={generateLayout} disabled={!pieces.length} aria-label="Generate a new layout using every piece currently on the board">Generate layout</button></div>
       </header>
 
       <section className="workspace">
@@ -1256,7 +1297,7 @@ export default function Home() {
             <div className="ruler ruler-top">{Array.from({ length:boardWidth / 12 + 1 }, (_, index) => index * 12).map((inch) => <span key={inch}>{inch}{inch === boardWidth ? "″" : ""}</span>)}</div>
             <div className="ruler ruler-left">{Array.from({ length:boardHeight / 12 + 1 }, (_, index) => index * 12).map((inch) => <span key={inch}>{inch}{inch === boardHeight ? "″" : ""}</span>)}</div>
             <div id="layout-board" ref={boardRef} style={{ "--minor-x":`${100 / boardWidth}%`, "--minor-y":`${100 / boardHeight}%`, "--major-x":`${1200 / boardWidth}%`, "--major-y":`${1200 / boardHeight}%` } as CSSProperties} className={`board ${theme}-board ${drag ? "dragging" : ""} ${marquee ? "selecting" : ""} ${zoneMode ? "zone-mode" : ""} ${zoneResize ? "resizing-zone" : ""}`} aria-label={`${boardWidth.toFixed(1)} by ${boardHeight.toFixed(1)} inch layout board`} aria-describedby="board-help" onDragOver={(event) => event.preventDefault()} onDrop={onDrop} onPointerMove={onBoardPointerMove} onPointerUp={() => { if (zoneDraft) finishZone(); if (marquee) finishMarquee(); if (zoneResize) { const zone = zones.find((item) => item.uid === zoneResize.uid); if (zone) setMessage(`${zone.name} resized · ${zone.width.toFixed(1)} × ${zone.height.toFixed(1)} in`); setZoneResize(null); } setDrag(null); }} onPointerCancel={() => { setZoneDraft(null); setZoneResize(null); setMarquee(null); setDrag(null); }} onPointerDown={beginZone}>
-              {pieces.length === 0 && <div className="board-mark"><strong>{BOARD_SIZES[boardPreset].label}</strong><span>{zoneMode ? "DRAG TO RESERVE A CLEAR ZONE" : "DROP TERRAIN TO PLACE"}</span></div>}
+              {pieces.length === 0 && <div className="board-mark"><strong>{boardPreset === "custom" ? `${boardWidth.toFixed(1)}″ × ${boardHeight.toFixed(1)}″` : BOARD_SIZES[boardPreset].label}</strong><span>{zoneMode ? "DRAG TO RESERVE A CLEAR ZONE" : "DROP TERRAIN TO PLACE"}</span></div>}
               {zones.map((zone) => <div key={zone.uid} role="group" tabIndex={zoneMode ? -1 : 0} aria-label={`${zone.name}, reserved zone ${zone.width.toFixed(1)} by ${zone.height.toFixed(1)} inches`} className={`reserved-zone ${focusedZone === zone.uid ? "focused" : ""} ${zoneResize?.uid === zone.uid ? "resizing" : ""}`} style={{ left:`${zone.x / boardWidth * 100}%`, top:`${zone.y / boardHeight * 100}%`, width:`${zone.width / boardWidth * 100}%`, height:`${zone.height / boardHeight * 100}%` }} onPointerDown={(event) => { if (zoneMode) return; event.stopPropagation(); setFocusedZone(zone.uid); selectOnly(null); setMessage(`${zone.name} selected · drag a corner to resize`); }} onFocus={() => setFocusedZone(zone.uid)}><strong>{zone.name}</strong><span>{zone.width.toFixed(1)} × {zone.height.toFixed(1)}″</span>{!zoneMode && (["nw","ne","sw","se"] as ZoneCorner[]).map((corner) => <button key={corner} className={`zone-handle ${corner}`} aria-label={`Resize ${zone.name} from ${corner} corner`} title="Drag to resize" onPointerDown={(event) => beginZoneResize(event, zone, corner)} />)}</div>)}
               {zoneDraft && (() => { const zone = normaliseZoneDraft(zoneDraft); return <div className="reserved-zone draft" style={{ left:`${zone.x / boardWidth * 100}%`, top:`${zone.y / boardHeight * 100}%`, width:`${zone.width / boardWidth * 100}%`, height:`${zone.height / boardHeight * 100}%` }}><strong>{zoneName.trim() || "Hangar"}</strong><span>{zone.width.toFixed(1)} × {zone.height.toFixed(1)}″</span></div>; })()}
               {marquee && (() => { const left = Math.min(marquee.startX, marquee.currentX); const top = Math.min(marquee.startY, marquee.currentY); return <div className="selection-marquee" aria-hidden="true" style={{ left:`${left / boardWidth * 100}%`, top:`${top / boardHeight * 100}%`, width:`${Math.abs(marquee.currentX - marquee.startX) / boardWidth * 100}%`, height:`${Math.abs(marquee.currentY - marquee.startY) / boardHeight * 100}%` }} />; })()}
@@ -1268,6 +1309,7 @@ export default function Home() {
                 return <button key={piece.uid} title={`${def.name} · ${def.note} × ${Math.round(piece.height * MM_PER_IN)} mm high`} aria-label={`${def.name}, ${Math.round(piece.height * MM_PER_IN)} millimetres high${isSelected ? ", selected" : ""}`} aria-pressed={isSelected} className={`placed-piece ${def.kind} ${def.kind === "door" && piece.servesDoorway === false ? "shut" : ""} ${def.visual ? `visual-${def.visual}` : ""} ${piece.rotation === 90 ? "rotated" : ""} ${isSelected ? "selected" : ""}`} style={{ left:`${piece.x / boardWidth * 100}%`, top:`${piece.y / boardHeight * 100}%`, width:`${width / boardWidth * 100}%`, height:`${height / boardHeight * 100}%` }} onDoubleClick={() => rotatePiece(piece.uid)} onContextMenu={(event) => { event.preventDefault(); setFocusedZone(null); selectOnly(piece.uid); rotatePiece(piece.uid); }} onPointerDown={(event) => beginPieceDrag(event, piece)}><span className="terrain-detail" /></button>;
               })}
             </div>
+            <button className={`board-resize-handle ${boardResize ? "resizing" : ""}`} aria-label="Resize board" title={`Drag to resize the board · max ${MAX_BOARD_WIDTH}″ × ${MAX_BOARD_HEIGHT}″`} onPointerDown={beginBoardResize} onPointerMove={onBoardResizeMove} onPointerUp={finishBoardResize} onPointerCancel={finishBoardResize} />
           </div></div>
           {layoutReport?.metrics && <div className="metrics-strip" aria-label="Generated layout readings"><span><strong>{layoutReport.plan?.lattice.cols} × {layoutReport.plan?.lattice.rows}</strong> squares</span><span>density <strong>{layoutReport.metrics.density.toFixed(2)}</strong></span><span>sight <strong>{layoutReport.metrics.meanSight.toFixed(1)}</strong> / {layoutReport.metrics.longestSight} sq</span><span>runs <strong>{layoutReport.metrics.meanRun.toFixed(1)}</strong> avg</span><span>{layoutReport.leftover > 0 ? <><strong>{layoutReport.leftover}</strong> panels in the box</> : <>whole palette spent</>}</span></div>}
           <div className="status-line" id="board-help"><span role="status" aria-live="polite">{message}</span><span>{smartFit ? "Smart fit · " : "Overlap allowed · "}{zones.length ? `${zones.length} zone${zones.length === 1 ? "" : "s"} · ` : ""}{snap ? `Grid ${gridSize}″` : "Free placement"} · Drag empty space to multi-select · Ctrl C / V</span></div>
