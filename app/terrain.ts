@@ -8,7 +8,7 @@
 
 export type TerrainDef = {
   id: string;
-  catalogue: "boarding" | "mortalis" | "deathray" | "ttcombat";
+  catalogue: "boarding" | "mortalis" | "deathray" | "ttcombat" | "eberleg";
   name: string;
   shortName: string;
   width: number;
@@ -100,6 +100,46 @@ export const MORTALIS_GRID = 50/25.4;
 // close enough to mix by hand on a real table, not close enough to put on one
 // lattice.
 export const DEATHRAY_GRID = 50.8/25.4;
+// Eberleg's "Zone Mortalis Terrain Pieces" is a free, print-your-own STL kit
+// (Thingiverse thing:2609090/2609112) — a third, unrelated range that happens to
+// share this project's name. It is designed around a 6" x 6" printed floor tile
+// (measured 152.40 mm square on the model, exactly 6.000 in).
+//
+// THE PITCH IS 152.4 MM — the full tile edge, and the full "Straight" wall's own
+// measured length with ZERO slack — because that is where the kit's real columns
+// stand: at the CORNERS of a floor tile, six inches apart, not at some
+// in-between point invented to give the tiler more panels to choose from.
+//
+// Two earlier attempts got this wrong in the same direction, and it is worth
+// recording why so it does not happen a third time. The first pass took the
+// pitch from the door bulkhead (52.8 mm) because it was the tightest-fitting
+// piece; the second took it from half a floor tile (76.2 mm) after noticing the
+// door and short wall both happened to fit there too. Both pitches pass every
+// piece's own straddle test — `cellsThatFit` does not know what a corridor is
+// for — but neither is where the kit's columns actually go, and the consequence
+// was not cosmetic: a Zone Mortalis corridor needs room for a 32 mm base to
+// walk through and more besides, and clear width is `pitch - support`. At
+// 76.2 mm that was 24.3 mm — not even one model wide. At the correct 152.4 mm
+// pitch it is 152.4 - 51.91 = 100.5 mm, 3.96 in, which is what a playable
+// corridor with headroom for wider machinery bays actually requires.
+//
+// Only two panels seat cleanly on this pitch, both as a single lattice cell
+// (the only shape `build.ts`'s tiler places without a hole or a false gap):
+//
+//   - the full "Straight" wall (152.40 mm) — zero slack, sets the pitch
+//   - the double bulkhead (103.60 mm) — 48.8 mm of slack, split evenly, still
+//     reaching visibly toward both columns
+//
+// The "Straight Short" wall (102.16 mm), the single bulkhead (52.8 mm), and
+// `ZM_Wall_Single_008` (50.8 mm, a piece missed entirely in the first pass) are
+// real hardware, but they belong to a finer sub-module the kit uses to finish a
+// tile edge PAST a Corner or T-Intersection piece — the same reason Corner and
+// T-Intersection themselves are not catalogued below. Forced onto the 152.4 mm
+// lattice, each would sit centred with 50+ mm of open air at both ends: a wall
+// or door that visibly doesn't reach the columns it is supposed to join, which
+// is exactly the "phasing through the connector" look this pitch is meant to
+// rule out. They stay out of the catalogue rather than in it and disconnected.
+export const EBERLEG_GRID = 152.4/25.4;
 export const BOARD_SIZES = {
   // The card board that ships in the box: 704 x 607 mm. It is a 7 x 6 grid of
   // 97 mm squares with a 12.5 mm border, which checks exactly — 7 x 97 = 679 and
@@ -141,6 +181,7 @@ export const MANUFACTURERS: Record<CatalogueId, { name:string; range:string; joi
   mortalis: { name:"Games Workshop", range:"Zone Mortalis", joint:"straddle" },
   deathray: { name:"Death Ray Designs", range:"Deadbolt's Derelict", joint:"straddle" },
   ttcombat: { name:"TTCombat", range:"Iron Labyrinth", joint:"butt" },
+  eberleg: { name:"Eberleg", range:"Zone Mortalis Terrain Pieces (print-it-yourself)", joint:"straddle" },
 } as const;
 
 // Quantities are the verified contents of the Boarding Actions Terrain Set: 68
@@ -232,6 +273,25 @@ export const TERRAIN: TerrainDef[] = [
   { id:"drd-narrow-door", catalogue:"deathray", name:"Corridor narrow door", shortName:"DRD narrow door", width:50.8/MM_PER_IN, depth:33/MM_PER_IN, height:70/MM_PER_IN, limit:2, kind:"door", span:DEATHRAY_GRID, visual:"door", note:"one module · width inferred" },
   { id:"drd-wide-door", catalogue:"deathray", name:"Corridor wide door", shortName:"DRD wide door", width:94/MM_PER_IN, depth:33/MM_PER_IN, height:70/MM_PER_IN, limit:5, kind:"door", span:DEATHRAY_GRID*2, visual:"door", note:"two modules · width inferred" },
 
+  // ---------------------------------------------------------------------------
+  // Eberleg's Zone Mortalis Terrain Pieces (print-your-own STL, Thingiverse)
+  //
+  // Every figure below is a bounding-box measurement taken directly from the STL
+  // meshes, not a published spec — see EBERLEG_GRID above for why only these
+  // three pieces (of the eight the file set actually contains) are catalogued.
+  // Height is 63.50 mm (2.5 in exactly) on both.
+  //
+  // Doors: the kit prints a bulkhead FRAME (which occupies the wall-cell, like
+  // every other range's "door" piece) and a separate door LEAF that slides inside
+  // it. Only the bulkhead is catalogued — the leaf isn't placed on the board, it
+  // rides inside the frame already on it. Depth is taken as the wall's own
+  // 51.91 mm rather than the bulkhead's measured 43.97 mm frame-opening width, so
+  // the door draws flush with the wall runs either side of it instead of reading
+  // as a step in the corridor's edge.
+  { id:"eb-column", catalogue:"eberleg", name:"Zone Mortalis (Eberleg) column", shortName:"Eb column", width:51.91/MM_PER_IN, depth:51.91/MM_PER_IN, height:63.5/MM_PER_IN, limit:24, kind:"pillar", note:"51.9 × 51.9 mm · measured" },
+  { id:"eb-wall", catalogue:"eberleg", name:"Zone Mortalis (Eberleg) straight wall", shortName:"Eb wall", width:152.40/MM_PER_IN, depth:51.91/MM_PER_IN, height:63.5/MM_PER_IN, limit:16, kind:"wall", span:EBERLEG_GRID, visual:"solid", note:"152.4 × 51.9 mm · one full 6 in tile edge, zero slack — sets the pitch" },
+  { id:"eb-wide-door", catalogue:"eberleg", name:"Zone Mortalis (Eberleg) double bulkhead", shortName:"Eb door", width:103.60/MM_PER_IN, depth:51.91/MM_PER_IN, height:63.5/MM_PER_IN, limit:2, kind:"door", span:EBERLEG_GRID, visual:"door", note:"103.6 × 51.9 mm · one tile edge, 48.8 mm slack split evenly · slides in and out" },
+
   { id:"tt-connector", catalogue:"ttcombat", name:"Iron Labyrinth connector block", shortName:"Connector", width:50/MM_PER_IN, depth:50/MM_PER_IN, height:60/MM_PER_IN, limit:24, kind:"connector", note:"50 × 50 mm" },
   { id:"tt-wall-end", catalogue:"ttcombat", name:"Iron Labyrinth wall end", shortName:"Wall end", width:46/MM_PER_IN, depth:33/MM_PER_IN, height:60/MM_PER_IN, limit:21, kind:"end", note:"46 × 33 mm" },
   { id:"tt-solid-wall", catalogue:"ttcombat", name:"Iron Labyrinth solid wall", shortName:"Solid wall", width:64/MM_PER_IN, depth:33/MM_PER_IN, height:60/MM_PER_IN, limit:8, kind:"wall", visual:"solid", note:"64 × 33 mm" },
@@ -270,6 +330,8 @@ export const TERRAIN_KITS: TerrainKit[] = [
   { id:"iron-stairs", catalogue:"ttcombat", maker:"TTCombat", name:"Iron Labyrinth Stairs", description:"Two connector-compatible stair sections", source:"TTCombat published dimensions", sourceUrl:"https://ttcombat.com/products/iron-labyrinth-stairs", inventory:{ "tt-stair":2 } },
   { id:"iron-death-quadrant", catalogue:"ttcombat", maker:"TTCombat", name:"Iron Labyrinth – Death Quadrant Complex", description:"Dimensioned columns, walls, and door modules", source:"TTCombat published dimensions", sourceUrl:"https://ttcombat.com/products/iron-labyrinth-death-quadrant-complex", inventory:{ "tt-dq-column":11, "tt-dq-double-wall":4, "tt-dq-single-wall":4, "tt-dq-double-door":1, "tt-dq-single-door":2 }, caveat:"Platforms, tiles, ladders, and stairs are listed by TTCombat but omitted from the scaled palette because their footprints are not published." },
   { id:"iron-ultima", catalogue:"ttcombat", maker:"TTCombat", name:"Iron Labyrinth Ultima Complex", description:"24 connectors, 21 ends, and 18 wall sections", source:"TTCombat published dimensions", sourceUrl:"https://ttcombat.com/products/iron-labyrinth-bundle", inventory:{ "tt-connector":24, "tt-wall-end":21, "tt-solid-wall":8, "tt-grid-wall":2, "tt-solid-pipe-wall":2, "tt-vertical-pipe-wall":2, "tt-reinforced-pipe-wall":2, "tt-fan-wall":2 } },
+  { id:"eberleg-walls", catalogue:"eberleg", maker:"Eberleg", name:"Zone Mortalis Terrain Pieces (print files)", description:"Columns and the full-length wall, one per 6 in floor-tile edge", source:"Bounding-box measurement of the published STL meshes", sourceUrl:"https://www.thingiverse.com/thing:2609090", inventory:{ "eb-column":24, "eb-wall":16 }, caveat:"This is a free print-your-own STL kit, not a boxed product — there is no fixed box count. The quantities here are an arbitrary starting palette; edit them to match how many of each you have actually printed. Three pieces from the same file set are not catalogued — the \"Straight Short\" wall, the single wall, and the Corner/T-Intersection pieces — because on the 152.4 mm pitch a real 3.5-4 in corridor needs, they are too short to seat without a disconnected-looking gap or (for Corner/T) the wrong shape entirely; see EBERLEG_GRID in terrain.ts. Not a loss for corners and junctions specifically: this generator already builds those by meeting straight walls at a shared column." },
+  { id:"eberleg-doors", catalogue:"eberleg", maker:"Eberleg", name:"Zone Mortalis Doorway Bulkheads and Doors (print files)", description:"The double sliding-door bulkhead that slots into a wall section", source:"Bounding-box measurement of the published STL meshes", sourceUrl:"https://www.thingiverse.com/thing:2609112", inventory:{ "eb-wide-door":4 }, caveat:"Same print-your-own caveat as the structural set — quantities are a starting palette, not a fixed count. The single bulkhead from the same file set is not catalogued; at the 152.4 mm pitch this generator needs for a playable corridor width, it is too short to seat without a large gap on both sides — see EBERLEG_GRID in terrain.ts." },
   // Not a real GW product — the scatter pieces above have no published kit to
   // belong to, and the "Available pieces" browser only ever shows what a selected
   // kit lists. Without an entry here the pieces exist in the catalogue but are

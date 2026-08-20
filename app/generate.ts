@@ -29,7 +29,7 @@ import {
   PROVISIONAL_REFERENCE, type Metrics, type ReferenceProfile,
 } from "./validate.ts";
 
-export type KitCatalogue = "boarding" | "mortalis" | "deathray" | "ttcombat";
+export type KitCatalogue = "boarding" | "mortalis" | "deathray" | "ttcombat" | "eberleg";
 
 export type KitDef = {
   id:string;
