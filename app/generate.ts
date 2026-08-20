@@ -45,6 +45,11 @@ export type KitDef = {
   span?:number;
   /** Columns moulded into the piece, at 0, 1 or 2 of its ends. */
   ownColumns?:0 | 1 | 2;
+  /** HUB KITS ONLY: which arrangement of moulded wall arms this node casting
+   *  carries — see BuildDef in build.ts. Undefined everywhere else. */
+  shape?:"column" | "stub" | "straight" | "corner" | "t" | "cross";
+  /** HUB KITS ONLY: a filler panel covering half an edge. */
+  halfEdge?:boolean;
 };
 
 /**
@@ -56,7 +61,7 @@ export type KitDef = {
 const MODEL_BASE = 32 / 25.4;
 
 /** Where a complex smaller than the board is put. */
-export type Anchor = "auto" | "corner" | "edge" | "centre";
+export type Anchor = "auto" | "corner" | "edge" | "centre" | "fill";
 
 export type Zone = { x:number; y:number; width:number; height:number };
 
@@ -166,8 +171,83 @@ export const cellsThatFit = (def:KitDef, pitch:number, support:number):number | 
   return null;
 };
 
+/**
+ * Read a HUB kit, where there are no edge panels at all and every casting stands
+ * on a node carrying its own arms — see EBERLEG_GRID in terrain.ts.
+ *
+ * The numbers this has to produce are the same ones the straddle/butt path
+ * produces, they are just counted differently:
+ *
+ *   pitch     twice an arm's reach. Every casting states it: one with two
+ *             opposite arms is a full pitch wide, one with a single arm is an arm
+ *             plus half a hub. So it can be read off whichever castings the
+ *             palette happens to hold, and a palette of nothing but corners still
+ *             lands on the same grid as one full of straight walls.
+ *   capacity  an edge takes two arm-slots, so it is half the arms in the box,
+ *             plus what the fillers can cover.
+ *   columns   one casting per node, so simply how many castings there are.
+ */
+const HUB_ARMS:Record<string, number> = { column:0, stub:1, straight:2, corner:2, t:3, cross:4 };
+
+const readHubKit = (owned:KitDef[], inventory:Record<string, number>):KitReading | null => {
+  const castings = owned.filter((def) => def.shape !== undefined);
+  const column = castings.find((def) => def.shape === "column");
+  if (!castings.length || !column) return null;
+  const copies = (def:KitDef) => inventory[def.id] ?? 0;
+
+  const support = Math.max(column.width, column.depth);
+  // An arm reaches half a pitch. A casting with arms on opposite sides spans two
+  // of them; one with arms on a single axis spans one arm plus half a hub.
+  const spans = castings.map((def) => {
+    const arms = HUB_ARMS[def.shape!] ?? 0;
+    const long = Math.max(def.width, def.depth);
+    if (!arms) return null;
+    return def.shape === "straight" || def.shape === "t" || def.shape === "cross"
+      ? long
+      : (long - support / 2) * 2;
+  }).filter((value):value is number => value !== null && value > 0);
+  if (!spans.length) return null;
+  const pitch = Math.max(...spans);
+
+  const halves = owned.filter((def) => def.halfEdge);
+  const wides = owned.filter((def) => !def.halfEdge && def.shape === undefined && (def.kind === "wall" || def.kind === "door"));
+  const armSlots = castings.reduce((sum, def) => sum + copies(def) * (HUB_ARMS[def.shape!] ?? 0), 0)
+    + halves.reduce((sum, def) => sum + copies(def), 0)
+    + wides.reduce((sum, def) => sum + copies(def) * 2, 0);
+
+  const asBuildDef = (def:KitDef):BuildDef => ({
+    id:def.id,
+    kind:def.kind as "wall" | "door" | "pillar" | "connector" | "end",
+    length:Math.max(def.width, def.depth),
+    depth:Math.min(def.width, def.depth),
+    cells:1,
+    ownColumns:0,
+    height:def.height,
+    // A filler bites into the hub at its outer end exactly as a straddling panel
+    // bites into a column, and `invariants` skips the span check for a half filler
+    // outright — half an edge is not a span.
+    straddles:true,
+    shape:def.shape,
+    halfEdge:def.halfEdge,
+  });
+
+  return {
+    pitch, support,
+    cells:new Map(castings.map((def) => [def.id, 1])),
+    capacity:Math.floor(armSlots / 2),
+    doorways:owned.filter((def) => def.kind === "door").reduce((sum, def) => sum + copies(def), 0),
+    columns:castings.reduce((sum, def) => sum + copies(def), 0),
+    caps:0,
+    buildDefs:[...castings, ...halves, ...wides].map(asBuildDef),
+    excluded:[],
+    unbuildable:[],
+    accessories:owned.filter((def) => def.kind === "floor" || def.kind === "stair"),
+  };
+};
+
 export const readKit = (defs:KitDef[], inventory:Record<string, number>, catalogue:KitCatalogue):KitReading | null => {
   const owned = defs.filter((def) => def.catalogue === catalogue && (inventory[def.id] ?? 0) > 0);
+  if (owned.some((def) => def.shape !== undefined || def.halfEdge)) return readHubKit(owned, inventory);
   const allPanels = owned.filter((def) => def.kind === "wall" || def.kind === "door");
   const supports = owned.filter((def) => def.kind === "pillar" || def.kind === "connector");
   const caps = owned.filter((def) => def.kind === "end");
@@ -291,6 +371,9 @@ export const readKit = (defs:KitDef[], inventory:Record<string, number>, catalog
  * fits — which works, but wastes the whole first half of the candidate budget.
  */
 const hullCost = (cols:number, rows:number, fillsX:boolean, fillsY:boolean, anchor:Anchor) => {
+  // Filling the table borrows all four sides, by definition — the lattice IS the
+  // board, so its perimeter is the board edge and costs nothing.
+  if (anchor === "fill") return 0;
   if (fillsX && fillsY) return 0;
   // Anchored into a corner, two sides are the table edge. Against an edge, one is.
   // Centred, the building pays for all four.
@@ -313,6 +396,17 @@ const sizeLattice = (
   const maxCols = Math.floor((boardWidth - support / 2) / pitch);
   const maxRows = Math.floor((boardHeight - support / 2) / pitch);
   if (maxCols < 2 || maxRows < 2) return null;
+
+  // Filling the table is the one mode that sizes to the BOARD instead of to the
+  // palette. Everywhere else the complex is built at the size its own terrain can
+  // support and anchored on the board, because spreading one set over a four-foot
+  // table cannot make more terrain — it only makes thinner terrain, which is the
+  // "few pieces on open floor" complaint this generator was rewritten to stop.
+  // Here that trade is made deliberately: the runs reach the board edge on all
+  // four sides and the board edge does the walling for free, at the cost of a
+  // sparser interior. Worth it when you want the terrain to span the table, and
+  // the reason it is a choice rather than the default.
+  if (anchor === "fill") return { cols:maxCols, rows:maxRows, maxCols, maxRows };
 
   const aspect = Math.log(boardWidth / boardHeight);
   let best:{ cols:number; rows:number } | null = null;
@@ -375,6 +469,9 @@ const originsFor = (anchor:Anchor, slackX:number, slackY:number, inset:number, r
   const middle = (slack:number) => slack / 2;
   const pick = (slack:number) => random() < .5 ? flushLow : flushHigh(slack);
   switch (anchor) {
+    // Centred, so the border left over is even on all four sides rather than
+    // piled up against two of them — the same look the printed card board has.
+    case "fill": return { x:middle(slackX), y:middle(slackY) };
     case "corner": return { x:pick(slackX), y:pick(slackY) };
     case "edge": return random() < .5
       ? { x:pick(slackX), y:middle(slackY) }
@@ -697,6 +794,35 @@ export const generate = (input:GenerateInput):GenerateReport => {
   let best:{ pieces:BuiltPiece[]; metrics:Metrics; lattice:Lattice; plan:DeckPlan; score:number } | null = null;
   const maxSight = Math.max(3, Math.round(reference.longestSight + 2));
 
+  const shrink = () => {
+    if (cols >= rows && cols > 3) cols--;
+    else if (rows > 3) rows--;
+    else if (cols > 2) cols--;
+    else return false;
+    interiorBudget = Math.min(spendable, interiorCapFor(cols, rows));
+    return true;
+  };
+
+  /**
+   * A candidate can also be thrown out by an INVARIANT rather than by the build
+   * running short of pieces, and that case had no lever at all — which was a real
+   * bug rather than a missing nicety. A plan that builds perfectly well but fails,
+   * say, the sight-line rule fails it for a reason no reseed can fix: the lattice
+   * is bigger than the palette can subdivide, so every seed leaves a firing lane
+   * down it. The loop simply `continue`d, so all forty attempts ran with identical
+   * parameters and the generator returned nothing at all. Asking a four-foot board
+   * to fill the table with one set failed 88 times in 100 that way.
+   *
+   * So the search runs in PASSES: a full round of candidates, and only if that
+   * round produced nothing at all does the footprint give way and another round
+   * run at the smaller size. Deciding it on the whole round rather than on a
+   * running tally of failures is what keeps it deterministic — the footprint then
+   * depends on the palette and the board, not on how many unlucky seeds happened
+   * to come up first, which is the difference between a board that reproduces and
+   * one whose size wanders between generations.
+   */
+  for (let pass = 0; pass < 5 && !best; pass++) {
+  if (pass > 0 && !shrink()) break;
   for (let attempt = 0; attempt < candidates; attempt++) {
     const gridWidth = cols * kit.pitch;
     const gridHeight = rows * kit.pitch;
@@ -742,7 +868,13 @@ export const generate = (input:GenerateInput):GenerateReport => {
     // invariant then rejects, seed after seed. Leaving the gap open is the right answer
     // as well as the passing one: the zone is an apron, and the complex opens onto it.
     const reserved = reservedRects(lattice, zones);
-    const exterior = new Set(
+    // Filling the table has no exterior: every perimeter edge IS the board edge,
+    // whatever strip of border the pitch happens to leave outside it. Measuring
+    // those edges as open deck is what built a second hull a few inches inside the
+    // table edge — a long wall parallel to a wall the board already gives for
+    // free, which is the single most expensive thing a thin palette can be made
+    // to spend itself on.
+    const exterior = anchor === "fill" ? new Set<string>() : new Set(
       [...exteriorEdges(lattice, boardWidth, boardHeight, kit.support)]
         .filter((key) => !edgeBordersReserved(lattice, parseEdge(key), reserved)),
     );
@@ -760,15 +892,6 @@ export const generate = (input:GenerateInput):GenerateReport => {
     const built = build({ plan, defs:kit.buildDefs, stock, heights, nextUid, seed:seed + attempt * 7919 });
     if (!built.ok) {
       rejected[built.reason.replace(/\d+/g, "n")] = (rejected[built.reason.replace(/\d+/g, "n")] ?? 0) + 1;
-      // Three levers now, and which one is right depends on what ran out. See below.
-      const shrink = () => {
-        if (cols >= rows && cols > 3) cols--;
-        else if (rows > 3) rows--;
-        else if (cols > 2) cols--;
-        else return false;
-        interiorBudget = Math.min(spendable, interiorCapFor(cols, rows));
-        return true;
-      };
       // Out of columns: give up SPURS first, then the footprint. A spur is cover
       // standing in a bay and the cheapest thing on the board to lose; the footprint is
       // the board itself. Backing off in the other order shrank a one-set card board to
@@ -806,6 +929,7 @@ export const generate = (input:GenerateInput):GenerateReport => {
     // the result. Utilisation is deliberately absent: it is an output.
     const score = -distanceFromReference(metrics, reference);
     if (!best || score > best.score) best = { pieces:built.pieces, metrics, lattice, plan, score };
+  }
   }
 
   if (!best) {

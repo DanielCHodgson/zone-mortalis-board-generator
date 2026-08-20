@@ -20,6 +20,8 @@ type PlacedPiece = {
   /** Set by the generator on a hatchway panel whose door is a route the plan uses. A
    *  hatchway panel without it is standing in a wall run with its door shut. */
   servesDoorway?: boolean;
+  /** Set by the generator on a shaped corner/T casting — which way its icon points. */
+  facing?: 0 | 90 | 180 | 270;
 };
 
 type ReservedZone = {
@@ -456,6 +458,19 @@ export default function Home() {
     setPieces((current) => current.map((piece) => {
       if (piece.uid !== uid) return piece;
       const def = getDef(piece.defId);
+      // A shaped corner/T casting turns by advancing `facing`, not by flipping
+      // `rotation` on its own — a plain 0/90 flip has only two states and
+      // these shapes have four (the two extra are the mirror pairs `rotation`
+      // alone cannot tell apart, e.g. a T's stub pointing north vs south).
+      // `rotation` is still derived from the new facing, because it is still
+      // what decides the bounding box for a non-square shape like the T.
+      if (piece.facing !== undefined) {
+        const facing = ((piece.facing + 90) % 360) as 0 | 90 | 180 | 270;
+        const rotation: 0 | 90 = facing === 90 || facing === 270 ? 90 : 0;
+        const w = rotation === 90 ? def.depth : def.width;
+        const h = rotation === 90 ? def.width : def.depth;
+        return { ...piece, facing, rotation, x: quantize(clamp(piece.x, 0, boardWidth - w)), y: quantize(clamp(piece.y, 0, boardHeight - h)) };
+      }
       const rotation = piece.rotation === 0 ? 90 : 0;
       const w = rotation === 90 ? def.depth : def.width;
       const h = rotation === 90 ? def.width : def.depth;
@@ -492,13 +507,18 @@ export default function Home() {
       const rotated = rects.map(({ piece, width, height }) => {
         const pieceCentreX = piece.x + width / 2;
         const pieceCentreY = piece.y + height / 2;
-        const rotation: 0 | 90 = piece.rotation === 0 ? 90 : 0;
+        // See `rotatePiece` for why a shaped corner/T casting turns by
+        // advancing `facing` rather than by flipping `rotation` alone.
+        const facing = piece.facing !== undefined ? ((piece.facing + 90) % 360) as 0 | 90 | 180 | 270 : undefined;
+        const rotation: 0 | 90 = facing !== undefined
+          ? (facing === 90 || facing === 270 ? 90 : 0)
+          : piece.rotation === 0 ? 90 : 0;
         const nextWidth = height;
         const nextHeight = width;
         const nextCentreX = centreX - (pieceCentreY - centreY);
         const nextCentreY = centreY + (pieceCentreX - centreX);
         return {
-          piece:{ ...piece, rotation, x:nextCentreX - nextWidth / 2, y:nextCentreY - nextHeight / 2 },
+          piece:{ ...piece, rotation, facing, x:nextCentreX - nextWidth / 2, y:nextCentreY - nextHeight / 2 },
           width:nextWidth,
           height:nextHeight,
         };
@@ -1306,7 +1326,7 @@ export default function Home() {
                 const width = piece.rotation === 90 ? def.depth : def.width;
                 const height = piece.rotation === 90 ? def.width : def.depth;
                 const isSelected = selectedIds.includes(piece.uid);
-                return <button key={piece.uid} title={`${def.name} · ${def.note} × ${Math.round(piece.height * MM_PER_IN)} mm high`} aria-label={`${def.name}, ${Math.round(piece.height * MM_PER_IN)} millimetres high${isSelected ? ", selected" : ""}`} aria-pressed={isSelected} className={`placed-piece ${def.kind} ${def.kind === "door" && piece.servesDoorway === false ? "shut" : ""} ${def.visual ? `visual-${def.visual}` : ""} ${piece.rotation === 90 ? "rotated" : ""} ${isSelected ? "selected" : ""}`} style={{ left:`${piece.x / boardWidth * 100}%`, top:`${piece.y / boardHeight * 100}%`, width:`${width / boardWidth * 100}%`, height:`${height / boardHeight * 100}%` }} onDoubleClick={() => rotatePiece(piece.uid)} onContextMenu={(event) => { event.preventDefault(); setFocusedZone(null); selectOnly(piece.uid); rotatePiece(piece.uid); }} onPointerDown={(event) => beginPieceDrag(event, piece)}><span className="terrain-detail" /></button>;
+                return <button key={piece.uid} title={`${def.name} · ${def.note} × ${Math.round(piece.height * MM_PER_IN)} mm high`} aria-label={`${def.name}, ${Math.round(piece.height * MM_PER_IN)} millimetres high${isSelected ? ", selected" : ""}`} aria-pressed={isSelected} className={`placed-piece ${def.kind} ${def.kind === "door" && piece.servesDoorway === false ? "shut" : ""} ${def.visual ? `visual-${def.visual}` : ""} ${piece.facing !== undefined ? `facing-${piece.facing}` : ""} ${piece.rotation === 90 ? "rotated" : ""} ${isSelected ? "selected" : ""}`} style={{ left:`${piece.x / boardWidth * 100}%`, top:`${piece.y / boardHeight * 100}%`, width:`${width / boardWidth * 100}%`, height:`${height / boardHeight * 100}%` }} onDoubleClick={() => rotatePiece(piece.uid)} onContextMenu={(event) => { event.preventDefault(); setFocusedZone(null); selectOnly(piece.uid); rotatePiece(piece.uid); }} onPointerDown={(event) => beginPieceDrag(event, piece)}><span className="terrain-detail" /></button>;
               })}
             </div>
             <button className={`board-resize-handle ${boardResize ? "resizing" : ""}`} aria-label="Resize board" title={`Drag to resize the board · max ${MAX_BOARD_WIDTH}″ × ${MAX_BOARD_HEIGHT}″`} onPointerDown={beginBoardResize} onPointerMove={onBoardResizeMove} onPointerUp={finishBoardResize} onPointerCancel={finishBoardResize} />
@@ -1327,7 +1347,7 @@ export default function Home() {
             </div>
             {catalogueTotal > 0 && <div className="palette-generation-controls">
               <label className="generation-target palette-generation-target" title="Share of the palette the generator may spend. The board is filled to real density regardless; lower this only to deliberately hold pieces back."><span>Spend <strong>{generationPercent}%</strong></span><input type="range" min="20" max="100" step="5" value={generationPercent} onChange={(event) => setGenerationPercent(Number(event.target.value))} aria-label="Footprint coverage target" /></label>
-              <label className="generation-target palette-generation-target" title="Where a complex smaller than the board sits. The board border is a free wall, so a corner spends more of the kit on interior structure; a centred island must build its own perimeter."><span>Placement</span><select value={anchor} onChange={(event) => setAnchor(event.target.value as Anchor)} aria-label="Where to anchor a complex smaller than the board"><option value="auto">Automatic</option><option value="corner">Into a corner</option><option value="edge">Against an edge</option><option value="centre">Centred island</option></select></label>
+              <label className="generation-target palette-generation-target" title="Where a complex smaller than the board sits. The board border is a free wall, so a corner spends more of the kit on interior structure and a centred island must build its own perimeter. Fill the table sizes the grid to the BOARD instead of to the palette: runs reach the board edge on every side and no panel is spent on a perimeter, at the cost of a thinner interior when the palette is small for the table."><span>Placement</span><select value={anchor} onChange={(event) => setAnchor(event.target.value as Anchor)} aria-label="Where to anchor a complex smaller than the board"><option value="auto">Automatic</option><option value="fill">Fill the table</option><option value="corner">Into a corner</option><option value="edge">Against an edge</option><option value="centre">Centred island</option></select></label>
               <button className="primary palette-generate" onClick={generateFromPalette} aria-label="Generate layout from current terrain palette">Generate from palette</button>
             </div>}
             {catalogueTotal > 0 && <div className="palette-range"><span>{paletteMaker}</span><strong>{paletteLabel}</strong><em>{Math.max(0, catalogueTotal - paletteUsed)} unplaced</em></div>}

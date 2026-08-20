@@ -417,11 +417,20 @@ export const invariants = ({ plan, pieces, defs, inventory, boardWidth, boardHei
   }).map((piece) => rectOf(piece, defs));
   const unsupported = structural.filter((piece) => {
     const rect = rectOf(piece, defs);
-    const alongX = rect.width >= rect.height;
+    const def = defs.get(piece.defId);
+    // Orientation comes from the piece's own placement, not from comparing the
+    // rect's width to its height. That comparison happened to agree with rotation
+    // for every panel in every catalogue up to Eberleg's fine module, whose
+    // single wall is 50.8 mm long on a 51.91 mm depth — shorter than it is thick,
+    // so a HORIZONTAL run of it has width < height. Read the aspect ratio there
+    // and this piece is judged vertical while sitting flat, its ends are checked
+    // against the wrong axis, and a perfectly bracketed wall is flagged as
+    // floating in open floor.
+    const alongX = piece.rotation !== 90;
     const ends = alongX
       ? [{ x:rect.x, y:rect.y + rect.height / 2 }, { x:rect.x + rect.width, y:rect.y + rect.height / 2 }]
       : [{ x:rect.x + rect.width / 2, y:rect.y }, { x:rect.x + rect.width / 2, y:rect.y + rect.height }];
-    return ends.some((end) => {
+    const loose = ends.filter((end) => {
       // The board border is a wall in its own right, so an end reaching it is
       // terminated as validly as one meeting a column.
       const atHull = end.x <= .6 || end.y <= .6 || end.x >= boardWidth - .6 || end.y >= boardHeight - .6;
@@ -429,6 +438,14 @@ export const invariants = ({ plan, pieces, defs, inventory, boardWidth, boardHei
       return !supports.some((support) => end.x >= support.x - .35 && end.x <= support.x + support.width + .35
         && end.y >= support.y - .35 && end.y <= support.y + support.height + .35);
     });
+    // A hub kit's half filler reaches from one hub's face to the MIDDLE of the
+    // gap, so only its outer end ever meets a casting — the inner one butts
+    // against whatever covers the other half, an arm or a second filler. Holding
+    // it to the both-ends rule condemns a joint the kit is built to make: two
+    // 50 mm panels between two columns 152 mm apart is how the real thing goes
+    // together when neither hub has an arm to spare.
+    if (def?.halfEdge) return loose.length > 1;
+    return loose.length > 0;
   });
   if (unsupported.length) {
     failures.push({ rule:"bracketed", detail:`${unsupported.length} panel ends stand on nothing` });
@@ -447,12 +464,20 @@ export const invariants = ({ plan, pieces, defs, inventory, boardWidth, boardHei
   //    pitch, and six of the thirteen panel types were then placed into a 46 mm opening
   //    64 mm wide, overlapping their connectors by 9 mm at each end.
   const pitch = Math.max(lattice.pitchX, lattice.pitchY);
+  // Measured against the plain hub, so a hub kit's armed castings — which are a
+  // whole pitch wide because they CARRY the wall — cannot inflate the figure every
+  // filler is then checked against.
   const support = Math.max(0, ...[...defs.values()]
-    .filter((def) => def.kind === "pillar" || def.kind === "connector")
+    .filter((def) => (def.kind === "pillar" || def.kind === "connector") && (def.shape ?? "column") === "column")
     .map((def) => Math.max(def.length, def.depth)));
   const misseated = [...new Set(structural.map((piece) => piece.defId))].filter((defId) => {
     const def = defs.get(defId);
     if (!def) return false;
+    // A hub kit's half filler covers half an edge by definition, so "does it fill
+    // its span" is the wrong question to ask of it — the arm reaching back from the
+    // hub opposite covers the other half, and invariant 6 already checks both of
+    // its ends land on something.
+    if (def.halfEdge) return false;
     const span = def.cells * pitch;
     if (def.straddles) return !pitchIsBuildable(def.length, span, support);
     return def.length > span - support + .04;

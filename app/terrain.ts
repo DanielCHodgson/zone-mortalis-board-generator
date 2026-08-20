@@ -22,6 +22,27 @@ export type TerrainDef = {
   /** Pillars moulded into the piece, at 0, 1 or 2 of its ends. */
   ownColumns?: 0 | 1 | 2;
   /**
+   * For a HUB kit only (see EBERLEG_GRID): which node this piece is the casting
+   * for, as the arrangement of wall arms moulded onto its hub.
+   *
+   *   column    no arms — a bare node
+   *   stub      one arm — a run stops here
+   *   straight  two arms, opposite — a run passes through
+   *   corner    two arms, adjacent — a run turns
+   *   t         three arms
+   *   cross     four arms
+   *
+   * Undefined on every piece in every other catalogue, where a column is
+   * direction-agnostic and stands at any node.
+   */
+  shape?: "column" | "stub" | "straight" | "corner" | "t" | "cross";
+  /**
+   * A hub kit's filler panel, covering HALF an edge — the span between one hub's
+   * face and the midpoint of the gap, where the facing hub's arm would otherwise
+   * reach. Two of them, or one plus an arm, make a whole edge.
+   */
+  halfEdge?: boolean;
+  /**
    * Size tier, which decides where a scatter piece may stand.
    *
    * A Gallowdark corridor gives 69 mm of clear opening between pillars, so a piece
@@ -31,7 +52,8 @@ export type TerrainDef = {
    */
   scatter?: "small" | "medium" | "large";
   visual?: "solid" | "grid" | "pipe" | "vertical-pipe" | "reinforced" | "fan" | "floor" | "stair" | "door"
-    | "crate" | "barrel" | "barricade" | "console" | "machinery" | "container" | "tank" | "pipes";
+    | "crate" | "barrel" | "barricade" | "console" | "machinery" | "container" | "tank" | "pipes"
+    | "corner" | "t-junction";
   note: string;
 };
 
@@ -123,23 +145,49 @@ export const DEATHRAY_GRID = 50.8/25.4;
 // pitch it is 152.4 - 51.91 = 100.5 mm, 3.96 in, which is what a playable
 // corridor with headroom for wider machinery bays actually requires.
 //
-// Only two panels seat cleanly on this pitch, both as a single lattice cell
-// (the only shape `build.ts`'s tiler places without a hole or a false gap):
+// THIS KIT DOES NOT PUT PANELS ON EDGES. Every piece in it is a NODE piece: a
+// column hub with between zero and three arms of wall moulded onto its faces.
+// Three earlier passes missed this and tried to read the pieces as edge panels,
+// which is why each of them produced a different wrong pitch and, in the last
+// one, corner and T castings that visibly collided with the panels either side.
 //
-//   - the full "Straight" wall (152.40 mm) — zero slack, sets the pitch
-//   - the double bulkhead (103.60 mm) — 48.8 mm of slack, split evenly, still
-//     reaching visibly toward both columns
+// The proof is in the STL coordinates, which all share ONE origin across the
+// files — so the pieces can be laid on top of each other and read directly.
+// Every piece's hub is the same box, and every arm is the same length:
 //
-// The "Straight Short" wall (102.16 mm), the single bulkhead (52.8 mm), and
-// `ZM_Wall_Single_008` (50.8 mm, a piece missed entirely in the first pass) are
-// real hardware, but they belong to a finer sub-module the kit uses to finish a
-// tile edge PAST a Corner or T-Intersection piece — the same reason Corner and
-// T-Intersection themselves are not catalogued below. Forced onto the 152.4 mm
-// lattice, each would sit centred with 50+ mm of open air at both ends: a wall
-// or door that visibly doesn't reach the columns it is supposed to join, which
-// is exactly the "phasing through the connector" look this pitch is meant to
-// rule out. They stay out of the catalogue rather than in it and disconnected.
+//   piece                bbox              reach W / E / N / S      arms
+//   ZM_Collumn           51.91 x 51.91     26 / 26 / 26 / 26        none
+//   ZM_..._Short_A       102.16 x 51.91    26 / 76 / 26 / 26        one   (stub)
+//   ZM_..._Straight_A    152.40 x 51.91    76 / 76 / 26 / 26        two, opposite
+//   ZM_Wall_Corner_A     102.16 x 102.16   76 / 26 / 26 / 76        two, adjacent (L)
+//   ZM_Wall_T-Inter._A   152.40 x 102.16   76 / 76 / 26 / 76        three (T)
+//
+// Hub half-width is 25.955 mm — half of the 51.91 mm column — and an arm reaches
+// 76.2 mm, which is exactly HALF the 152.4 mm pitch. That is the whole system,
+// and it closes exactly: two hubs a pitch apart leave 152.4 - 51.91 = 100.49 mm
+// of clear gap between their faces, and the two arms facing each other across it
+// are 50.245 mm each, so they meet in the middle with nothing left over.
+//
+// So an edge on this lattice is walled when BOTH of its end hubs point an arm at
+// it, and a node's piece is chosen by which of its four directions are walled —
+// nothing else. `build.ts` has a dedicated `buildHub` pass for exactly this, and
+// `MANUFACTURERS.eberleg.joint` is "hub" to select it.
+//
+// The three remaining pieces are the fillers for the case a hub cannot serve a
+// direction (it ran out, or four runs meet and the kit has no cross casting).
+// Their sizes are the same arithmetic from the other side:
+//
+//   ZM_Wall_Single_008     50.80 mm   one arm's worth — half an edge
+//   ZM_Door_Single_Bulk.   52.80 mm   half an edge, with a door in it
+//   ZM_Door_Double_Bulk.  103.60 mm   a whole edge's 100.49 mm gap, with a door
+//
+// A doorway is always a filler, never an arm, because an arm is solid wall: the
+// hubs either side of a hatchway deliberately do NOT extend arms into it, and
+// the bulkhead stands in the gap they leave. That is how the real kit is built.
 export const EBERLEG_GRID = 152.4/25.4;
+/** Hub half-width and arm reach, in inches — see the note above. */
+export const EBERLEG_HUB = 51.91/25.4;
+export const EBERLEG_ARM = 76.2/25.4;
 export const BOARD_SIZES = {
   // The card board that ships in the box: 704 x 607 mm. It is a 7 x 6 grid of
   // 97 mm squares with a 12.5 mm border, which checks exactly — 7 x 97 = 679 and
@@ -173,16 +221,20 @@ export type Appearance = "light" | "dark";
  *              Deadbolt's Derelict all work this way.
  *   butt     — the panel butts BETWEEN two connectors. Pitch = panel + connector.
  *              Iron Labyrinth works this way.
+ *   hub      — there are no edge panels at all. Every piece stands on a NODE and
+ *              carries its own half-length arms of wall; an edge is walled when
+ *              the hubs at both its ends point an arm along it. Pitch = arm x 2 +
+ *              column. Eberleg works this way — see EBERLEG_GRID above.
  *
  * Two entries share the maker name "Games Workshop", so anything listing
  * manufacturers must show the range too or the two are indistinguishable.
  */
-export const MANUFACTURERS: Record<CatalogueId, { name:string; range:string; joint:"straddle" | "butt" }> = {
+export const MANUFACTURERS: Record<CatalogueId, { name:string; range:string; joint:"straddle" | "butt" | "hub" }> = {
   boarding: { name:"Games Workshop", range:"Boarding Actions", joint:"straddle" },
   mortalis: { name:"Games Workshop", range:"Zone Mortalis", joint:"straddle" },
   deathray: { name:"Death Ray Designs", range:"Deadbolt's Derelict", joint:"straddle" },
   ttcombat: { name:"TTCombat", range:"Iron Labyrinth", joint:"butt" },
-  eberleg: { name:"Eberleg", range:"Zone Mortalis Terrain Pieces (print-it-yourself)", joint:"straddle" },
+  eberleg: { name:"Eberleg", range:"Zone Mortalis Terrain Pieces (print-it-yourself)", joint:"hub" },
 } as const;
 
 // Quantities are the verified contents of the Boarding Actions Terrain Set: 68
@@ -277,21 +329,31 @@ export const TERRAIN: TerrainDef[] = [
   // ---------------------------------------------------------------------------
   // Eberleg's Zone Mortalis Terrain Pieces (print-your-own STL, Thingiverse)
   //
-  // Every figure below is a bounding-box measurement taken directly from the STL
-  // meshes, not a published spec — see EBERLEG_GRID above for why only these
-  // three pieces (of the eight the file set actually contains) are catalogued.
-  // Height is 63.50 mm (2.5 in exactly) on both.
+  // A HUB kit — read the note on EBERLEG_GRID above before changing anything
+  // here, because none of these are edge panels and three earlier passes came
+  // unstuck assuming they were. Every `pillar` below stands on a NODE and brings
+  // its own arms of wall; `shape` says which arms, and that is what decides the
+  // node it belongs at. Every figure is a bounding-box measurement taken off the
+  // STL mesh. Height is 63.50 mm (2.5 in exactly) throughout.
+  { id:"eb-column", catalogue:"eberleg", name:"Zone Mortalis (Eberleg) column", shortName:"Eb column", width:51.91/MM_PER_IN, depth:51.91/MM_PER_IN, height:63.5/MM_PER_IN, limit:24, kind:"pillar", shape:"column", note:"51.9 x 51.9 mm - bare hub, no arms" },
+  { id:"eb-stub", catalogue:"eberleg", name:"Zone Mortalis (Eberleg) short wall", shortName:"Eb stub", width:102.16/MM_PER_IN, depth:51.91/MM_PER_IN, height:63.5/MM_PER_IN, limit:8, kind:"pillar", shape:"stub", visual:"solid", note:"102.16 x 51.9 mm - hub + one arm, where a run stops" },
+  { id:"eb-wall", catalogue:"eberleg", name:"Zone Mortalis (Eberleg) straight wall", shortName:"Eb wall", width:152.40/MM_PER_IN, depth:51.91/MM_PER_IN, height:63.5/MM_PER_IN, limit:16, kind:"pillar", shape:"straight", visual:"solid", note:"152.4 x 51.9 mm - hub + two opposite arms, a run passing through" },
+  { id:"eb-corner", catalogue:"eberleg", name:"Zone Mortalis (Eberleg) corner", shortName:"Eb corner", width:102.16/MM_PER_IN, depth:102.16/MM_PER_IN, height:63.5/MM_PER_IN, limit:6, kind:"pillar", shape:"corner", visual:"corner", note:"102.16 x 102.16 mm - hub + two arms at 90 degrees, an L" },
+  { id:"eb-t-intersection", catalogue:"eberleg", name:"Zone Mortalis (Eberleg) T-intersection", shortName:"Eb T-piece", width:152.40/MM_PER_IN, depth:102.16/MM_PER_IN, height:63.5/MM_PER_IN, limit:4, kind:"pillar", shape:"t", visual:"t-junction", note:"152.4 x 102.16 mm - hub + three arms, a T" },
+
+  // The fillers. These DO sit on an edge, and they exist for the two cases a hub
+  // cannot serve: a direction whose hub casting has run out, and a doorway --
+  // which is never an arm, because an arm is solid wall, so the hubs either side
+  // leave the gap open and a bulkhead stands in it.
   //
-  // Doors: the kit prints a bulkhead FRAME (which occupies the wall-cell, like
-  // every other range's "door" piece) and a separate door LEAF that slides inside
-  // it. Only the bulkhead is catalogued — the leaf isn't placed on the board, it
-  // rides inside the frame already on it. Depth is taken as the wall's own
-  // 51.91 mm rather than the bulkhead's measured 43.97 mm frame-opening width, so
-  // the door draws flush with the wall runs either side of it instead of reading
-  // as a step in the corridor's edge.
-  { id:"eb-column", catalogue:"eberleg", name:"Zone Mortalis (Eberleg) column", shortName:"Eb column", width:51.91/MM_PER_IN, depth:51.91/MM_PER_IN, height:63.5/MM_PER_IN, limit:24, kind:"pillar", note:"51.9 × 51.9 mm · measured" },
-  { id:"eb-wall", catalogue:"eberleg", name:"Zone Mortalis (Eberleg) straight wall", shortName:"Eb wall", width:152.40/MM_PER_IN, depth:51.91/MM_PER_IN, height:63.5/MM_PER_IN, limit:16, kind:"wall", span:EBERLEG_GRID, visual:"solid", note:"152.4 × 51.9 mm · one full 6 in tile edge, zero slack — sets the pitch" },
-  { id:"eb-wide-door", catalogue:"eberleg", name:"Zone Mortalis (Eberleg) double bulkhead", shortName:"Eb door", width:103.60/MM_PER_IN, depth:51.91/MM_PER_IN, height:63.5/MM_PER_IN, limit:2, kind:"door", span:EBERLEG_GRID, visual:"door", note:"103.6 × 51.9 mm · one tile edge, 48.8 mm slack split evenly · slides in and out" },
+  // The bulkhead prints as a FRAME plus a separate sliding door LEAF; only the
+  // frame is catalogued, since the leaf rides inside a frame already on the
+  // board rather than being placed itself. Depth is carried as the wall's own
+  // 51.91 mm rather than the frame's measured 43.97 mm opening, so a door draws
+  // flush with the runs either side instead of reading as a step in the wall.
+  { id:"eb-single-wall", catalogue:"eberleg", name:"Zone Mortalis (Eberleg) single wall", shortName:"Eb single wall", width:50.8/MM_PER_IN, depth:51.91/MM_PER_IN, height:63.5/MM_PER_IN, limit:4, kind:"wall", halfEdge:true, visual:"solid", note:"50.8 x 51.9 mm - one arm's worth, fills half an edge" },
+  { id:"eb-single-door", catalogue:"eberleg", name:"Zone Mortalis (Eberleg) single bulkhead", shortName:"Eb single door", width:52.80/MM_PER_IN, depth:51.91/MM_PER_IN, height:63.5/MM_PER_IN, limit:2, kind:"door", halfEdge:true, visual:"door", note:"52.8 x 51.9 mm - half an edge, with a door in it" },
+  { id:"eb-wide-door", catalogue:"eberleg", name:"Zone Mortalis (Eberleg) double bulkhead", shortName:"Eb door", width:103.60/MM_PER_IN, depth:51.91/MM_PER_IN, height:63.5/MM_PER_IN, limit:2, kind:"door", span:EBERLEG_GRID, visual:"door", note:"103.6 x 51.9 mm - a whole edge's 100.49 mm gap, with a door in it" },
 
   { id:"tt-connector", catalogue:"ttcombat", name:"Iron Labyrinth connector block", shortName:"Connector", width:50/MM_PER_IN, depth:50/MM_PER_IN, height:60/MM_PER_IN, limit:24, kind:"connector", note:"50 × 50 mm" },
   { id:"tt-wall-end", catalogue:"ttcombat", name:"Iron Labyrinth wall end", shortName:"Wall end", width:46/MM_PER_IN, depth:33/MM_PER_IN, height:60/MM_PER_IN, limit:21, kind:"end", note:"46 × 33 mm" },
@@ -331,8 +393,7 @@ export const TERRAIN_KITS: TerrainKit[] = [
   { id:"iron-stairs", catalogue:"ttcombat", maker:"TTCombat", name:"Iron Labyrinth Stairs", description:"Two connector-compatible stair sections", source:"TTCombat published dimensions", sourceUrl:"https://ttcombat.com/products/iron-labyrinth-stairs", inventory:{ "tt-stair":2 } },
   { id:"iron-death-quadrant", catalogue:"ttcombat", maker:"TTCombat", name:"Iron Labyrinth – Death Quadrant Complex", description:"Dimensioned columns, walls, and door modules", source:"TTCombat published dimensions", sourceUrl:"https://ttcombat.com/products/iron-labyrinth-death-quadrant-complex", inventory:{ "tt-dq-column":11, "tt-dq-double-wall":4, "tt-dq-single-wall":4, "tt-dq-double-door":1, "tt-dq-single-door":2 }, caveat:"Platforms, tiles, ladders, and stairs are listed by TTCombat but omitted from the scaled palette because their footprints are not published." },
   { id:"iron-ultima", catalogue:"ttcombat", maker:"TTCombat", name:"Iron Labyrinth Ultima Complex", description:"24 connectors, 21 ends, and 18 wall sections", source:"TTCombat published dimensions", sourceUrl:"https://ttcombat.com/products/iron-labyrinth-bundle", inventory:{ "tt-connector":24, "tt-wall-end":21, "tt-solid-wall":8, "tt-grid-wall":2, "tt-solid-pipe-wall":2, "tt-vertical-pipe-wall":2, "tt-reinforced-pipe-wall":2, "tt-fan-wall":2 } },
-  { id:"eberleg-walls", catalogue:"eberleg", maker:"Eberleg", name:"Zone Mortalis Terrain Pieces (print files)", description:"Columns and the full-length wall, one per 6 in floor-tile edge", source:"Bounding-box measurement of the published STL meshes", sourceUrl:"https://www.thingiverse.com/thing:2609090", inventory:{ "eb-column":24, "eb-wall":16 }, caveat:"Print-your-own kit, no fixed box count — quantities are a starting palette. Short wall, single wall and Corner/T pieces omitted: too short for a 3.5-4 in corridor at this pitch, or the wrong shape (see EBERLEG_GRID)." },
-  { id:"eberleg-doors", catalogue:"eberleg", maker:"Eberleg", name:"Zone Mortalis Doorway Bulkheads and Doors (print files)", description:"The double sliding-door bulkhead that slots into a wall section", source:"Bounding-box measurement of the published STL meshes", sourceUrl:"https://www.thingiverse.com/thing:2609112", inventory:{ "eb-wide-door":4 }, caveat:"Print-your-own kit, no fixed box count. Single bulkhead omitted: too short to seat at this pitch (see EBERLEG_GRID)." },
+  { id:"eberleg-all", catalogue:"eberleg", maker:"Eberleg", name:"Zone Mortalis Terrain Pieces (print files)", description:"Columns, corners, T-intersections, both wall lengths and both bulkheads — everything the print-your-own range holds", source:"Bounding-box measurement of the published STL meshes, across the range's three separate Thingiverse downloads (thing:2609090 walls/columns, thing:2609112 doors)", sourceUrl:"https://www.thingiverse.com/thing:2609090", inventory:{ "eb-column":16, "eb-stub":12, "eb-wall":24, "eb-corner":20, "eb-t-intersection":14, "eb-single-wall":32, "eb-single-door":6, "eb-wide-door":8 }, caveat:"Print-your-own kit, no fixed box count — quantities are a starting palette, sized here for a four-foot board. Unlike every other range here, these are NODE pieces: each column, stub, straight, corner and T casting carries its own half-length arms of wall, and an edge is walled when the hubs at both its ends reach an arm along it. The single wall is deliberately the most numerous piece, because the kit has no four-armed cross casting — so every crossroads on the board is a T plus one single wall, and running short of them is what stops a board reaching the size its castings could otherwise support. The bulkheads are the other filler: a doorway is never an arm, since an arm is solid wall." },
   // Not a real GW product — the scatter pieces above have no published kit to
   // belong to, and the "Available pieces" browser only ever shows what a selected
   // kit lists. Without an entry here the pieces exist in the catalogue but are

@@ -888,6 +888,21 @@ test("every panel the generator will place seats in its span without overlapping
       .filter((def) => def.kind === "wall" || def.kind === "door")
       .forEach((def) => {
         const span = def.cells * reading.pitch;
+        if (def.halfEdge) {
+          // A hub kit's filler covers HALF an edge by construction — see
+          // EBERLEG_GRID in terrain.ts — so "does it fill its span" is the wrong
+          // question. What has to be true is that it reaches from one hub's face
+          // to the middle of the gap, where the arm reaching back from the hub
+          // opposite meets it. Short of that and the wall has a hole in it;
+          // longer than half the gap plus a hub, and it has run clean through
+          // the casting at the far end.
+          const gap = reading.pitch - reading.support;
+          assert.ok(
+            def.length >= gap / 2 - .04 && def.length <= gap / 2 + reading.support / 2 + 1e-6,
+            `${kit.name}/${def.id}: ${(def.length * MM).toFixed(0)}mm filler does not cover half of a ${(gap * MM).toFixed(0)}mm gap`,
+          );
+          return;
+        }
         if (def.straddles) {
           // Slots into a column standing on the node: may be shorter than its span by up
           // to one column, and that difference is the slot.

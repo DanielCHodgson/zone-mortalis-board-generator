@@ -212,6 +212,10 @@ h2 { font-size:16px; letter-spacing:-.02em; }
 .piece-icon.visual-vertical-pipe,.placed-piece.visual-vertical-pipe { background-image:linear-gradient(90deg,transparent 25%,var(--wall-detail) 25% 35%,transparent 35% 65%,var(--wall-detail) 65% 75%,transparent 75%); }
 .piece-icon.visual-reinforced,.placed-piece.visual-reinforced { box-shadow:inset 0 0 0 2px var(--wall-detail); }
 .piece-icon.visual-fan,.placed-piece.visual-fan { background-image:radial-gradient(circle,var(--wall-detail) 0 18%,transparent 20% 36%,var(--wall-detail) 38% 45%,transparent 47%); }
+/* Corner and T-intersection castings, for the palette icon only -- the placed
+   piece on the board is built from the real arm geometry, further down. */
+.piece-icon.visual-corner { clip-path:polygon(0 0,100% 0,100% 100%,49% 100%,49% 51%,0 51%); }
+.piece-icon.visual-t-junction { clip-path:polygon(0 0,100% 0,100% 51%,67% 51%,67% 100%,33% 100%,33% 51%,0 51%); }
 .board-column { min-width:0; min-height:0; height:100%; display:flex; flex-direction:column; }
 .board-toolbar { flex:0 0 auto; min-height:44px; padding:5px; margin-bottom:8px; display:flex; justify-content:space-between; align-items:center; gap:4px; }
 .board-toolbar > .tool-group:first-child { flex-wrap:wrap; }
@@ -305,6 +309,42 @@ kbd { padding-left:4px; color:var(--muted); font:11px var(--font-geist-mono, ui-
 .placed-piece.pillar { background:var(--pillar); border-color:var(--pillar-line); }
 .placed-piece.connector { background:var(--ink-2); border-color:var(--line); box-shadow:0 1px 2px var(--piece-shadow),inset 0 0 0 2px var(--board-inner); }
 .placed-piece.end { background:var(--end); }
+/* Hub castings: a corner or T carved out of the piece's own bounding box.
+ *
+ * The percentages are the real casting's geometry, not a tidy half-and-half. Its
+ * hub is 51.91 mm and each arm reaches 76.2 mm from the node, so on a 102.16 mm
+ * corner the node sits at 74.6%/25.4% and the hub spans 49.2% of the box; on the
+ * 152.4 mm axis of a T the hub spans 34%. Rounding these to 50% would draw a
+ * shape that does not match the piece the board is telling you to print.
+ *
+ * The clip goes on a `::before` layer, never on `.placed-piece` itself, because
+ * clip-path clips everything about the element it is set on -- border, background
+ * and the selection ring's box-shadow alike. On the element it made a selected
+ * corner look unselected everywhere the shape does not cover. `.placed-piece`
+ * keeps its full rectangular hit-box, border and selection ring like every other
+ * piece, so drag, click and the marquee all behave normally, and only the
+ * decorative fill underneath is shaped.
+ *
+ * `facing` is degrees clockwise from the casting's canonical orientation, which
+ * is the corner's arms pointing west and south and the T's pointing west, east
+ * and south -- read straight off the STL. See `CANONICAL_ARMS` in build.ts. */
+.placed-piece.visual-corner,.placed-piece.visual-t-junction { background:transparent; border-color:transparent; }
+.placed-piece.visual-corner::before,.placed-piece.visual-t-junction::before { content:""; position:absolute; inset:0; background:var(--pillar); box-shadow:inset 0 0 0 1px var(--pillar-line); }
+.placed-piece.visual-corner.selected::before,.placed-piece.visual-t-junction.selected::before { background:var(--pillar); }
+/* Corner: arms west + south at facing 0, turning clockwise from there. */
+.placed-piece.visual-corner::before { clip-path:polygon(0 0,100% 0,100% 100%,49.2% 100%,49.2% 50.8%,0 50.8%); }
+.placed-piece.visual-corner.facing-90::before { clip-path:polygon(49.2% 0,100% 0,100% 100%,0 100%,0 49.2%,49.2% 49.2%); }
+.placed-piece.visual-corner.facing-180::before { clip-path:polygon(0 0,50.8% 0,50.8% 49.2%,100% 49.2%,100% 100%,0 100%); }
+.placed-piece.visual-corner.facing-270::before { clip-path:polygon(0 0,100% 0,100% 50.8%,50.8% 50.8%,50.8% 100%,0 100%); }
+/* T: arms west + east + south at facing 0, so the missing arm turns clockwise. */
+.placed-piece.visual-t-junction::before { clip-path:polygon(0 0,100% 0,100% 50.8%,67% 50.8%,67% 100%,33% 100%,33% 50.8%,0 50.8%); }
+.placed-piece.visual-t-junction.facing-90::before { clip-path:polygon(49.2% 0,100% 0,100% 100%,49.2% 100%,49.2% 67%,0 67%,0 33%,49.2% 33%); }
+.placed-piece.visual-t-junction.facing-180::before { clip-path:polygon(33% 0,67% 0,67% 49.2%,100% 49.2%,100% 100%,0 100%,0 49.2%,33% 49.2%); }
+.placed-piece.visual-t-junction.facing-270::before { clip-path:polygon(0 0,50.8% 0,50.8% 33%,100% 33%,100% 67%,50.8% 67%,50.8% 100%,0 100%); }
+/* A hub kit's straight and stub castings are solid rectangles at their own size,
+   so they need no clip -- but they ARE the wall, so they draw as wall, not as the
+   pale column the plain hub uses. */
+.placed-piece.pillar.visual-solid { background:var(--wall); border-color:var(--wall-line); }
 /* Scatter is dressing, not structure: it sits under the walls so a bulkhead always
    draws over a crate, and it is tinted apart from the terrain so the eye can tell
    what is a wall and what is a barrel. */

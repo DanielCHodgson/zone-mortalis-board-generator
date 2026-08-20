@@ -266,9 +266,35 @@ type Corridor = { axis:"h" | "v"; at:number };
  * and `breakLongBulkheads` is what deals with those. Kept for the shape, with the
  * claim corrected.
  */
-const corridorLegs = (lattice:Lattice, corridor:Corridor, random:() => number):Rect[] => {
+/**
+ * The lane positions a corridor (or one of its dog-leg jogs) may land on,
+ * without leaving a margin to the hull too narrow to be a room.
+ *
+ * A lane one or two short of `roomMin` from either hull edge leaves a strip
+ * on that side too thin for `subdivide` to ever offer as a real compartment —
+ * `chooseSplit` never proposes cutting anything down that far — so it stands
+ * as ITS OWN leftover block from `subtractRect`, walled on the corridor side
+ * AND on the hull side. The hull side is a real wall regardless; the corridor
+ * side duplicates it for nothing, which is the single most common way this
+ * generator burns a palette without the board getting any bigger for it.
+ *
+ * The fix is to never propose a lane that leaves that margin in the first
+ * place, rather than patching the sliver it would have produced — a corridor
+ * still keeps off the very edge lanes (`lo`/`hi` never include 0 or the far
+ * edge), it just cannot come within less than `roomMin` of them either.
+ * Falls back to the old edge-adjacent-but-not-flush range on a lattice too
+ * narrow to keep both a corridor and a `roomMin` margin on each side — a
+ * sliver there is the lesser fault next to having no corridor at all.
+ */
+const laneRange = (lanes:number, roomMin:number):[number, number] => {
+  const lo = roomMin, hi = lanes - 1 - roomMin;
+  return lo <= hi ? [lo, hi] : [1, Math.max(1, lanes - 2)];
+};
+
+const corridorLegs = (lattice:Lattice, corridor:Corridor, roomMin:number, random:() => number):Rect[] => {
   const extent = corridor.axis === "h" ? lattice.cols : lattice.rows;
   const lanes = corridor.axis === "h" ? lattice.rows : lattice.cols;
+  const [lo, hi] = laneRange(lanes, roomMin);
   const asRect = (at:number, from:number, to:number):Rect => corridor.axis === "h"
     ? { col:from, row:at, cols:to - from, rows:1 }
     : { col:at, row:from, cols:1, rows:to - from };
@@ -286,9 +312,7 @@ const corridorLegs = (lattice:Lattice, corridor:Corridor, random:() => number):R
     const at = from + 3 + Math.floor(random() * Math.max(1, remaining - 5));
     const direction = random() < .5 ? -1 : 1;
     const next = lane + direction;
-    // Keep the corridor off the very edge lanes, or the jog seals a one-cell strip
-    // between the passage and the hull.
-    if (next < 1 || next > lanes - 2) continue;
+    if (next < lo || next > hi) continue;
     legs.push(asRect(lane, from, at));
     lane = next;
     from = at;
@@ -304,11 +328,15 @@ const corridorLegs = (lattice:Lattice, corridor:Corridor, random:() => number):R
  * undifferentiated warren of rooms. Each one runs the full extent of the lattice,
  * so its flanks are the long unbroken wall runs, and it is kept off the hull —
  * a corridor pressed against the board edge only walls one side and wastes the
- * best structural line on the board.
+ * best structural line on the board — and off the near-hull sliver zone too;
+ * see `laneRange`.
  */
-const chooseCorridors = (lattice:Lattice, random:() => number):Corridor[] => {
+const chooseCorridors = (lattice:Lattice, roomMin:number, random:() => number):Corridor[] => {
   const room = (extent:number) => extent >= 3;
-  const pick = (extent:number) => 1 + Math.floor(random() * (extent - 2));
+  const pick = (extent:number) => {
+    const [lo, hi] = laneRange(extent, roomMin);
+    return lo + Math.floor(random() * (hi - lo + 1));
+  };
   const options:Corridor[] = [];
   if (room(lattice.rows)) options.push({ axis:"h", at:pick(lattice.rows) });
   if (room(lattice.cols)) options.push({ axis:"v", at:pick(lattice.cols) });
@@ -323,14 +351,17 @@ const chooseCorridors = (lattice:Lattice, random:() => number):Corridor[] => {
 
   if (options.length === 2 && random() < .6) return options;
 
-  // A parallel pair, kept at least two cells apart so there is a compartment
-  // between them rather than a shared wall.
+  // A parallel pair, kept at least `roomMin` + 1 cells apart so there is a real
+  // compartment between them rather than a shared wall, and each kept out of the
+  // sliver zone against its own hull side exactly as a single corridor is.
   const axis = options[Math.floor(random() * options.length)].axis;
   const extent = axis === "h" ? lattice.rows : lattice.cols;
   if (extent < 6) return [{ axis, at:pick(extent) }];
-  const first = 1 + Math.floor(random() * (extent - 4));
-  const second = first + 3 + Math.floor(random() * Math.max(1, extent - first - 4));
-  if (second > extent - 2) return [{ axis, at:first }];
+  const [lo, hi] = laneRange(extent, roomMin);
+  const clamp = (value:number) => Math.min(hi, Math.max(lo, value));
+  const first = clamp(1 + Math.floor(random() * (extent - 4)));
+  const second = clamp(first + 3 + Math.floor(random() * Math.max(1, extent - first - 4)));
+  if (second - first < roomMin + 1) return [{ axis, at:first }];
   return [{ axis, at:first }, { axis, at:second }];
 };
 
@@ -836,8 +867,8 @@ export const buildDeckPlan = (input:DeckPlanInput):DeckPlan => {
   const exterior = input.exterior ?? new Set<string>();
   const reserved = (input.reserved ?? []).filter(rectArea);
 
-  const corridors = chooseCorridors(lattice, random);
-  const legs = corridors.flatMap((corridor) => corridorLegs(lattice, corridor, random));
+  const corridors = chooseCorridors(lattice, roomMin, random);
+  const legs = corridors.flatMap((corridor) => corridorLegs(lattice, corridor, roomMin, random));
   const reservedCells = new Set<string>();
   reserved.forEach((rect) => {
     for (let row = rect.row; row < rect.row + rect.rows; row++) for (let col = rect.col; col < rect.col + rect.cols; col++) {

@@ -80,6 +80,13 @@ export type BuildDef = {
    * exactly or it overlaps the connectors it is supposed to sit between.
    */
   straddles:boolean;
+  /** HUB KITS ONLY: which arrangement of moulded wall arms this node casting
+   *  carries — see `CANONICAL_ARMS`. Undefined everywhere else, where a column is
+   *  direction-agnostic and stands at any node. */
+  shape?:HubShape;
+  /** HUB KITS ONLY: a filler panel covering half an edge, from one hub's face to
+   *  the midpoint of the gap. */
+  halfEdge?:boolean;
 };
 
 export type BuiltPiece = {
@@ -101,6 +108,9 @@ export type BuiltPiece = {
    * was becoming untrue of the layout.
    */
   servesDoorway?:boolean;
+  /** HUB KITS ONLY: degrees clockwise from the casting's canonical orientation,
+   *  which is what says where its arms point. Absent on every other piece. */
+  facing?:0 | 90 | 180 | 270;
 };
 
 export type BuildResult =
@@ -171,6 +181,47 @@ const panelsAtNode = (node:LatticeNode, state:Map<string, EdgeState>) => {
     { axis:"v", col:node.col, row:node.row },
   ] as LatticeEdge[]).filter(carriesPanel).length;
 };
+
+// ---------------------------------------------------------------------------
+// Hub kits
+//
+// A hub kit has no edge panels: every piece stands on a NODE and carries its
+// own arms of wall, each reaching exactly half a pitch, so an edge is walled
+// when the hubs at both its ends reach an arm along it. See EBERLEG_GRID in
+// terrain.ts for the measurements this is read from.
+// ---------------------------------------------------------------------------
+
+export type Dir = "n" | "e" | "s" | "w";
+export type HubShape = "column" | "stub" | "straight" | "corner" | "t" | "cross";
+
+/** Turning the board 90 degrees clockwise sends each side to the next one. */
+const CLOCKWISE:Record<Dir, Dir> = { n:"e", e:"s", s:"w", w:"n" };
+
+/**
+ * Each casting's arms as the STL actually has them, before any rotation.
+ *
+ * Read straight off the meshes — the corner's two arms are west and south, the
+ * T's three are west, east and south, and so on. `facing` elsewhere is the
+ * number of degrees clockwise from these.
+ */
+const CANONICAL_ARMS:Record<HubShape, Dir[]> = {
+  column:[],
+  stub:["e"],
+  straight:["w", "e"],
+  corner:["w", "s"],
+  t:["w", "e", "s"],
+  cross:["n", "e", "s", "w"],
+};
+
+const turn = (arms:Dir[], quarters:number):Dir[] => {
+  let turned = arms;
+  for (let step = 0; step < quarters; step++) turned = turned.map((dir) => CLOCKWISE[dir]);
+  return turned;
+};
+
+/** Which way you travel along an edge to get from one of its nodes to the other. */
+const dirFromNode = (edge:LatticeEdge, from:LatticeNode):Dir =>
+  edge.axis === "h" ? (from.col === edge.col ? "e" : "w") : (from.row === edge.row ? "s" : "n");
 
 /**
  * Tile one wall run.
@@ -246,7 +297,264 @@ const placePanel = (
   };
 };
 
-export const build = ({ plan, defs, stock, heights, nextUid, seed }:BuildInput):BuildResult => {
+/**
+ * Build a board from a hub kit.
+ *
+ * Nothing sits on an edge here. Each node takes ONE casting, chosen by which of
+ * its four directions the plan wants walled, and that casting brings the walls
+ * with it: half an edge in each armed direction, meeting the arm reaching back
+ * from the hub opposite. So the whole board is node pieces, and the fillers
+ * exist only for the two cases a hub cannot serve.
+ *
+ *   - A doorway, which is never an arm because an arm is solid wall. The hubs
+ *     either side leave the gap open and a bulkhead stands in it.
+ *   - A direction whose casting ran out, or a node where four runs meet and the
+ *     kit has no cross casting.
+ *
+ * The one rule that keeps this honest is that a casting is only ever placed
+ * where EVERY arm it carries has a wall to be: `arms` must be a subset of what
+ * the plan wants at that node. A corner turned the wrong way would otherwise put
+ * a moulded stub of wall out into open floor, which is the hub-kit version of a
+ * panel hanging in mid-air.
+ */
+const buildHub = ({ plan, defs, stock, heights, nextUid, seed }:BuildInput):BuildResult => {
+  const { lattice, state } = plan;
+  const random = randomFactory(seed);
+  const working = new Map(stock);
+  const pieces:BuiltPiece[] = [];
+
+  const hubDefs = shuffle(defs.filter((def) => def.shape !== undefined), random);
+  const halfDoors = defs.filter((def) => def.halfEdge && def.kind === "door");
+  const halfWalls = defs.filter((def) => def.halfEdge && def.kind === "wall");
+  const wideDoors = defs.filter((def) => !def.halfEdge && def.shape === undefined && def.kind === "door");
+  if (!hubDefs.length) return { ok:false, reason:"hub kit has no node castings" };
+
+  const column = hubDefs.find((def) => def.shape === "column");
+  const hubHalf = (column ? column.depth : Math.min(...hubDefs.map((def) => def.depth))) / 2;
+  const reachOf = (dir:Dir) => dir === "w" || dir === "e" ? lattice.pitchX / 2 : lattice.pitchY / 2;
+
+  const has = (def:BuildDef) => (working.get(def.id) ?? 0) > 0;
+  const take = (def:BuildDef) => { working.set(def.id, (working.get(def.id) ?? 0) - 1); return def; };
+  const spare = (list:BuildDef[]) => list.find(has);
+
+  const panelEdges = plan.panelEdges.filter((edge) =>
+    !isBorderEdge(lattice, edge) || plan.exterior.has(edgeKey(edge)));
+  if (!panelEdges.length) return { ok:false, reason:"plan carries no panels" };
+
+  // A doorway is settled before anything else, because it is what says which hubs
+  // must NOT arm a direction. Double bulkheads go first: one fills the whole gap
+  // between two bare hubs. Past those, a single bulkhead takes half the gap and
+  // one hub arms the other half, which is still a wall with a door in it.
+  type Job = {
+    edge:LatticeEdge; a:LatticeNode; b:LatticeNode; dirA:Dir; dirB:Dir;
+    hatch:boolean; wide?:BuildDef; single?:BuildDef; armedEnd?:"a" | "b";
+  };
+  const jobs:Job[] = panelEdges.map((edge) => {
+    const [a, b] = nodesOfEdge(edge);
+    return {
+      edge, a, b, dirA:dirFromNode(edge, a), dirB:dirFromNode(edge, b),
+      hatch:state.get(edgeKey(edge)) === "hatch",
+    };
+  });
+  const doorways = jobs.filter((job) => job.hatch).length;
+  for (const job of jobs) {
+    if (!job.hatch) continue;
+    const wide = spare(wideDoors);
+    if (wide) { job.wide = take(wide); continue; }
+    const single = spare(halfDoors);
+    if (!single) return { ok:false, reason:`out of bulkheads: ${doorways} doorways need one` };
+    job.single = take(single);
+    job.armedEnd = random() < .5 ? "a" : "b";
+  }
+
+  // What each node wants walled. A doorway filled end to end by a double bulkhead
+  // asks for no arm at all; one filled by a single bulkhead asks for exactly one,
+  // at the end the bulkhead does not cover.
+  const wanted = new Map<string, Set<Dir>>();
+  const nodes = new Map<string, LatticeNode>();
+  const askFor = (node:LatticeNode, dir:Dir) => {
+    const key = nodeKey(node);
+    const set = wanted.get(key) ?? new Set<Dir>();
+    set.add(dir);
+    wanted.set(key, set);
+  };
+  jobs.forEach((job) => {
+    nodes.set(nodeKey(job.a), job.a);
+    nodes.set(nodeKey(job.b), job.b);
+    if (job.wide) return;
+    if (job.single) {
+      if (job.armedEnd === "a") askFor(job.a, job.dirA); else askFor(job.b, job.dirB);
+      return;
+    }
+    askFor(job.a, job.dirA);
+    askFor(job.b, job.dirB);
+  });
+
+  // Busiest nodes first, so the scarce three-armed castings land where three runs
+  // actually meet rather than being spent on a corner a corner would have done.
+  const chosen = new Map<string, { def:BuildDef; facing:0 | 90 | 180 | 270; arms:Dir[] }>();
+  const busiest = [...nodes.keys()].sort((first, second) =>
+    (wanted.get(second)?.size ?? 0) - (wanted.get(first)?.size ?? 0));
+  for (const key of busiest) {
+    const want = wanted.get(key) ?? new Set<Dir>();
+    let best:{ def:BuildDef; facing:0 | 90 | 180 | 270; arms:Dir[] } | null = null;
+    for (const def of hubDefs) {
+      if (!has(def)) continue;
+      for (let quarter = 0; quarter < 4; quarter++) {
+        const arms = turn(CANONICAL_ARMS[def.shape!], quarter);
+        // Never point a moulded arm at open floor.
+        if (!arms.every((dir) => want.has(dir))) continue;
+        if (!best || arms.length > best.arms.length) {
+          best = { def, facing:(quarter * 90) as 0 | 90 | 180 | 270, arms };
+        }
+      }
+    }
+    if (!best) return { ok:false, reason:`out of node castings: ${nodes.size} nodes need one` };
+    take(best.def);
+    chosen.set(key, best);
+  }
+
+  const armed = (node:LatticeNode, dir:Dir) => chosen.get(nodeKey(node))?.arms.includes(dir) ?? false;
+
+  /**
+   * Second pass: rescue any edge that came out of the first with no arm at all.
+   *
+   * The first pass takes the casting with the most arms that fit what a node
+   * wants, and where it has to settle for fewer than the node wanted, WHICH
+   * directions get dropped is arbitrary. That is fine for one end of an edge —
+   * a filler covers the missing half — but both ends can drop the same direction
+   * independently, and then the edge has nothing at either end and nothing for a
+   * filler's inner end to stand on either. It is the one failure the greedy pass
+   * produces on its own, and on a thin palette it was frequent enough to lose the
+   * whole board.
+   *
+   * The rescue is to re-pick one endpoint, handing its current casting back to the
+   * box first so a like-for-like swap is always on the table.
+   */
+  const rescue = (node:LatticeNode, dir:Dir) => {
+    const key = nodeKey(node);
+    const current = chosen.get(key);
+    if (!current) return false;
+    const want = wanted.get(key) ?? new Set<Dir>();
+    if (!want.has(dir)) return false;
+    working.set(current.def.id, (working.get(current.def.id) ?? 0) + 1);
+    let best:{ def:BuildDef; facing:0 | 90 | 180 | 270; arms:Dir[] } | null = null;
+    for (const def of hubDefs) {
+      if (!has(def)) continue;
+      for (let quarter = 0; quarter < 4; quarter++) {
+        const arms = turn(CANONICAL_ARMS[def.shape!], quarter);
+        if (!arms.includes(dir)) continue;
+        if (!arms.every((each) => want.has(each))) continue;
+        if (!best || arms.length > best.arms.length) {
+          best = { def, facing:(quarter * 90) as 0 | 90 | 180 | 270, arms };
+        }
+      }
+    }
+    if (!best) { working.set(current.def.id, (working.get(current.def.id) ?? 0) - 1); return false; }
+    take(best.def);
+    chosen.set(key, best);
+    return true;
+  };
+  jobs.forEach((job) => {
+    if (job.wide || job.single) return;
+    if (armed(job.a, job.dirA) || armed(job.b, job.dirB)) return;
+    if (!rescue(job.a, job.dirA)) rescue(job.b, job.dirB);
+  });
+
+  // Every edge has to come out whole. One with a single arm is finished with a
+  // half filler; one with no arm at all has nothing for that filler's inner end to
+  // stand on, so rather than leave a panel hanging the build fails and the
+  // generator tries a smaller board -- the same reject-and-retry as everywhere else.
+  type Filler = { def:BuildDef; node:LatticeNode; dir:Dir };
+  const fillers:Filler[] = [];
+  for (const job of jobs) {
+    if (job.wide) continue;
+    const armsHere = (armed(job.a, job.dirA) ? 1 : 0) + (armed(job.b, job.dirB) ? 1 : 0);
+    if (job.single) {
+      if (!armsHere) return { ok:false, reason:"a doorway lost the arm facing its bulkhead" };
+      const bare = job.armedEnd === "a" ? { node:job.b, dir:job.dirB } : { node:job.a, dir:job.dirA };
+      fillers.push({ def:job.single, node:bare.node, dir:bare.dir });
+      continue;
+    }
+    if (armsHere === 2) continue;
+    // No arm at either end: both halves are filler, butting in the middle of the
+    // gap and held by the hub at each outer end. That is a joint the kit makes,
+    // so it is built rather than refused — it just costs two pieces instead of
+    // none, which is what the report's leftover count then shows.
+    const bare = armed(job.a, job.dirA)
+      ? [{ node:job.b, dir:job.dirB }]
+      : armed(job.b, job.dirB)
+        ? [{ node:job.a, dir:job.dirA }]
+        : [{ node:job.a, dir:job.dirA }, { node:job.b, dir:job.dirB }];
+    for (const half of bare) {
+      const filler = spare(halfWalls);
+      if (!filler) return { ok:false, reason:"out of single walls to finish an edge no hub could arm" };
+      take(filler);
+      fillers.push({ def:filler, node:half.node, dir:half.dir });
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Placement
+  // ---------------------------------------------------------------------------
+  chosen.forEach(({ def, facing, arms }, key) => {
+    const world = nodeWorld(lattice, nodes.get(key)!);
+    const reach = (dir:Dir) => arms.includes(dir) ? reachOf(dir) : hubHalf;
+    const width = reach("w") + reach("e");
+    const height = reach("n") + reach("s");
+    pieces.push({
+      uid:nextUid(), defId:def.id,
+      x:world.x - reach("w"),
+      y:world.y - reach("n"),
+      // The box a set of arms makes is always the casting's own, one way round or
+      // the other -- so which way round it is IS the rotation, and `facing` carries
+      // the rest, since two opposite orientations share a box.
+      rotation:width >= height ? 0 : 90,
+      height:heights[def.id] ?? def.height,
+      facing,
+    });
+  });
+
+  fillers.forEach(({ def, node, dir }) => {
+    const world = nodeWorld(lattice, node);
+    const along = def.length;
+    const across = def.depth;
+    const horizontal = dir === "e" || dir === "w";
+    pieces.push({
+      uid:nextUid(), defId:def.id,
+      x:horizontal ? (dir === "e" ? world.x + hubHalf : world.x - hubHalf - along) : world.x - across / 2,
+      y:horizontal ? world.y - across / 2 : (dir === "s" ? world.y + hubHalf : world.y - hubHalf - along),
+      rotation:horizontal ? 0 : 90,
+      height:heights[def.id] ?? def.height,
+      servesDoorway:def.kind === "door",
+    });
+  });
+
+  jobs.filter((job) => job.wide).forEach((job) => {
+    const from = nodeWorld(lattice, job.a);
+    const to = nodeWorld(lattice, job.b);
+    const midX = (from.x + to.x) / 2;
+    const midY = (from.y + to.y) / 2;
+    const def = job.wide!;
+    const horizontal = job.edge.axis === "h";
+    pieces.push({
+      uid:nextUid(), defId:def.id,
+      x:horizontal ? midX - def.length / 2 : midX - def.depth / 2,
+      y:horizontal ? midY - def.depth / 2 : midY - def.length / 2,
+      rotation:horizontal ? 0 : 90,
+      height:heights[def.id] ?? def.height,
+      servesDoorway:true,
+    });
+  });
+
+  return { ok:true, pieces };
+};
+
+export const build = (input:BuildInput):BuildResult => {
+  // A hub kit is a different assembly model end to end rather than a variation
+  // on this one, so it gets its own pass instead of a flag threaded through here.
+  if (input.defs.some((def) => def.shape !== undefined || def.halfEdge)) return buildHub(input);
+  const { plan, defs, stock, heights, nextUid, seed } = input;
   const { lattice, state } = plan;
   const random = randomFactory(seed);
   const working = new Map(stock);
