@@ -55,6 +55,7 @@ export default function Home() {
   const [activeKitId, setActiveKitId] = useState("boarding-actions");
   const [snap, setSnap] = useState(true);
   const [smartFit, setSmartFit] = useState(true);
+  const [inspectorTab, setInspectorTab] = useState<"palette" | "analysis">("palette");
   // Spend the whole palette by default. This used to default to 60% and cap at 60%,
   // which made every generated board 40% short of what the box could build — and it
   // was needed back when nothing else stopped the generator cramming terrain in.
@@ -1183,36 +1184,6 @@ export default function Home() {
             </div>
             {activeCatalogueMeta.caveat && <p className="kit-caveat">{activeCatalogueMeta.caveat}</p>}
           </section>
-
-          <section className="palette-builder" aria-labelledby="generator-palette-heading">
-            <div className="section-heading">
-              <div><p className="eyebrow">Layout inventory</p><h2 id="generator-palette-heading">Current generator palette</h2></div>
-              <div className="section-actions"><span className="count">{catalogueTotal} pcs</span><button className="text-action danger" onClick={clearPalette} disabled={!catalogueTotal}>Clear</button></div>
-            </div>
-            {catalogueTotal > 0 && <div className="palette-generation-controls">
-              <label className="generation-target palette-generation-target" title="Share of the palette the generator may spend. The board is filled to real density regardless; lower this only to deliberately hold pieces back."><span>Spend <strong>{generationPercent}%</strong></span><input type="range" min="20" max="100" step="5" value={generationPercent} onChange={(event) => setGenerationPercent(Number(event.target.value))} aria-label="Footprint coverage target" /></label>
-              <label className="generation-target palette-generation-target" title="Where a complex smaller than the board sits. The board border is a free wall, so a corner spends more of the kit on interior structure; a centred island must build its own perimeter."><span>Placement</span><select value={anchor} onChange={(event) => setAnchor(event.target.value as Anchor)} aria-label="Where to anchor a complex smaller than the board"><option value="auto">Automatic</option><option value="corner">Into a corner</option><option value="edge">Against an edge</option><option value="centre">Centred island</option></select></label>
-              <button className="primary palette-generate" onClick={generateFromPalette} aria-label="Generate layout from current terrain palette">Generate from palette</button>
-            </div>}
-            {catalogueTotal > 0 && <div className="palette-range"><span>{paletteMaker}</span><strong>{paletteLabel}</strong><em>{Math.max(0, catalogueTotal - paletteUsed)} unplaced</em></div>}
-            <div className="palette-list" aria-label="Current generator terrain palette">
-              {!catalogueTotal && <div className="palette-empty"><strong>Your palette is empty</strong><span>Add individual pieces or a full kit below.</span></div>}
-              {catalogueTerrain.map((def) => {
-                const remaining = Math.max(0, limits[def.id] - (used[def.id] || 0));
-                return (
-                <div className="palette-row" key={def.id} onPointerDown={(event) => { if (remaining === 0 || (event.target as HTMLElement).closest("input, .remove-palette")) return; const nextDrag = { defId:def.id, x:event.clientX, y:event.clientY }; paletteDragRef.current = nextDrag; setPaletteDrag(nextDrag); }}>
-                  <button className="piece-add" onClick={() => addPiece(def.id)} disabled={remaining === 0} aria-label={`Place ${def.name}`}>
-                    <span className={`piece-icon ${def.kind} ${def.width > 5 ? "long" : "short"} ${def.visual ? `visual-${def.visual}` : ""}`}><i /></span>
-                    <span className="piece-copy"><strong>{def.shortName}</strong><small>{def.note} · Z {Math.round(heightDefaults[def.id] * MM_PER_IN)} mm</small></span>
-                  </button>
-                  <label className="palette-quantity"><span>Available</span><input aria-label={`${def.name} palette quantity`} type="number" min="0" max="999" value={limits[def.id]} onChange={(event) => setPaletteQuantity(def.id, Number(event.target.value))} /><em>{remaining} left</em></label>
-                  <button className="remove-palette" aria-label={`Remove ${def.name} from palette`} title="Remove from palette" onClick={() => setPaletteQuantity(def.id, 0)}>×</button>
-                </div>
-              );
-            })}
-            </div>
-          </section>
-
         </aside>
 
         <div className="board-column">
@@ -1249,32 +1220,65 @@ export default function Home() {
         </div>
 
         <aside className="inspector panel">
-          <p className="eyebrow">Layout analysis</p><h2>{pieces.length ? "Playable sector" : "Ready to build"}</h2>
-          {selectedPiece && <div className="selected-piece-editor">
-            <div><span>{selectedIds.length > 1 ? "Selected group" : "Selected piece"}</span><strong>{selectedIds.length > 1 ? `${selectedIds.length} pieces` : getDef(selectedPiece.defId).shortName}</strong></div>
-            <label><span>Height · Z</span><span className="dimension-input"><input aria-label="Selected piece height" type="number" min="10" max="300" step="1" value={Math.round(selectedPiece.height * MM_PER_IN)} onChange={(event) => setSelectedHeightMm(Number(event.target.value))} /> mm</span></label>
-            <small>{selectedIds.length > 1 ? "Height changes apply to the whole selection" : `${getDef(selectedPiece.defId).note} footprint`}</small>
-          </div>}
-          <div className="metric"><span>Current layout</span><strong>{pieces.length} pcs</strong></div>
-          <div className="metric"><span>Palette used</span><strong>{paletteUsed} / {catalogueTotal}</strong></div>
-          <div className="metric"><span>Generator palette</span><strong>{paletteMaker || "None"}</strong></div>
-          <div className="metric"><span>Footprint coverage</span><strong>{coverage.toFixed(1)}%</strong></div><div className="meter"><i style={{ width:`${Math.min(coverage * 5, 100)}%` }} /></div>
-          <div className="metric"><span>Reserved clear space</span><strong>{zones.length} · {reservedCoverage.toFixed(1)}%</strong></div>
-          <div className="metric"><span>{paletteCatalogues.length > 1 ? "Walls + hatchways" : generationJoint === "straddle" ? "Operable doorways" : "Wall modules"}</span><strong>{paletteCatalogues.length > 1 ? wallPieces.length : generationJoint === "straddle" ? doors : wallPieces.length}</strong></div><div className="metric"><span>Corridor loops</span><strong>{loops}</strong></div><div className="metric"><span>Open chambers</span><strong>{chambers}</strong></div>
-          <div className="divider" />
-          <p className="inspector-copy">{paletteCatalogues.length > 1 ? "Each terrain system keeps its physical assembly rules, then compatible ordinary wall faces are aligned across kits. Special pipes, floors, stairs, caps, and proprietary connectors remain system-specific." : generationJoint === "straddle" ? `The planner scores 24 column-node layouts, builds hooked chambers and branching junctions, and keeps separate wall networks far enough apart that the board retains long playable lanes. Every ${generationRange} panel slots into the columns straddling its span.` : `The planner scores 24 connector-node layouts. Every ${generationRange} wall is generated as a connector-to-connector edge, while separate networks retain at least 3.8 inches of walkable clearance.`}</p>
-          <div className="layout-key">{paletteCatalogues.length > 1 ? <><span><i className="key-wall" /> Compatible wall</span><span><i className="key-door" /> Door / hatch</span><span><i className="key-pillar" /> System support</span></> : generationJoint === "straddle" ? <><span><i className="key-wall" /> Wall</span><span><i className="key-door" /> Doorway</span><span><i className="key-pillar" /> Column</span><span><i className="key-open" /> Open face</span></> : <><span><i className="key-wall" /> Wall</span><span><i className="key-door" /> Wall end</span><span><i className="key-pillar" /> Connector</span></>}</div>
-          {catalogueTotal > 0 && <details className="height-settings inspector-height">
-            <summary><span><strong>Advanced dimensions</strong><small>3D and export height defaults</small></span><em>Z axis · mm</em></summary>
-            <p className="height-explainer">Optional vertical dimensions. They do not change the bird&apos;s-eye footprint.</p>
-            <div className="height-grid">
-              {familyIsAvailable("wall") && <label><span>Structures</span><input aria-label={`${paletteLabel} structure default height`} type="number" min="10" max="300" step="1" value={familyHeightMm("wall")} onChange={(event) => setFamilyHeightMm("wall", Number(event.target.value))} /></label>}
-              {familyIsAvailable("support") && <label><span>{paletteCatalogues.length > 1 ? "Supports" : generationJoint === "straddle" ? "Columns" : "Connectors"}</span><input aria-label={`${paletteLabel} support default height`} type="number" min="10" max="300" step="1" value={familyHeightMm("support")} onChange={(event) => setFamilyHeightMm("support", Number(event.target.value))} /></label>}
-              {familyIsAvailable("end") && <label><span>Wall ends</span><input aria-label={`${paletteLabel} end default height`} type="number" min="10" max="300" step="1" value={familyHeightMm("end")} onChange={(event) => setFamilyHeightMm("end", Number(event.target.value))} /></label>}
+          <div className="inspector-tabs" role="tablist" aria-label="Right panel view">
+            <button role="tab" aria-selected={inspectorTab === "analysis"} className={`inspector-tab ${inspectorTab === "analysis" ? "active" : ""}`} onClick={() => setInspectorTab("analysis")}>Analysis</button>
+            <button role="tab" aria-selected={inspectorTab === "palette"} className={`inspector-tab ${inspectorTab === "palette" ? "active" : ""}`} onClick={() => setInspectorTab("palette")}>Palette{catalogueTotal > 0 ? ` · ${catalogueTotal}` : ""}</button>
+          </div>
+          {inspectorTab === "palette" ? <section className="palette-builder" aria-labelledby="generator-palette-heading">
+            <div className="section-heading">
+              <div><p className="eyebrow">Layout inventory</p><h2 id="generator-palette-heading">Current generator palette</h2></div>
+              <div className="section-actions"><span className="count">{catalogueTotal} pcs</span><button className="text-action danger" onClick={clearPalette} disabled={!catalogueTotal}>Clear</button></div>
             </div>
-          </details>}
-          {zones.length > 0 && <div className="zone-list"><div className="zone-list-heading"><span>Reserved zones</span><button onClick={() => { setZones([]); setFocusedZone(null); setZoneDraft(null); setZoneResize(null); setMessage("Reserved zones cleared"); }}>Clear all</button></div><small className="zone-list-hint">Hover a zone for temporary handles, or click it to keep them active.</small>{zones.map((zone) => <div className={`zone-list-row ${focusedZone === zone.uid ? "active" : ""}`} key={zone.uid} onPointerDown={() => setFocusedZone(zone.uid)}><input aria-label={`Rename ${zone.name}`} value={zone.name} maxLength={32} onFocus={() => setFocusedZone(zone.uid)} onChange={(event) => setZones((current) => current.map((item) => item.uid === zone.uid ? { ...item, name:event.target.value } : item))} /><span>{zone.width.toFixed(1)} × {zone.height.toFixed(1)}″</span><button aria-label={`Remove ${zone.name}`} onClick={() => { setZones((current) => current.filter((item) => item.uid !== zone.uid)); if (focusedZone === zone.uid) setFocusedZone(null); if (zoneResize?.uid === zone.uid) setZoneResize(null); }}>×</button></div>)}</div>}
-          <p className="accuracy-note">Scale basis: {boardWidth} × {boardHeight}″ board · 25.4 mm per inch. Iron Labyrinth dimensions are manufacturer-published; Boarding Actions footprints remain physical-kit approximations. Default wall height is 60 mm in both systems.</p>
+            {catalogueTotal > 0 && <div className="palette-generation-controls">
+              <label className="generation-target palette-generation-target" title="Share of the palette the generator may spend. The board is filled to real density regardless; lower this only to deliberately hold pieces back."><span>Spend <strong>{generationPercent}%</strong></span><input type="range" min="20" max="100" step="5" value={generationPercent} onChange={(event) => setGenerationPercent(Number(event.target.value))} aria-label="Footprint coverage target" /></label>
+              <label className="generation-target palette-generation-target" title="Where a complex smaller than the board sits. The board border is a free wall, so a corner spends more of the kit on interior structure; a centred island must build its own perimeter."><span>Placement</span><select value={anchor} onChange={(event) => setAnchor(event.target.value as Anchor)} aria-label="Where to anchor a complex smaller than the board"><option value="auto">Automatic</option><option value="corner">Into a corner</option><option value="edge">Against an edge</option><option value="centre">Centred island</option></select></label>
+              <button className="primary palette-generate" onClick={generateFromPalette} aria-label="Generate layout from current terrain palette">Generate from palette</button>
+            </div>}
+            {catalogueTotal > 0 && <div className="palette-range"><span>{paletteMaker}</span><strong>{paletteLabel}</strong><em>{Math.max(0, catalogueTotal - paletteUsed)} unplaced</em></div>}
+            <div className="palette-list" aria-label="Current generator terrain palette">
+              {!catalogueTotal && <div className="palette-empty"><strong>Your palette is empty</strong><span>Add individual pieces or a full kit from the catalogue.</span></div>}
+              {catalogueTerrain.map((def) => {
+                const remaining = Math.max(0, limits[def.id] - (used[def.id] || 0));
+                return (
+                <div className="palette-row" key={def.id} onPointerDown={(event) => { if (remaining === 0 || (event.target as HTMLElement).closest("input, .remove-palette")) return; const nextDrag = { defId:def.id, x:event.clientX, y:event.clientY }; paletteDragRef.current = nextDrag; setPaletteDrag(nextDrag); }}>
+                  <button className="piece-add" onClick={() => addPiece(def.id)} disabled={remaining === 0} aria-label={`Place ${def.name}`}>
+                    <span className={`piece-icon ${def.kind} ${def.width > 5 ? "long" : "short"} ${def.visual ? `visual-${def.visual}` : ""}`}><i /></span>
+                    <span className="piece-copy"><strong>{def.shortName}</strong><small>{def.note} · Z {Math.round(heightDefaults[def.id] * MM_PER_IN)} mm</small></span>
+                  </button>
+                  <label className="palette-quantity"><span>Available</span><input aria-label={`${def.name} palette quantity`} type="number" min="0" max="999" value={limits[def.id]} onChange={(event) => setPaletteQuantity(def.id, Number(event.target.value))} /><em>{remaining} left</em></label>
+                  <button className="remove-palette" aria-label={`Remove ${def.name} from palette`} title="Remove from palette" onClick={() => setPaletteQuantity(def.id, 0)}>×</button>
+                </div>
+              );
+            })}
+            </div>
+          </section> : <>
+            <p className="eyebrow">Layout analysis</p><h2>{pieces.length ? "Playable sector" : "Ready to build"}</h2>
+            {selectedPiece && <div className="selected-piece-editor">
+              <div><span>{selectedIds.length > 1 ? "Selected group" : "Selected piece"}</span><strong>{selectedIds.length > 1 ? `${selectedIds.length} pieces` : getDef(selectedPiece.defId).shortName}</strong></div>
+              <label><span>Height · Z</span><span className="dimension-input"><input aria-label="Selected piece height" type="number" min="10" max="300" step="1" value={Math.round(selectedPiece.height * MM_PER_IN)} onChange={(event) => setSelectedHeightMm(Number(event.target.value))} /> mm</span></label>
+              <small>{selectedIds.length > 1 ? "Height changes apply to the whole selection" : `${getDef(selectedPiece.defId).note} footprint`}</small>
+            </div>}
+            <div className="metric"><span>Current layout</span><strong>{pieces.length} pcs</strong></div>
+            <div className="metric"><span>Palette used</span><strong>{paletteUsed} / {catalogueTotal}</strong></div>
+            <div className="metric"><span>Generator palette</span><strong>{paletteMaker || "None"}</strong></div>
+            <div className="metric"><span>Footprint coverage</span><strong>{coverage.toFixed(1)}%</strong></div><div className="meter"><i style={{ width:`${Math.min(coverage * 5, 100)}%` }} /></div>
+            <div className="metric"><span>Reserved clear space</span><strong>{zones.length} · {reservedCoverage.toFixed(1)}%</strong></div>
+            <div className="metric"><span>{paletteCatalogues.length > 1 ? "Walls + hatchways" : generationJoint === "straddle" ? "Operable doorways" : "Wall modules"}</span><strong>{paletteCatalogues.length > 1 ? wallPieces.length : generationJoint === "straddle" ? doors : wallPieces.length}</strong></div><div className="metric"><span>Corridor loops</span><strong>{loops}</strong></div><div className="metric"><span>Open chambers</span><strong>{chambers}</strong></div>
+            <div className="divider" />
+            <p className="inspector-copy">{paletteCatalogues.length > 1 ? "Each terrain system keeps its physical assembly rules, then compatible ordinary wall faces are aligned across kits. Special pipes, floors, stairs, caps, and proprietary connectors remain system-specific." : generationJoint === "straddle" ? `The planner scores 24 column-node layouts, builds hooked chambers and branching junctions, and keeps separate wall networks far enough apart that the board retains long playable lanes. Every ${generationRange} panel slots into the columns straddling its span.` : `The planner scores 24 connector-node layouts. Every ${generationRange} wall is generated as a connector-to-connector edge, while separate networks retain at least 3.8 inches of walkable clearance.`}</p>
+            <div className="layout-key">{paletteCatalogues.length > 1 ? <><span><i className="key-wall" /> Compatible wall</span><span><i className="key-door" /> Door / hatch</span><span><i className="key-pillar" /> System support</span></> : generationJoint === "straddle" ? <><span><i className="key-wall" /> Wall</span><span><i className="key-door" /> Doorway</span><span><i className="key-pillar" /> Column</span><span><i className="key-open" /> Open face</span></> : <><span><i className="key-wall" /> Wall</span><span><i className="key-door" /> Wall end</span><span><i className="key-pillar" /> Connector</span></>}</div>
+            {catalogueTotal > 0 && <details className="height-settings inspector-height">
+              <summary><span><strong>Advanced dimensions</strong><small>3D and export height defaults</small></span><em>Z axis · mm</em></summary>
+              <p className="height-explainer">Optional vertical dimensions. They do not change the bird&apos;s-eye footprint.</p>
+              <div className="height-grid">
+                {familyIsAvailable("wall") && <label><span>Structures</span><input aria-label={`${paletteLabel} structure default height`} type="number" min="10" max="300" step="1" value={familyHeightMm("wall")} onChange={(event) => setFamilyHeightMm("wall", Number(event.target.value))} /></label>}
+                {familyIsAvailable("support") && <label><span>{paletteCatalogues.length > 1 ? "Supports" : generationJoint === "straddle" ? "Columns" : "Connectors"}</span><input aria-label={`${paletteLabel} support default height`} type="number" min="10" max="300" step="1" value={familyHeightMm("support")} onChange={(event) => setFamilyHeightMm("support", Number(event.target.value))} /></label>}
+                {familyIsAvailable("end") && <label><span>Wall ends</span><input aria-label={`${paletteLabel} end default height`} type="number" min="10" max="300" step="1" value={familyHeightMm("end")} onChange={(event) => setFamilyHeightMm("end", Number(event.target.value))} /></label>}
+              </div>
+            </details>}
+            {zones.length > 0 && <div className="zone-list"><div className="zone-list-heading"><span>Reserved zones</span><button onClick={() => { setZones([]); setFocusedZone(null); setZoneDraft(null); setZoneResize(null); setMessage("Reserved zones cleared"); }}>Clear all</button></div><small className="zone-list-hint">Hover a zone for temporary handles, or click it to keep them active.</small>{zones.map((zone) => <div className={`zone-list-row ${focusedZone === zone.uid ? "active" : ""}`} key={zone.uid} onPointerDown={() => setFocusedZone(zone.uid)}><input aria-label={`Rename ${zone.name}`} value={zone.name} maxLength={32} onFocus={() => setFocusedZone(zone.uid)} onChange={(event) => setZones((current) => current.map((item) => item.uid === zone.uid ? { ...item, name:event.target.value } : item))} /><span>{zone.width.toFixed(1)} × {zone.height.toFixed(1)}″</span><button aria-label={`Remove ${zone.name}`} onClick={() => { setZones((current) => current.filter((item) => item.uid !== zone.uid)); if (focusedZone === zone.uid) setFocusedZone(null); if (zoneResize?.uid === zone.uid) setZoneResize(null); }}>×</button></div>)}</div>}
+            <p className="accuracy-note">Scale basis: {boardWidth} × {boardHeight}″ board · 25.4 mm per inch. Iron Labyrinth dimensions are manufacturer-published; Boarding Actions footprints remain physical-kit approximations. Default wall height is 60 mm in both systems.</p>
+          </>}
         </aside>
       </section>
       {paletteDrag && <div className="drag-preview" style={{ left:paletteDrag.x, top:paletteDrag.y }}><span className={`piece-icon ${getDef(paletteDrag.defId).kind} ${getDef(paletteDrag.defId).width > 5 ? "long" : "short"} ${getDef(paletteDrag.defId).visual ? `visual-${getDef(paletteDrag.defId).visual}` : ""}`}><i /></span><small>{getDef(paletteDrag.defId).shortName}</small></div>}
