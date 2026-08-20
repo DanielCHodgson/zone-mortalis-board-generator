@@ -129,6 +129,26 @@ export default function Home() {
   const generationRange = MANUFACTURERS[generationCatalogue].range;
   const selectedPiece = pieces.find((piece) => piece.uid === selected) || null;
   const used = useMemo(() => pieces.reduce<Record<string, number>>((acc, piece) => ({ ...acc, [piece.defId]: (acc[piece.defId] || 0) + 1 }), {}), [pieces]);
+  // What you'd need to pull off the sprue to build the CURRENT board, not what the
+  // palette has available. Grouped by catalogue because a mixed-kit board needs
+  // pieces out of more than one box. Ordered the way TERRAIN already lists them
+  // (walls, then doors, then supports, per catalogue) rather than sorting again.
+  const usedInventory = useMemo(() => {
+    const groups: { catalogue:CatalogueId; maker:string; range:string; items:{ def:TerrainDef; count:number }[] }[] = [];
+    TERRAIN.forEach((def) => {
+      const count = used[def.id] || 0;
+      if (!count) return;
+      let group = groups.find((candidate) => candidate.catalogue === def.catalogue);
+      if (!group) {
+        const meta = MANUFACTURERS[def.catalogue];
+        group = { catalogue:def.catalogue, maker:meta.name, range:meta.range, items:[] };
+        groups.push(group);
+      }
+      group.items.push({ def, count });
+    });
+    return groups;
+  }, [used]);
+  const usedTotal = pieces.length;
   const paletteUsed = catalogueTerrain.reduce((sum, def) => sum + Math.min(used[def.id] || 0, limits[def.id] || 0), 0);
   const wallPieces = pieces.filter((piece) => ["wall", "door"].includes(getDef(piece.defId).kind));
   const coverage = Math.min(100, pieces.reduce((sum, piece) => { const def = getDef(piece.defId); return sum + def.width * def.depth; }, 0) / (boardWidth * boardHeight) * 100);
@@ -1301,6 +1321,18 @@ export default function Home() {
             <div className="divider" />
             <p className="inspector-copy">{paletteCatalogues.length > 1 ? "Each terrain system keeps its physical assembly rules, then compatible ordinary wall faces are aligned across kits. Special pipes, floors, stairs, caps, and proprietary connectors remain system-specific." : generationJoint === "straddle" ? `The planner scores 24 column-node layouts, builds hooked chambers and branching junctions, and keeps separate wall networks far enough apart that the board retains long playable lanes. Every ${generationRange} panel slots into the columns straddling its span.` : `The planner scores 24 connector-node layouts. Every ${generationRange} wall is generated as a connector-to-connector edge, while separate networks retain at least 3.8 inches of walkable clearance.`}</p>
             <div className="layout-key">{paletteCatalogues.length > 1 ? <><span><i className="key-wall" /> Compatible wall</span><span><i className="key-door" /> Door / hatch</span><span><i className="key-pillar" /> System support</span></> : generationJoint === "straddle" ? <><span><i className="key-wall" /> Wall</span><span><i className="key-door" /> Doorway</span><span><i className="key-pillar" /> Column</span><span><i className="key-open" /> Open face</span></> : <><span><i className="key-wall" /> Wall</span><span><i className="key-door" /> Wall end</span><span><i className="key-pillar" /> Connector</span></>}</div>
+            {usedInventory.length > 0 && <div className="bom">
+              <div className="bom-heading"><strong>What to pull off the sprue</strong><span>{usedTotal} pcs total</span></div>
+              <p className="bom-intro">Every piece on the board right now, so you can pull the same pieces from your own kit.</p>
+              {usedInventory.map((group) => <div className="bom-group" key={group.catalogue}>
+                {usedInventory.length > 1 && <div className="bom-group-heading">{group.maker} · {group.range}</div>}
+                {group.items.map(({ def, count }) => <div className="bom-row" key={def.id}>
+                  <span className={`piece-icon ${def.kind} ${def.width > 5 ? "long" : "short"} ${def.visual ? `visual-${def.visual}` : ""}`}><i /></span>
+                  <span className="piece-copy"><strong>{def.shortName}</strong><small>{def.note}</small></span>
+                  <strong className="bom-count">× {count}</strong>
+                </div>)}
+              </div>)}
+            </div>}
             {catalogueTotal > 0 && <details className="height-settings inspector-height">
               <summary><span><strong>Advanced dimensions</strong><small>3D and export height defaults</small></span><em>Z axis · mm</em></summary>
               <p className="height-explainer">Optional vertical dimensions. They do not change the bird&apos;s-eye footprint.</p>

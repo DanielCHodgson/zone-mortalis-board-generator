@@ -333,6 +333,17 @@ kbd { padding-left:4px; color:var(--muted); font:11px var(--font-geist-mono, ui-
 .layout-key .key-open { height:7px; background:transparent; box-shadow:inset 0 0 0 1px var(--wall); }
 .layout-key .key-pillar { width:6px; height:6px; background:var(--pillar); }
 .inspector-height { flex:0 0 auto; margin-top:14px; }
+.bom { flex:0 0 auto; margin-top:16px; padding-top:14px; border-top:1px solid var(--line); }
+.bom-heading { display:flex; justify-content:space-between; align-items:baseline; gap:8px; }
+.bom-heading strong { font-size:14px; }
+.bom-heading span { color:var(--muted); font:600 12px var(--font-geist-mono, ui-monospace),monospace; white-space:nowrap; }
+.bom-intro { margin:3px 0 10px; color:var(--muted); font-size:12px; line-height:1.4; }
+.bom-group + .bom-group { margin-top:12px; }
+.bom-group-heading { margin-bottom:4px; color:var(--muted); font-size:11px; font-weight:750; letter-spacing:.06em; text-transform:uppercase; }
+.bom-row { display:grid; grid-template-columns:32px minmax(0,1fr) auto; align-items:center; gap:10px; padding:8px 6px; border-top:1px solid var(--line-soft); }
+.bom-row:first-child { border-top:0; }
+.bom-row > .piece-icon { justify-self:center; }
+.bom-count { color:var(--ink); font:600 13px var(--font-geist-mono, ui-monospace),monospace; white-space:nowrap; }
 .zone-list { display:grid; gap:5px; margin-top:14px; padding-top:12px; border-top:1px solid var(--line); }
 .zone-list-heading { display:flex; justify-content:space-between; align-items:center; color:var(--muted); font-size:12px; font-weight:700; }
 .zone-list-heading button { padding:4px 0; background:transparent; color:var(--danger); font-size:11px; }
