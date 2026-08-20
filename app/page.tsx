@@ -33,6 +33,11 @@ type ReservedZone = {
 
 type ZoneCorner = "nw" | "ne" | "sw" | "se";
 
+/** A piece being dragged toward the board. "palette" drags an existing palette
+ *  entry (already counted in `limits`); "catalogue" drags a not-yet-added kit
+ *  piece, which drops with `amount` copies added to the palette on release. */
+type PaletteDragState = { defId: string; x: number; y: number; source: "palette" | "catalogue"; amount?: number };
+
 /** One way a dragged piece could meet a fixed one: the offset that joins them, and
  *  the rotation the move implies where the joint only works at right angles (a wall
  *  end capping a run, or a wall meeting a connector face). */
@@ -94,8 +99,8 @@ export default function Home() {
   const [zoneDraft, setZoneDraft] = useState<{ startX:number; startY:number; currentX:number; currentY:number } | null>(null);
   const [zoneResize, setZoneResize] = useState<{ uid:string; corner:ZoneCorner; anchorX:number; anchorY:number } | null>(null);
   const [focusedZone, setFocusedZone] = useState<string | null>(null);
-  const [paletteDrag, setPaletteDrag] = useState<{ defId: string; x: number; y: number } | null>(null);
-  const paletteDragRef = useRef<{ defId: string; x: number; y: number } | null>(null);
+  const [paletteDrag, setPaletteDrag] = useState<PaletteDragState | null>(null);
+  const paletteDragRef = useRef<PaletteDragState | null>(null);
   const [message, setMessage] = useState("Ready to build");
   const uidRef = useRef(0);
   const generationInventoryRef = useRef<Record<string, number> | null>(null);
@@ -354,17 +359,37 @@ export default function Home() {
     setMessage(`${selectedIds.length === 1 ? "Selected piece" : `${selectedIds.length} selected pieces`} height set to ${Math.round(nextHeight * MM_PER_IN)} mm`);
   };
 
+  /** Drops a piece on the board with no check against the palette's remaining
+   *  stock — callers that just topped up the stock themselves (addFromCatalogue)
+   *  use this directly; addPiece gates ordinary placement through it. */
+  const placeNewPiece = useCallback((defId: string, x = boardWidth / 2, y = boardHeight / 2, rotation: 0 | 90 = 0) => {
+    const w = rotation === 90 ? getDef(defId).depth : getDef(defId).width;
+    const h = rotation === 90 ? getDef(defId).width : getDef(defId).depth;
+    const piece = { uid: nextUid(), defId, x: quantize(clamp(x - w / 2, 0, boardWidth - w)), y: quantize(clamp(y - h / 2, 0, boardHeight - h)), rotation, height:heightDefaults[defId] };
+    setPieces((currentPieces) => [...currentPieces, piece]);
+    selectOnly(piece.uid);
+    return piece;
+  }, [boardHeight, boardWidth, heightDefaults, quantize, selectOnly]);
+
   const addPiece = useCallback((defId: string, x = boardWidth / 2, y = boardHeight / 2, rotation: 0 | 90 = 0) => {
     const def = getDef(defId);
     const current = pieces.filter((piece) => piece.defId === defId).length;
     if (!enabled[defId] || current >= limits[defId]) { setMessage("No more of that piece available"); return; }
-    const w = rotation === 90 ? def.depth : def.width;
-    const h = rotation === 90 ? def.width : def.depth;
-    const piece = { uid: nextUid(), defId, x: quantize(clamp(x - w / 2, 0, boardWidth - w)), y: quantize(clamp(y - h / 2, 0, boardHeight - h)), rotation, height:heightDefaults[defId] };
-    setPieces((currentPieces) => [...currentPieces, piece]);
-    selectOnly(piece.uid);
+    placeNewPiece(defId, x, y, rotation);
     setMessage(`${def.shortName} placed`);
-  }, [boardHeight, boardWidth, enabled, heightDefaults, limits, pieces, quantize, selectOnly]);
+  }, [boardHeight, boardWidth, enabled, limits, pieces, placeNewPiece]);
+
+  /** The catalogue's combined "Add" action: tops up the palette by `quantity` and
+   *  drops one copy straight onto the board, so a click does something visible
+   *  instead of only growing a number in the palette tab. */
+  const addFromCatalogue = useCallback((defId: string, quantity: number, x = boardWidth / 2, y = boardHeight / 2) => {
+    const def = getDef(defId);
+    const amount = clamp(Math.round(quantity || 0), 1, 999);
+    setLimits((current) => ({ ...current, [defId]:clamp((current[defId] || 0) + amount, 0, 999) }));
+    setEnabled((current) => ({ ...current, [defId]:true }));
+    placeNewPiece(defId, x, y);
+    setMessage(`${amount} × ${def.shortName} added to the palette · 1 placed on the board`);
+  }, [boardHeight, boardWidth, placeNewPiece]);
 
   const rotatePiece = useCallback((uid: string) => {
     setPieces((current) => current.map((piece) => {
@@ -1042,7 +1067,11 @@ export default function Home() {
       const rect = boardRef.current.getBoundingClientRect();
       if (event.clientX >= rect.left && event.clientX <= rect.right && event.clientY >= rect.top && event.clientY <= rect.bottom) {
         const point = boardPoint(event.clientX, event.clientY);
-        addPiece(currentPaletteDrag.defId, point.x, point.y);
+        if (currentPaletteDrag.source === "catalogue") {
+          addFromCatalogue(currentPaletteDrag.defId, currentPaletteDrag.amount ?? 1, point.x, point.y);
+        } else {
+          addPiece(currentPaletteDrag.defId, point.x, point.y);
+        }
       }
       paletteDragRef.current = null;
       setPaletteDrag(null);
@@ -1055,7 +1084,7 @@ export default function Home() {
       window.removeEventListener("pointerup", onPaletteUp);
       window.removeEventListener("pointercancel", onPaletteUp);
     };
-  }, [addPiece, boardPoint]);
+  }, [addFromCatalogue, addPiece, boardPoint]);
 
   const onBoardPointerMove = (event: React.PointerEvent) => {
     if (zoneResize && boardRef.current) {
@@ -1174,11 +1203,16 @@ export default function Home() {
               {kitTerrain.map((def) => {
                 const amountKey = `${activeKitId}:${def.id}`;
                 const kitAmount = kitAddAmounts[amountKey] ?? activeCatalogueMeta.inventory[def.id] ?? 1;
-                return <div className="kit-piece-row" key={def.id}>
+                return <div className="kit-piece-row" key={def.id} onPointerDown={(event) => { if ((event.target as HTMLElement).closest("input, button")) return; const nextDrag: PaletteDragState = { defId:def.id, x:event.clientX, y:event.clientY, source:"catalogue", amount:kitAmount }; paletteDragRef.current = nextDrag; setPaletteDrag(nextDrag); }}>
                   <span className={`piece-icon ${def.kind} ${def.width > 5 ? "long" : "short"} ${def.visual ? `visual-${def.visual}` : ""}`}><i /></span>
                   <span className="piece-copy"><strong>{def.shortName}</strong><small>{def.note} · kit includes {activeCatalogueMeta.inventory[def.id]}</small></span>
-                  <label className="add-amount"><span className="sr-only">Amount of {def.name} to add</span><input aria-label={`Amount of ${def.name} to add`} type="number" min="1" max="999" value={kitAmount} onChange={(event) => setKitAddAmounts((current) => ({ ...current, [amountKey]:clamp(Number(event.target.value), 1, 999) }))} /></label>
-                  <button className="add-piece-to-palette" onClick={() => addToPalette(def.id, kitAmount)} aria-label={`Add ${kitAmount} ${def.name} to palette`}>Add</button>
+                  <div className="kit-piece-actions">
+                    <label className="add-amount"><span className="sr-only">Amount of {def.name} to add</span><input aria-label={`Amount of ${def.name} to add`} type="number" min="1" max="999" value={kitAmount} onChange={(event) => setKitAddAmounts((current) => ({ ...current, [amountKey]:clamp(Number(event.target.value), 1, 999) }))} /></label>
+                    <div className="kit-piece-buttons">
+                      <button className="add-piece-to-palette" onClick={() => addToPalette(def.id, kitAmount)} aria-label={`Add ${kitAmount} ${def.name} to the palette only`} title="Add to the palette without placing it on the board">To palette</button>
+                      <button className="add-piece-to-board" onClick={() => addFromCatalogue(def.id, kitAmount)} aria-label={`Add ${kitAmount} ${def.name} to the palette and place one on the board`} title="Add to the palette and drop one on the board">Add</button>
+                    </div>
+                  </div>
                 </div>;
               })}
             </div>
@@ -1221,8 +1255,8 @@ export default function Home() {
 
         <aside className="inspector panel">
           <div className="inspector-tabs" role="tablist" aria-label="Right panel view">
-            <button role="tab" aria-selected={inspectorTab === "analysis"} className={`inspector-tab ${inspectorTab === "analysis" ? "active" : ""}`} onClick={() => setInspectorTab("analysis")}>Analysis</button>
             <button role="tab" aria-selected={inspectorTab === "palette"} className={`inspector-tab ${inspectorTab === "palette" ? "active" : ""}`} onClick={() => setInspectorTab("palette")}>Palette{catalogueTotal > 0 ? ` · ${catalogueTotal}` : ""}</button>
+            <button role="tab" aria-selected={inspectorTab === "analysis"} className={`inspector-tab ${inspectorTab === "analysis" ? "active" : ""}`} onClick={() => setInspectorTab("analysis")}>Analysis</button>
           </div>
           {inspectorTab === "palette" ? <section className="palette-builder" aria-labelledby="generator-palette-heading">
             <div className="section-heading">
@@ -1240,7 +1274,7 @@ export default function Home() {
               {catalogueTerrain.map((def) => {
                 const remaining = Math.max(0, limits[def.id] - (used[def.id] || 0));
                 return (
-                <div className="palette-row" key={def.id} onPointerDown={(event) => { if (remaining === 0 || (event.target as HTMLElement).closest("input, .remove-palette")) return; const nextDrag = { defId:def.id, x:event.clientX, y:event.clientY }; paletteDragRef.current = nextDrag; setPaletteDrag(nextDrag); }}>
+                <div className="palette-row" key={def.id} onPointerDown={(event) => { if (remaining === 0 || (event.target as HTMLElement).closest("input, .remove-palette")) return; const nextDrag: PaletteDragState = { defId:def.id, x:event.clientX, y:event.clientY, source:"palette" }; paletteDragRef.current = nextDrag; setPaletteDrag(nextDrag); }}>
                   <button className="piece-add" onClick={() => addPiece(def.id)} disabled={remaining === 0} aria-label={`Place ${def.name}`}>
                     <span className={`piece-icon ${def.kind} ${def.width > 5 ? "long" : "short"} ${def.visual ? `visual-${def.visual}` : ""}`}><i /></span>
                     <span className="piece-copy"><strong>{def.shortName}</strong><small>{def.note} · Z {Math.round(heightDefaults[def.id] * MM_PER_IN)} mm</small></span>
