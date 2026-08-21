@@ -39,6 +39,8 @@ const MIN_BOARD_SIZE = 12;
 const MAX_BOARD_WIDTH = BOARD_SIZES["60x48"].width;
 const MAX_BOARD_HEIGHT = BOARD_SIZES["60x48"].height;
 const BOARD_ZOOM_STEPS = [50, 75, 100, 125, 150, 175, 200] as const;
+const EBERLEG_LEGEND = TERRAIN.filter((def) => def.catalogue === "eberleg");
+const pieceIconClass = (def:TerrainDef) => `piece-icon piece-${def.id} ${def.kind} ${def.width > 5 ? "long" : "short"} ${def.visual ? `visual-${def.visual}` : ""}`;
 
 /** A piece being dragged toward the board. "palette" drags an existing palette
  *  entry (already counted in `limits`); "catalogue" drags a not-yet-added kit
@@ -1401,7 +1403,7 @@ export default function Home() {
                 const amountKey = `${activeKitId}:${def.id}`;
                 const kitAmount = kitAddAmounts[amountKey] ?? activeCatalogueMeta.inventory[def.id] ?? 1;
                 return <div className="kit-piece-row" key={def.id} onPointerDown={(event) => { if ((event.target as HTMLElement).closest("input, button")) return; const nextDrag: PaletteDragState = { defId:def.id, x:event.clientX, y:event.clientY, source:"catalogue", amount:kitAmount }; paletteDragRef.current = nextDrag; setPaletteDrag(nextDrag); }}>
-                  <span className={`piece-icon ${def.kind} ${def.width > 5 ? "long" : "short"} ${def.visual ? `visual-${def.visual}` : ""}`}><i /></span>
+                  <span className={pieceIconClass(def)}><i /></span>
                   <span className="piece-copy"><strong>{def.shortName}</strong><small>{def.note} · kit includes {activeCatalogueMeta.inventory[def.id]}</small></span>
                   <div className="kit-piece-actions">
                     <label className="add-amount"><span className="sr-only">Amount of {def.name} to add</span><input aria-label={`Amount of ${def.name} to add`} type="number" min="1" max="999" value={kitAmount} onChange={(event) => setKitAddAmounts((current) => ({ ...current, [amountKey]:clamp(Number(event.target.value), 1, 999) }))} /></label>
@@ -1458,6 +1460,14 @@ export default function Home() {
             <button role="tab" aria-selected={inspectorTab === "analysis"} className={`inspector-tab ${inspectorTab === "analysis" ? "active" : ""}`} onClick={() => setInspectorTab("analysis")}>Analysis</button>
           </div>
           {inspectorTab === "palette" ? <section className="palette-builder" aria-labelledby="generator-palette-heading">
+            <div className="palette-selection-summary" aria-label="Current board selection">
+              {selectedPiece ? <>
+                <span className={pieceIconClass(getDef(selectedPiece.defId))}><i /></span>
+                <div className="palette-selection-copy"><span>{selectedIds.length > 1 ? "Selected group" : "Selected piece"}</span><strong>{selectedIds.length > 1 ? `${selectedIds.length} pieces` : getDef(selectedPiece.defId).shortName}</strong><small>{selectedIds.length > 1 ? "Edit height for the full selection" : `${Math.round((selectedPiece.rotation === 90 ? getDef(selectedPiece.defId).depth : getDef(selectedPiece.defId).width) * MM_PER_IN)} × ${Math.round((selectedPiece.rotation === 90 ? getDef(selectedPiece.defId).width : getDef(selectedPiece.defId).depth) * MM_PER_IN)} mm · ${selectedPiece.rotation}°`}</small></div>
+                <label className="palette-selection-height"><span>Z height</span><span className="dimension-input"><input aria-label="Selected piece height in palette view" type="number" min="10" max="300" step="1" value={Math.round(selectedPiece.height * MM_PER_IN)} onChange={(event) => setSelectedHeightMm(Number(event.target.value))} /> mm</span></label>
+              </> : <div className="palette-selection-copy empty"><span>Board selection</span><strong>No terrain selected</strong><small>Click a piece to inspect it here</small></div>}
+              <div className="palette-selection-stats"><span><strong>{pieces.length}</strong> placed</span><span><strong>{paletteUsed}</strong> / {catalogueTotal} used</span><span><strong>{zones.length}</strong> zones</span></div>
+            </div>
             <div className="section-heading">
               <div><p className="eyebrow">Layout inventory</p><h2 id="generator-palette-heading">Current generator palette</h2></div>
               <div className="section-actions"><span className="count">{catalogueTotal} pcs</span><button className="text-action danger" onClick={clearPalette} disabled={!catalogueTotal}>Clear</button></div>
@@ -1475,7 +1485,7 @@ export default function Home() {
                 return (
                 <div className="palette-row" key={def.id} onPointerDown={(event) => { if (remaining === 0 || (event.target as HTMLElement).closest("input, .remove-palette")) return; const nextDrag: PaletteDragState = { defId:def.id, x:event.clientX, y:event.clientY, source:"palette" }; paletteDragRef.current = nextDrag; setPaletteDrag(nextDrag); }}>
                   <button className="piece-add" onClick={() => addPiece(def.id)} disabled={remaining === 0} aria-label={`Place ${def.name}`}>
-                    <span className={`piece-icon ${def.kind} ${def.width > 5 ? "long" : "short"} ${def.visual ? `visual-${def.visual}` : ""}`}><i /></span>
+                    <span className={pieceIconClass(def)}><i /></span>
                     <span className="piece-copy"><strong>{def.shortName}</strong><small>{def.note} · Z {Math.round(heightDefaults[def.id] * MM_PER_IN)} mm</small></span>
                   </button>
                   <label className="palette-quantity"><span>Available</span><input aria-label={`${def.name} palette quantity`} type="number" min="0" max="999" value={limits[def.id]} onChange={(event) => setPaletteQuantity(def.id, Number(event.target.value))} /><em>{remaining} left</em></label>
@@ -1498,15 +1508,15 @@ export default function Home() {
             <div className="metric"><span>Reserved clear space</span><strong>{zones.length} · {reservedCoverage.toFixed(1)}%</strong></div>
             <div className="metric"><span>{paletteCatalogues.length > 1 ? "Walls + hatchways" : generationJoint === "straddle" ? "Operable doorways" : "Wall modules"}</span><strong>{paletteCatalogues.length > 1 ? wallPieces.length : generationJoint === "straddle" ? doors : wallPieces.length}</strong></div><div className="metric"><span>Corridor loops</span><strong>{loops}</strong></div><div className="metric"><span>Open chambers</span><strong>{chambers}</strong></div>
             <div className="divider" />
-            <p className="inspector-copy">{paletteCatalogues.length > 1 ? "Each terrain system keeps its physical assembly rules, then compatible ordinary wall faces are aligned across kits. Special pipes, floors, stairs, caps, and proprietary connectors remain system-specific." : generationJoint === "straddle" ? `The planner scores 24 column-node layouts, builds hooked chambers and branching junctions, and keeps separate wall networks far enough apart that the board retains long playable lanes. Every ${generationRange} panel slots into the columns straddling its span.` : `The planner scores 24 connector-node layouts. Every ${generationRange} wall is generated as a connector-to-connector edge, while separate networks retain at least 3.8 inches of walkable clearance.`}</p>
-            <div className="layout-key">{paletteCatalogues.length > 1 ? <><span><i className="key-wall" /> Compatible wall</span><span><i className="key-door" /> Door / hatch</span><span><i className="key-pillar" /> System support</span></> : generationJoint === "straddle" ? <><span><i className="key-wall" /> Wall</span><span><i className="key-door" /> Doorway</span><span><i className="key-pillar" /> Column</span><span><i className="key-open" /> Open face</span></> : <><span><i className="key-wall" /> Wall</span><span><i className="key-door" /> Wall end</span><span><i className="key-pillar" /> Connector</span></>}</div>
+            <p className="inspector-copy">{paletteCatalogues.length === 1 && paletteCatalogues[0] === "eberleg" ? "An unofficial, print-at-home proxy for Games Workshop’s Zone Mortalis terrain. Not affiliated with or endorsed by Games Workshop." : paletteCatalogues.length > 1 ? "Each terrain system keeps its own physical assembly rules while compatible ordinary wall faces align across kits." : generationJoint === "straddle" ? `Walls and doors slot into the ${generationRange} support grid.` : `${generationRange} pieces retain their own connector system.`}</p>
+            {paletteCatalogues.length === 1 && paletteCatalogues[0] === "eberleg" ? <div className="eberleg-legend" aria-label="Eberleg terrain legend">{EBERLEG_LEGEND.map((def) => <span key={def.id}><span className={pieceIconClass(def)}><i /></span><small>{def.shortName.replace("Eb ", "")}</small></span>)}</div> : <div className="layout-key">{paletteCatalogues.length > 1 ? <><span><i className="key-wall" /> Compatible wall</span><span><i className="key-door" /> Door / hatch</span><span><i className="key-pillar" /> System support</span></> : generationJoint === "straddle" ? <><span><i className="key-wall" /> Wall</span><span><i className="key-door" /> Doorway</span><span><i className="key-pillar" /> Column</span><span><i className="key-open" /> Open face</span></> : <><span><i className="key-wall" /> Wall</span><span><i className="key-door" /> Wall end</span><span><i className="key-pillar" /> Connector</span></>}</div>}
             {usedInventory.length > 0 && <div className="bom">
               <div className="bom-heading"><strong>What to pull off the sprue</strong><span>{usedTotal} pcs total</span></div>
               <p className="bom-intro">Every piece on the board right now, so you can pull the same pieces from your own kit.</p>
               {usedInventory.map((group) => <div className="bom-group" key={group.catalogue}>
                 {usedInventory.length > 1 && <div className="bom-group-heading">{group.maker} · {group.range}</div>}
                 {group.items.map(({ def, count }) => <div className="bom-row" key={def.id}>
-                  <span className={`piece-icon ${def.kind} ${def.width > 5 ? "long" : "short"} ${def.visual ? `visual-${def.visual}` : ""}`}><i /></span>
+                  <span className={pieceIconClass(def)}><i /></span>
                   <span className="piece-copy"><strong>{def.shortName}</strong><small>{def.note}</small></span>
                   <strong className="bom-count">× {count}</strong>
                 </div>)}
@@ -1526,7 +1536,7 @@ export default function Home() {
           </>}
         </aside>
       </section>
-      {paletteDrag && <div className="drag-preview" style={{ left:paletteDrag.x, top:paletteDrag.y }}><span className={`piece-icon ${getDef(paletteDrag.defId).kind} ${getDef(paletteDrag.defId).width > 5 ? "long" : "short"} ${getDef(paletteDrag.defId).visual ? `visual-${getDef(paletteDrag.defId).visual}` : ""}`}><i /></span><small>{getDef(paletteDrag.defId).shortName}</small></div>}
+      {paletteDrag && <div className="drag-preview" style={{ left:paletteDrag.x, top:paletteDrag.y }}><span className={pieceIconClass(getDef(paletteDrag.defId))}><i /></span><small>{getDef(paletteDrag.defId).shortName}</small></div>}
     </main>
   );
 }

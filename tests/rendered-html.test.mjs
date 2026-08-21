@@ -75,6 +75,10 @@ test("ships the complete first-pass catalogues and planner tools", async () => {
   assert.match(page, /PALETTE_STORAGE_KEY/);
   assert.match(page, /mergeGeneratedSystems/);
   assert.match(page, /compatible cross-kit wall joins enabled/);
+  assert.match(page, /palette-selection-summary/);
+  assert.match(page, /Eberleg terrain legend/);
+  assert.match(page, /print-at-home proxy for Games Workshop’s Zone Mortalis terrain/);
+  assert.doesNotMatch(page, /The planner scores 24 connector-node layouts/);
 });
 
 test("keeps the desktop workspace fixed while panels scroll independently", async () => {
