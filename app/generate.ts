@@ -844,7 +844,12 @@ export const generate = (input:GenerateInput):GenerateReport => {
    * to come up first, which is the difference between a board that reproduces and
    * one whose size wanders between generations.
    */
-  for (let pass = 0; pass < 5 && !best; pass++) {
+  // Fill holds its footprint inside a pass and only lets it go at the pass boundary,
+  // so it needs more boundaries to walk down from a board-spanning lattice to one a
+  // thin palette can actually build. Without them, Zone Mortalis on a 5' board ran out
+  // of passes before it ran out of footprint and returned nothing at all.
+  const passes = anchor === "fill" ? 10 : 5;
+  for (let pass = 0; pass < passes && !best; pass++) {
   if (pass > 0 && !shrink()) break;
   for (let attempt = 0; attempt < candidates; attempt++) {
     const gridWidth = cols * kit.pitch;
@@ -931,6 +936,27 @@ export const generate = (input:GenerateInput):GenerateReport => {
       // out at full footprint with a 0.37 interior where a smaller complex would have hit
       // 0.52 properly.
       const atReference = interiorBudget <= internalEdgeCount(cols, rows) * reference.density;
+      // Filling the table is a promise about the footprint, so a palette that runs
+      // short of a PIECE TYPE thins the interior and keeps the board — the two levers
+      // are not interchangeable here. Eberleg makes the difference plain: it has no
+      // four-armed cross casting, so every crossroads costs a T plus a single wall, and
+      // a board-spanning lattice asks for more single walls than the kit holds. Reading
+      // that as "the board is too big" shrank a 4' board to 5 x 5 and centred it, which
+      // is the margin of open deck this mode exists to remove. Fewer, larger
+      // compartments across the whole table is the honest trade instead.
+      //
+      // Quality failures still shrink the footprint (below): a firing lane down a
+      // sparse board is not fixed by making the board sparser.
+      //
+      // The footprint still gives way if this never works — but at the PASS boundary
+      // rather than mid-pass, so each size is given a full round of attempts at a
+      // thinner interior before being judged too big. Fill gets extra passes to pay
+      // for that (see `passes`), because a palette that genuinely cannot span the board
+      // now needs several rounds to walk down to a size that can.
+      if (anchor === "fill" && interiorBudget > 8) {
+        interiorBudget = Math.max(8, Math.floor(interiorBudget * .9));
+        continue;
+      }
       // Once the lattice is down to its floor there is nothing left to give but the
       // budget, so keep trimming rather than spinning through the remaining attempts.
       if (!atReference || !shrink()) interiorBudget = Math.max(4, Math.floor(interiorBudget * .92));
