@@ -19,7 +19,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  TERRAIN, TERRAIN_KITS, BOARDING_INVENTORY, BOARD_SIZES, GALLOWDARK_GRID, MM_PER_IN as MM,
+  TERRAIN, TERRAIN_KITS, BOARDING_INVENTORY, BOARD_SIZES, EBERLEG_GRID, GALLOWDARK_GRID, MM_PER_IN as MM,
   type CatalogueId,
 } from "../app/terrain.ts";
 import { cellsThatFit, generate, readKit, type KitDef } from "../app/generate.ts";
@@ -43,7 +43,7 @@ const scaled = (sets:number) =>
 const run = (options:{
   width?:number; height?:number; sets?:number; seed?:number;
   catalogue?:CatalogueId; inventory?:Record<string, number>;
-  anchor?:"auto" | "corner" | "edge" | "centre";
+  anchor?:"auto" | "corner" | "edge" | "centre" | "fill";
 } = {}) => {
   const width = options.width ?? BOARD_SIZES.card.width;
   const height = options.height ?? BOARD_SIZES.card.height;
@@ -121,6 +121,81 @@ test("the 125 mm pitch that broke the last generator is refused outright", () =>
   });
   assert.equal(report.pieces.length, 0, "nothing should be built on an unbuildable grid");
   assert.match(report.note, /unbuildable grid/);
+});
+
+test("Eberleg castings close on one measured 152.4 mm node grid", () => {
+  const byId = new Map(TERRAIN.map((def) => [def.id, def]));
+  const mm = (id:string, side:"width" | "depth") => byId.get(id)![side] * MM;
+  assert.ok(Math.abs(EBERLEG_GRID * MM - 152.4) < 1e-9);
+  assert.ok(Math.abs(mm("eb-column", "width") - 51.91) < 1e-9);
+  assert.ok(Math.abs(mm("eb-stub", "width") - 102.16) < 1e-9);
+  assert.ok(Math.abs(mm("eb-wall", "width") - 152.4) < 1e-9);
+  assert.ok(Math.abs(mm("eb-corner", "width") - 102.16) < 1e-9);
+  assert.ok(Math.abs(mm("eb-t-intersection", "width") - 152.4) < 1e-9);
+
+  // Centre-to-end reach of every armed casting is half a pitch. This is the
+  // physical reason adjacent castings meet directly without an inserted column
+  // or single-wall shim.
+  const hubHalf = mm("eb-column", "width") / 2;
+  const armReach = mm("eb-stub", "width") - hubHalf;
+  assert.ok(Math.abs(armReach - EBERLEG_GRID * MM / 2) < .01);
+});
+
+test("Eberleg never uses more singles than its four-way nodes require", () => {
+  const kit = TERRAIN_KITS.find((candidate) => candidate.id === "eberleg-all")!;
+  SEEDS.forEach((seed) => {
+    const { report } = run({
+      width:48, height:48, catalogue:"eberleg", inventory:kit.inventory,
+      anchor:"fill", seed,
+    });
+    assert.ok(report.plan, `seed ${seed}: nothing built — ${report.note}`);
+
+    const degree = new Map<string, number>();
+    const builtEdges = report.plan!.panelEdges.filter((edge) =>
+      !isBorderEdge(report.lattice!, edge) || report.plan!.exterior.has(edgeKey(edge)));
+    builtEdges.forEach((edge) => nodesOfEdge(edge).forEach((node) => {
+      const key = `${node.col}:${node.row}`;
+      degree.set(key, (degree.get(key) ?? 0) + 1);
+    }));
+    const fourWayNodes = [...degree.values()].filter((value) => value === 4).length;
+    const singles = report.pieces.filter((piece) => piece.defId === "eb-single-wall").length;
+    assert.ok(
+      singles <= fourWayNodes,
+      `seed ${seed}: a loose single was used where a direct node casting should make the connection`,
+    );
+
+    // Bare columns are legitimate beside a full-width door, whose frame replaces
+    // both solid arms. They must not reappear as column + single-wall run ends.
+    const columns = report.pieces.filter((piece) => piece.defId === "eb-column").length;
+    const wideDoors = report.pieces.filter((piece) => piece.defId === "eb-wide-door").length;
+    assert.ok(columns <= wideDoors * 2, `seed ${seed}: ${columns} bare columns are not accounted for by ${wideDoors} doors`);
+  });
+});
+
+test("a doorway cannot be walked around at the end of its own panel", () => {
+  const kit = TERRAIN_KITS.find((candidate) => candidate.id === "eberleg-all")!;
+  SEEDS.forEach((seed) => {
+    const { report } = run({ width:48, height:48, catalogue:"eberleg", inventory:kit.inventory, anchor:"fill", seed });
+    assert.ok(report.plan, `seed ${seed}: nothing built — ${report.note}`);
+    const { lattice, state } = report.plan!;
+    const inside = (edge:{ axis:"h" | "v"; col:number; row:number }) => edge.axis === "h"
+      ? edge.col >= 0 && edge.col < lattice.cols && edge.row >= 0 && edge.row <= lattice.rows
+      : edge.col >= 0 && edge.col <= lattice.cols && edge.row >= 0 && edge.row < lattice.rows;
+    const open = (edge:{ axis:"h" | "v"; col:number; row:number }) =>
+      inside(edge) && (state.get(edgeKey(edge)) ?? "open") === "open";
+    report.plan!.panelEdges.filter((edge) => state.get(edgeKey(edge)) === "hatch").forEach((edge) => {
+      const routes = edge.axis === "h"
+        ? [
+            [{ axis:"v" as const, col:edge.col, row:edge.row - 1 }, { axis:"h" as const, col:edge.col, row:edge.row - 1 }, { axis:"v" as const, col:edge.col + 1, row:edge.row - 1 }],
+            [{ axis:"v" as const, col:edge.col, row:edge.row }, { axis:"h" as const, col:edge.col, row:edge.row + 1 }, { axis:"v" as const, col:edge.col + 1, row:edge.row }],
+          ]
+        : [
+            [{ axis:"h" as const, col:edge.col - 1, row:edge.row }, { axis:"v" as const, col:edge.col - 1, row:edge.row }, { axis:"h" as const, col:edge.col - 1, row:edge.row + 1 }],
+            [{ axis:"h" as const, col:edge.col, row:edge.row }, { axis:"v" as const, col:edge.col + 1, row:edge.row }, { axis:"h" as const, col:edge.col, row:edge.row + 1 }],
+          ];
+      assert.equal(routes.some((route) => route.every(open)), false, `seed ${seed}: ${edgeKey(edge)} has an immediate walk-around`);
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

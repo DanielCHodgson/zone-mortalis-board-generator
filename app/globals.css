@@ -259,10 +259,10 @@ kbd { padding-left:4px; color:var(--muted); font:11px var(--font-geist-mono, ui-
 .board-mark { position:absolute; inset:0; display:grid; place-content:center; text-align:center; color:var(--board-mark); pointer-events:none; }
 .board-mark strong { font:500 22px var(--font-geist-mono, ui-monospace),monospace; }
 .board-mark span { font-size:10px; letter-spacing:.15em; margin-top:5px; }
-.reserved-zone { position:absolute; z-index:1; min-width:2px; min-height:2px; padding:5px; overflow:visible; border:1px solid transparent; outline:none; background:repeating-linear-gradient(135deg,var(--warn-bg) 0 5px,var(--warn-line) 5px 10px); color:var(--warn); cursor:pointer; pointer-events:auto; box-shadow:inset 0 0 0 1px rgba(255,255,255,.26); transition:border-color .12s,box-shadow .12s,background .12s; }
+.reserved-zone { position:absolute; z-index:1; min-width:2px; min-height:2px; padding:5px; overflow:visible; border:1px solid transparent; outline:none; background:repeating-linear-gradient(135deg,var(--warn-bg) 0 5px,var(--warn-line) 5px 10px); color:var(--warn); cursor:move; pointer-events:auto; box-shadow:inset 0 0 0 1px rgba(255,255,255,.26); transition:border-color .12s,box-shadow .12s,background .12s; }
 .board.zone-mode .reserved-zone { pointer-events:none; }
 .reserved-zone:hover { border-color:var(--warn-line); border-style:dashed; background:repeating-linear-gradient(135deg,var(--warn-bg) 0 5px,var(--warn-line) 5px 10px); filter:brightness(1.06); }
-.reserved-zone.focused { z-index:3; border-color:var(--warn-line); border-style:solid; background:repeating-linear-gradient(135deg,var(--warn-bg) 0 5px,var(--warn-line) 5px 10px); box-shadow:0 0 0 1px var(--warn-line),0 2px 6px var(--piece-shadow); }
+.reserved-zone.focused { z-index:7; border-color:var(--warn-line); border-style:solid; background:repeating-linear-gradient(135deg,var(--warn-bg) 0 5px,var(--warn-line) 5px 10px); box-shadow:0 0 0 1px var(--warn-line),0 2px 6px var(--piece-shadow); }
 .reserved-zone:focus-visible { box-shadow:0 0 0 2px var(--focus-halo),0 0 0 4px var(--warn-line); }
 .reserved-zone strong,.reserved-zone span { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; text-shadow:none; }
 .reserved-zone strong { font-size:10px; }
@@ -270,6 +270,7 @@ kbd { padding-left:4px; color:var(--muted); font:11px var(--font-geist-mono, ui-
 .reserved-zone.draft { z-index:4; border-color:var(--warn-line); border-style:solid; background:var(--warn-bg); pointer-events:none; box-shadow:0 0 0 1px var(--warn-line); }
 .selection-marquee { position:absolute; z-index:6; border:1px solid var(--accent); background:var(--accent-soft); box-shadow:0 0 0 1px var(--accent),inset 0 0 0 1px var(--board-inner); pointer-events:none; }
 .reserved-zone.resizing { border-style:solid; box-shadow:0 0 0 2px var(--warn-line),inset 0 0 0 1px var(--board-inner); }
+.reserved-zone.moving { cursor:grabbing; border-style:solid; box-shadow:0 0 0 2px var(--warn-line),0 4px 10px var(--piece-shadow); }
 .zone-handle { position:absolute; z-index:3; width:7px; height:7px; padding:0; border:1px solid var(--warn); border-radius:1px; background:var(--warn-bg); opacity:0; visibility:hidden; pointer-events:none; transform:scale(.7); box-shadow:none; transition:opacity .1s,transform .1s,background .1s; }
 .reserved-zone:hover .zone-handle,.reserved-zone.focused .zone-handle { opacity:1; visibility:visible; pointer-events:auto; transform:scale(1); }
 .zone-handle:hover { background:var(--warn-line); transform:scale(1.15) !important; }
@@ -277,7 +278,7 @@ kbd { padding-left:4px; color:var(--muted); font:11px var(--font-geist-mono, ui-
 .zone-handle.ne { right:-4px; top:-4px; cursor:nesw-resize; }
 .zone-handle.sw { left:-4px; bottom:-4px; cursor:nesw-resize; }
 .zone-handle.se { right:-4px; bottom:-4px; cursor:nwse-resize; }
-.board.resizing-zone,.board.resizing-zone .zone-handle { cursor:grabbing; }
+.board.resizing-zone,.board.resizing-zone .zone-handle,.board.dragging-zone { cursor:grabbing; }
 .board-resize-handle { position:absolute; z-index:4; right:0; bottom:0; width:16px; height:16px; padding:0; border:0; background:linear-gradient(135deg,transparent 0 42%,var(--line-strong) 42% 52%,transparent 52%),linear-gradient(135deg,transparent 0 64%,var(--line-strong) 64% 74%,transparent 74%); cursor:nwse-resize; touch-action:none; opacity:.7; transition:opacity .1s; }
 .board-resize-handle:hover,.board-resize-handle.resizing { opacity:1; }
 .ruler { position:absolute; color:var(--muted); font:500 10px var(--font-geist-mono, ui-monospace),monospace; display:flex; justify-content:space-between; }
@@ -346,6 +347,84 @@ kbd { padding-left:4px; color:var(--muted); font:11px var(--font-geist-mono, ui-
    so they need no clip -- but they ARE the wall, so they draw as wall, not as the
    pale column the plain hub uses. */
 .placed-piece.pillar.visual-solid { background:var(--wall); border-color:var(--wall-line); }
+/* Eberleg's straight/stub pieces are not anonymous bars. Each contains the same
+   51.91 mm chamfered hub visible in the STL, with wall arms growing from it. */
+.placed-piece.piece-eb-wall,.placed-piece.piece-eb-stub { overflow:visible; background:var(--wall); }
+.placed-piece.piece-eb-wall::after,.placed-piece.piece-eb-stub::after,
+.placed-piece.piece-eb-corner::after,.placed-piece.piece-eb-t-intersection::after {
+  content:""; position:absolute; z-index:1; background:var(--pillar); border:1px solid var(--pillar-line);
+  clip-path:polygon(18% 0,82% 0,100% 18%,100% 82%,82% 100%,18% 100%,0 82%,0 18%);
+  box-shadow:inset 0 0 0 1px var(--board-inner);
+}
+.placed-piece.piece-eb-wall.facing-0::after,.placed-piece.piece-eb-wall.facing-180::after { left:33%; top:0; width:34%; height:100%; }
+.placed-piece.piece-eb-wall.facing-90::after,.placed-piece.piece-eb-wall.facing-270::after { left:0; top:33%; width:100%; height:34%; }
+.placed-piece.piece-eb-stub.facing-0::after { left:0; top:0; width:50.8%; height:100%; }
+.placed-piece.piece-eb-stub.facing-90::after { left:0; top:0; width:100%; height:50.8%; }
+.placed-piece.piece-eb-stub.facing-180::after { right:0; top:0; width:50.8%; height:100%; }
+.placed-piece.piece-eb-stub.facing-270::after { left:0; bottom:0; width:100%; height:50.8%; }
+/* Node location within the measured corner and T bounding boxes. */
+.placed-piece.piece-eb-corner.facing-0::after { left:49.2%; top:0; width:50.8%; height:50.8%; }
+.placed-piece.piece-eb-corner.facing-90::after { left:49.2%; top:49.2%; width:50.8%; height:50.8%; }
+.placed-piece.piece-eb-corner.facing-180::after { left:0; top:49.2%; width:50.8%; height:50.8%; }
+.placed-piece.piece-eb-corner.facing-270::after { left:0; top:0; width:50.8%; height:50.8%; }
+.placed-piece.piece-eb-t-intersection.facing-0::after { left:33%; top:0; width:34%; height:50.8%; }
+.placed-piece.piece-eb-t-intersection.facing-90::after { left:49.2%; top:33%; width:50.8%; height:34%; }
+.placed-piece.piece-eb-t-intersection.facing-180::after { left:33%; top:49.2%; width:34%; height:50.8%; }
+.placed-piece.piece-eb-t-intersection.facing-270::after { left:0; top:33%; width:50.8%; height:34%; }
+.placed-piece.piece-eb-single-wall .terrain-detail,.placed-piece.piece-eb-stub .terrain-detail,
+.placed-piece.piece-eb-wall .terrain-detail { inset:28% 12%; border-color:var(--wall-detail); }
+.placed-piece.piece-eb-single-door,.placed-piece.piece-eb-wide-door {
+  background:linear-gradient(90deg,var(--door-frame) 0 10%,var(--door) 10% 90%,var(--door-frame) 90%);
+}
+.placed-piece.piece-eb-single-door.rotated,.placed-piece.piece-eb-wide-door.rotated {
+  background:linear-gradient(0deg,var(--door-frame) 0 10%,var(--door) 10% 90%,var(--door-frame) 90%);
+}
+/* Refined STL footprint. The measured box remains the hit/snap box, but only the
+   ~22 mm wall core and 51.91 mm octagonal node are painted. This keeps every arm
+   on the same centreline and lets neighbouring pieces meet without double borders. */
+.placed-piece:is(.pillar,.wall,.door):is(.piece-eb-column,.piece-eb-stub,.piece-eb-wall,.piece-eb-corner,.piece-eb-t-intersection,.piece-eb-single-wall,.piece-eb-single-door,.piece-eb-wide-door) {
+  overflow:visible; border-color:transparent; background:transparent; box-shadow:none;
+}
+.placed-piece:is(.piece-eb-column,.piece-eb-stub,.piece-eb-wall,.piece-eb-corner,.piece-eb-t-intersection,.piece-eb-single-wall,.piece-eb-single-door,.piece-eb-wide-door).selected {
+  box-shadow:0 0 0 2px var(--focus-halo),0 0 0 4px var(--accent),0 2px 5px rgba(0,0,0,.35);
+}
+.placed-piece:is(.piece-eb-column,.piece-eb-stub,.piece-eb-wall,.piece-eb-corner,.piece-eb-t-intersection)::after {
+  border:0; background:var(--pillar); box-shadow:inset 0 0 0 1px var(--pillar-line),inset 0 0 0 2px var(--board-inner);
+}
+.placed-piece.piece-eb-column::before {
+  content:""; position:absolute; inset:0; background:var(--pillar);
+  clip-path:polygon(18% 0,82% 0,100% 18%,100% 82%,82% 100%,18% 100%,0 82%,0 18%);
+  box-shadow:inset 0 0 0 1px var(--pillar-line);
+}
+.placed-piece:is(.piece-eb-stub,.piece-eb-wall,.piece-eb-corner,.piece-eb-t-intersection,.piece-eb-single-wall,.piece-eb-single-door,.piece-eb-wide-door)::before {
+  content:""; position:absolute; inset:0; clip-path:none; background-repeat:no-repeat;
+}
+/* Straight and loose arms: the octagon has 18% chamfers, leaving a 64% straight
+   face. The wall core is exactly that face width: 33.22 mm inside the authoritative
+   51.91 mm box. This is why the arms meet the octagon without a step. */
+.placed-piece:is(.piece-eb-wall,.piece-eb-stub,.piece-eb-single-wall).facing-0::before,
+.placed-piece:is(.piece-eb-wall,.piece-eb-stub,.piece-eb-single-wall).facing-180::before,
+.placed-piece.piece-eb-single-wall:not(.rotated)::before { background:linear-gradient(var(--wall),var(--wall)) 0 50% / 100% 64% no-repeat; }
+.placed-piece:is(.piece-eb-wall,.piece-eb-stub,.piece-eb-single-wall).facing-90::before,
+.placed-piece:is(.piece-eb-wall,.piece-eb-stub,.piece-eb-single-wall).facing-270::before,
+.placed-piece.piece-eb-single-wall.rotated::before { background:linear-gradient(var(--wall),var(--wall)) 50% 0 / 64% 100% no-repeat; }
+/* Corner: canonical west + south. Arms cross beneath the node and terminate at
+   the exact measured bounding-box faces, so the next casting lands flush. */
+.placed-piece.piece-eb-corner.facing-0::before { background:linear-gradient(to bottom,transparent 9.14%,var(--wall) 9.14% 41.66%,transparent 41.66%),linear-gradient(to right,transparent 58.34%,var(--wall) 58.34% 90.86%,transparent 90.86%); }
+.placed-piece.piece-eb-corner.facing-90::before { background:linear-gradient(to bottom,transparent 58.34%,var(--wall) 58.34% 90.86%,transparent 90.86%),linear-gradient(to right,transparent 58.34%,var(--wall) 58.34% 90.86%,transparent 90.86%); }
+.placed-piece.piece-eb-corner.facing-180::before { background:linear-gradient(to bottom,transparent 58.34%,var(--wall) 58.34% 90.86%,transparent 90.86%),linear-gradient(to right,transparent 9.14%,var(--wall) 9.14% 41.66%,transparent 41.66%); }
+.placed-piece.piece-eb-corner.facing-270::before { background:linear-gradient(to bottom,transparent 9.14%,var(--wall) 9.14% 41.66%,transparent 41.66%),linear-gradient(to right,transparent 9.14%,var(--wall) 9.14% 41.66%,transparent 41.66%); }
+/* T: canonical west + east + south. */
+.placed-piece.piece-eb-t-intersection.facing-0::before { background:linear-gradient(to bottom,transparent 9.14%,var(--wall) 9.14% 41.66%,transparent 41.66%),linear-gradient(to right,transparent 39.1%,var(--wall) 39.1% 60.9%,transparent 60.9%); }
+.placed-piece.piece-eb-t-intersection.facing-90::before { background:linear-gradient(to bottom,transparent 39.1%,var(--wall) 39.1% 60.9%,transparent 60.9%),linear-gradient(to right,transparent 58.34%,var(--wall) 58.34% 90.86%,transparent 90.86%); }
+.placed-piece.piece-eb-t-intersection.facing-180::before { background:linear-gradient(to bottom,transparent 58.34%,var(--wall) 58.34% 90.86%,transparent 90.86%),linear-gradient(to right,transparent 39.1%,var(--wall) 39.1% 60.9%,transparent 60.9%); }
+.placed-piece.piece-eb-t-intersection.facing-270::before { background:linear-gradient(to bottom,transparent 39.1%,var(--wall) 39.1% 60.9%,transparent 60.9%),linear-gradient(to right,transparent 9.14%,var(--wall) 9.14% 41.66%,transparent 41.66%); }
+/* Bulkhead frames occupy the same slim wall centreline. */
+.placed-piece:is(.piece-eb-single-door,.piece-eb-wide-door):not(.rotated)::before { background:linear-gradient(var(--door-frame),var(--door-frame)) 0 50% / 100% 84.7% no-repeat; }
+.placed-piece:is(.piece-eb-single-door,.piece-eb-wide-door).rotated::before { background:linear-gradient(var(--door-frame),var(--door-frame)) 50% 0 / 84.7% 100% no-repeat; }
+.placed-piece:is(.piece-eb-single-door,.piece-eb-wide-door):not(.rotated) .terrain-detail { inset:36% 25%; }
+.placed-piece:is(.piece-eb-single-door,.piece-eb-wide-door).rotated .terrain-detail { inset:25% 36%; }
+.placed-piece:is(.piece-eb-stub,.piece-eb-wall,.piece-eb-corner,.piece-eb-t-intersection,.piece-eb-single-wall) .terrain-detail { display:none; }
 /* Scatter is dressing, not structure: it sits under the walls so a bulkhead always
    draws over a crate, and it is tinted apart from the terrain so the eye can tell
    what is a wall and what is a barrel. */

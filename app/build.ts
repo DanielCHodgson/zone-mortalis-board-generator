@@ -341,6 +341,29 @@ const buildHub = ({ plan, defs, stock, heights, nextUid, seed }:BuildInput):Buil
     !isBorderEdge(lattice, edge) || plan.exterior.has(edgeKey(edge)));
   if (!panelEdges.length) return { ok:false, reason:"plan carries no panels" };
 
+  // Eberleg bulkheads are large freestanding frames, so a door with a three-edge
+  // detour around either end looks especially absurd: the model just walks round
+  // the frame. Close those locally bypassable hatches into ordinary wall before
+  // choosing castings. The detour proves this cannot disconnect the board.
+  const insideEdge = (edge:LatticeEdge) => edge.axis === "h"
+    ? edge.col >= 0 && edge.col < lattice.cols && edge.row >= 0 && edge.row <= lattice.rows
+    : edge.col >= 0 && edge.col <= lattice.cols && edge.row >= 0 && edge.row < lattice.rows;
+  const open = (edge:LatticeEdge) => insideEdge(edge) && (state.get(edgeKey(edge)) ?? "open") === "open";
+  const detours = (edge:LatticeEdge):LatticeEdge[][] => edge.axis === "h"
+    ? [
+        [{ axis:"v", col:edge.col, row:edge.row - 1 }, { axis:"h", col:edge.col, row:edge.row - 1 }, { axis:"v", col:edge.col + 1, row:edge.row - 1 }],
+        [{ axis:"v", col:edge.col, row:edge.row }, { axis:"h", col:edge.col, row:edge.row + 1 }, { axis:"v", col:edge.col + 1, row:edge.row }],
+      ]
+    : [
+        [{ axis:"h", col:edge.col - 1, row:edge.row }, { axis:"v", col:edge.col - 1, row:edge.row }, { axis:"h", col:edge.col - 1, row:edge.row + 1 }],
+        [{ axis:"h", col:edge.col, row:edge.row }, { axis:"v", col:edge.col + 1, row:edge.row }, { axis:"h", col:edge.col, row:edge.row + 1 }],
+      ];
+  panelEdges.forEach((edge) => {
+    if (state.get(edgeKey(edge)) === "hatch" && detours(edge).some((route) => route.every(open))) {
+      state.set(edgeKey(edge), "wall");
+    }
+  });
+
   // A doorway is settled before anything else, because it is what says which hubs
   // must NOT arm a direction. Double bulkheads go first: one fills the whole gap
   // between two bare hubs. Past those, a single bulkhead takes half the gap and
@@ -392,6 +415,14 @@ const buildHub = ({ plan, defs, stock, heights, nextUid, seed }:BuildInput):Buil
 
   // Busiest nodes first, so the scarce three-armed castings land where three runs
   // actually meet rather than being spent on a corner a corner would have done.
+  //
+  // A node with one, two or three incident walls must use the casting made for
+  // that exact shape.  Treating any subset as good enough is physically possible
+  // only after filling every omitted arm with a loose single wall; that is how the
+  // old pass produced column + single-wall pairs at the ends of runs while proper
+  // stubs and straight pieces were the intended joint.  Four-way nodes are the
+  // sole exception because Eberleg publishes no cross casting: a T plus one single
+  // wall is the kit's real, unavoidable construction there.
   const chosen = new Map<string, { def:BuildDef; facing:0 | 90 | 180 | 270; arms:Dir[] }>();
   const busiest = [...nodes.keys()].sort((first, second) =>
     (wanted.get(second)?.size ?? 0) - (wanted.get(first)?.size ?? 0));
@@ -404,12 +435,16 @@ const buildHub = ({ plan, defs, stock, heights, nextUid, seed }:BuildInput):Buil
         const arms = turn(CANONICAL_ARMS[def.shape!], quarter);
         // Never point a moulded arm at open floor.
         if (!arms.every((dir) => want.has(dir))) continue;
+        if (want.size < 4 && arms.length !== want.size) continue;
         if (!best || arms.length > best.arms.length) {
           best = { def, facing:(quarter * 90) as 0 | 90 | 180 | 270, arms };
         }
       }
     }
-    if (!best) return { ok:false, reason:`out of node castings: ${nodes.size} nodes need one` };
+    if (!best) return {
+      ok:false,
+      reason:`out of exact node castings: ${nodes.size} nodes need one (singles are reserved for four-way nodes)`,
+    };
     take(best.def);
     chosen.set(key, best);
   }
@@ -419,14 +454,9 @@ const buildHub = ({ plan, defs, stock, heights, nextUid, seed }:BuildInput):Buil
   /**
    * Second pass: rescue any edge that came out of the first with no arm at all.
    *
-   * The first pass takes the casting with the most arms that fit what a node
-   * wants, and where it has to settle for fewer than the node wanted, WHICH
-   * directions get dropped is arbitrary. That is fine for one end of an edge —
-   * a filler covers the missing half — but both ends can drop the same direction
-   * independently, and then the edge has nothing at either end and nothing for a
-   * filler's inner end to stand on either. It is the one failure the greedy pass
-   * produces on its own, and on a thin palette it was frequent enough to lose the
-   * whole board.
+   * Exact castings settle every node up to degree three. Only a four-way node can
+   * drop a direction, because the range has no cross casting; two neighbouring
+   * four-way nodes can independently drop the edge between them.
    *
    * The rescue is to re-pick one endpoint, handing its current casting back to the
    * box first so a like-for-like swap is always on the table.
@@ -445,6 +475,7 @@ const buildHub = ({ plan, defs, stock, heights, nextUid, seed }:BuildInput):Buil
         const arms = turn(CANONICAL_ARMS[def.shape!], quarter);
         if (!arms.includes(dir)) continue;
         if (!arms.every((each) => want.has(each))) continue;
+        if (want.size < 4 && arms.length !== want.size) continue;
         if (!best || arms.length > best.arms.length) {
           best = { def, facing:(quarter * 90) as 0 | 90 | 180 | 270, arms };
         }
@@ -477,10 +508,9 @@ const buildHub = ({ plan, defs, stock, heights, nextUid, seed }:BuildInput):Buil
       continue;
     }
     if (armsHere === 2) continue;
-    // No arm at either end: both halves are filler, butting in the middle of the
-    // gap and held by the hub at each outer end. That is a joint the kit makes,
-    // so it is built rather than refused — it just costs two pieces instead of
-    // none, which is what the report's leftover count then shows.
+    // A missing arm can only belong to a four-way node (there is no cross
+    // casting). A single wall supplies that one missing half. If both endpoints
+    // are four-way T substitutions, two singles meet at the middle of the gap.
     const bare = armed(job.a, job.dirA)
       ? [{ node:job.b, dir:job.dirB }]
       : armed(job.b, job.dirB)

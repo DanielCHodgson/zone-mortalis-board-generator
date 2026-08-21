@@ -109,6 +109,7 @@ export default function Home() {
   const [zoneName, setZoneName] = useState("Hangar");
   const [zoneDraft, setZoneDraft] = useState<{ startX:number; startY:number; currentX:number; currentY:number } | null>(null);
   const [zoneResize, setZoneResize] = useState<{ uid:string; corner:ZoneCorner; anchorX:number; anchorY:number } | null>(null);
+  const [zoneDrag, setZoneDrag] = useState<{ uid:string; startX:number; startY:number; originX:number; originY:number } | null>(null);
   const [focusedZone, setFocusedZone] = useState<string | null>(null);
   const [paletteDrag, setPaletteDrag] = useState<PaletteDragState | null>(null);
   const paletteDragRef = useRef<PaletteDragState | null>(null);
@@ -933,6 +934,61 @@ export default function Home() {
           : def.kind === "end" ? "#56615c"
             : def.kind === "scatter" ? "#4c6f66"
               : "#2d3934";
+      if (def.catalogue === "eberleg") {
+        // The arm meets the straight face of the 18%-chamfered 51.91 mm node:
+        // 64% × 51.91 = 33.22 mm. Door frames retain their measured 43.97 mm depth.
+        const wallThickness = 51.91 * .64 / MM_PER_IN * boardScale;
+        const doorFrameThickness = 43.97 / MM_PER_IN * boardScale;
+        const hubSize = 51.91 / MM_PER_IN * boardScale;
+        const armReach = 76.2 / MM_PER_IN * boardScale;
+        const baseArms:Record<string, Array<"n" | "e" | "s" | "w">> = {
+          column:[], stub:["e"], straight:["w","e"], corner:["w","s"], t:["w","e","s"], cross:["n","e","s","w"],
+        };
+        const clockwise = { n:"e", e:"s", s:"w", w:"n" } as const;
+        let arms = [...(baseArms[def.shape || "column"] || [])];
+        for (let turn = 0; turn < (piece.facing || 0) / 90; turn++) arms = arms.map((dir) => clockwise[dir]);
+
+        if (def.shape) {
+          const nodeX = x + (arms.includes("w") ? armReach : hubSize / 2);
+          const nodeY = y + (arms.includes("n") ? armReach : hubSize / 2);
+          ctx.fillStyle = "#3d4844";
+          if (arms.includes("w")) ctx.fillRect(x, nodeY - wallThickness / 2, nodeX - x, wallThickness);
+          if (arms.includes("e")) ctx.fillRect(nodeX, nodeY - wallThickness / 2, x + width - nodeX, wallThickness);
+          if (arms.includes("n")) ctx.fillRect(nodeX - wallThickness / 2, y, wallThickness, nodeY - y);
+          if (arms.includes("s")) ctx.fillRect(nodeX - wallThickness / 2, nodeY, wallThickness, y + depth - nodeY);
+          const half = hubSize / 2;
+          const bevel = hubSize * .18;
+          ctx.beginPath();
+          ctx.moveTo(nodeX - half + bevel, nodeY - half);
+          ctx.lineTo(nodeX + half - bevel, nodeY - half);
+          ctx.lineTo(nodeX + half, nodeY - half + bevel);
+          ctx.lineTo(nodeX + half, nodeY + half - bevel);
+          ctx.lineTo(nodeX + half - bevel, nodeY + half);
+          ctx.lineTo(nodeX - half + bevel, nodeY + half);
+          ctx.lineTo(nodeX - half, nodeY + half - bevel);
+          ctx.lineTo(nodeX - half, nodeY - half + bevel);
+          ctx.closePath();
+          ctx.fillStyle = "#2d3934";
+          ctx.fill();
+          ctx.strokeStyle = "#18211e";
+          ctx.lineWidth = 2;
+          ctx.stroke();
+        } else {
+          const horizontal = piece.rotation !== 90;
+          const thickness = def.kind === "door" ? doorFrameThickness : wallThickness;
+          const bar = horizontal
+            ? { x, y:y + (depth - thickness) / 2, width, height:thickness }
+            : { x:x + (width - thickness) / 2, y, width:thickness, height:depth };
+          ctx.fillStyle = asDoorway ? "#7d4b39" : "#3d4844";
+          ctx.fillRect(bar.x, bar.y, bar.width, bar.height);
+          if (asDoorway) {
+            ctx.fillStyle = "#252d2a";
+            if (horizontal) ctx.fillRect(x + width * .32, bar.y + 2, width * .36, Math.max(2, bar.height - 4));
+            else ctx.fillRect(bar.x + 2, y + depth * .32, Math.max(2, bar.width - 4), depth * .36);
+          }
+        }
+        return;
+      }
       ctx.fillStyle = colour;
       ctx.fillRect(x, y, width, depth);
       ctx.strokeStyle = "#18211e";
@@ -1127,6 +1183,18 @@ export default function Home() {
     setMessage(`Resizing ${zone.name} · hold Shift for a perfect square`);
   };
 
+  const beginZoneDrag = (event: React.PointerEvent<HTMLDivElement>, zone: ReservedZone) => {
+    if (zoneMode || (event.target as HTMLElement).closest(".zone-handle")) return;
+    event.preventDefault();
+    event.stopPropagation();
+    try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* Pointer capture may be unavailable in embedded browsers. */ }
+    const point = boardPoint(event.clientX, event.clientY);
+    setFocusedZone(zone.uid);
+    selectOnly(null);
+    setZoneDrag({ uid:zone.uid, startX:point.x, startY:point.y, originX:zone.x, originY:zone.y });
+    setMessage(`Moving ${zone.name} · release to place`);
+  };
+
   const onDrop = (event: React.DragEvent) => {
     event.preventDefault();
     const defId = event.dataTransfer.getData("terrain/def-id");
@@ -1190,6 +1258,17 @@ export default function Home() {
       const width = Math.abs(currentX - zoneResize.anchorX);
       const height = Math.abs(currentY - zoneResize.anchorY);
       setZones((current) => current.map((zone) => zone.uid === zoneResize.uid ? { ...zone, x, y, width, height } : zone));
+      return;
+    }
+    if (zoneDrag && boardRef.current) {
+      const zone = zones.find((item) => item.uid === zoneDrag.uid);
+      if (!zone) { setZoneDrag(null); return; }
+      const point = boardPoint(event.clientX, event.clientY);
+      const rawX = zoneDrag.originX + point.x - zoneDrag.startX;
+      const rawY = zoneDrag.originY + point.y - zoneDrag.startY;
+      const x = clamp(quantize(rawX), 0, boardWidth - zone.width);
+      const y = clamp(quantize(rawY), 0, boardHeight - zone.height);
+      setZones((current) => current.map((item) => item.uid === zone.uid ? { ...item, x, y } : item));
       return;
     }
     if (zoneDraft && boardRef.current) {
@@ -1316,9 +1395,9 @@ export default function Home() {
           <div className="board-area"><div className="board-frame" style={{ "--board-ratio":boardWidth / boardHeight } as CSSProperties}>
             <div className="ruler ruler-top">{Array.from({ length:boardWidth / 12 + 1 }, (_, index) => index * 12).map((inch) => <span key={inch}>{inch}{inch === boardWidth ? "″" : ""}</span>)}</div>
             <div className="ruler ruler-left">{Array.from({ length:boardHeight / 12 + 1 }, (_, index) => index * 12).map((inch) => <span key={inch}>{inch}{inch === boardHeight ? "″" : ""}</span>)}</div>
-            <div id="layout-board" ref={boardRef} style={{ "--minor-x":`${100 / boardWidth}%`, "--minor-y":`${100 / boardHeight}%`, "--major-x":`${1200 / boardWidth}%`, "--major-y":`${1200 / boardHeight}%` } as CSSProperties} className={`board ${theme}-board ${drag ? "dragging" : ""} ${marquee ? "selecting" : ""} ${zoneMode ? "zone-mode" : ""} ${zoneResize ? "resizing-zone" : ""}`} aria-label={`${boardWidth.toFixed(1)} by ${boardHeight.toFixed(1)} inch layout board`} aria-describedby="board-help" onDragOver={(event) => event.preventDefault()} onDrop={onDrop} onPointerMove={onBoardPointerMove} onPointerUp={() => { if (zoneDraft) finishZone(); if (marquee) finishMarquee(); if (zoneResize) { const zone = zones.find((item) => item.uid === zoneResize.uid); if (zone) setMessage(`${zone.name} resized · ${zone.width.toFixed(1)} × ${zone.height.toFixed(1)} in`); setZoneResize(null); } setDrag(null); }} onPointerCancel={() => { setZoneDraft(null); setZoneResize(null); setMarquee(null); setDrag(null); }} onPointerDown={beginZone}>
+            <div id="layout-board" ref={boardRef} style={{ "--minor-x":`${100 / boardWidth}%`, "--minor-y":`${100 / boardHeight}%`, "--major-x":`${1200 / boardWidth}%`, "--major-y":`${1200 / boardHeight}%` } as CSSProperties} className={`board ${theme}-board ${drag ? "dragging" : ""} ${marquee ? "selecting" : ""} ${zoneMode ? "zone-mode" : ""} ${zoneResize ? "resizing-zone" : ""} ${zoneDrag ? "dragging-zone" : ""}`} aria-label={`${boardWidth.toFixed(1)} by ${boardHeight.toFixed(1)} inch layout board`} aria-describedby="board-help" onDragOver={(event) => event.preventDefault()} onDrop={onDrop} onPointerMove={onBoardPointerMove} onPointerUp={() => { if (zoneDraft) finishZone(); if (marquee) finishMarquee(); if (zoneResize) { const zone = zones.find((item) => item.uid === zoneResize.uid); if (zone) setMessage(`${zone.name} resized · ${zone.width.toFixed(1)} × ${zone.height.toFixed(1)} in`); setZoneResize(null); } if (zoneDrag) { const zone = zones.find((item) => item.uid === zoneDrag.uid); if (zone) setMessage(`${zone.name} moved · ${zone.x.toFixed(1)}, ${zone.y.toFixed(1)} in`); setZoneDrag(null); } setDrag(null); }} onPointerCancel={() => { setZoneDraft(null); setZoneResize(null); setZoneDrag(null); setMarquee(null); setDrag(null); }} onPointerDown={beginZone}>
               {pieces.length === 0 && <div className="board-mark"><strong>{boardPreset === "custom" ? `${boardWidth.toFixed(1)}″ × ${boardHeight.toFixed(1)}″` : BOARD_SIZES[boardPreset].label}</strong><span>{zoneMode ? "DRAG TO RESERVE A CLEAR ZONE" : "DROP TERRAIN TO PLACE"}</span></div>}
-              {zones.map((zone) => <div key={zone.uid} role="group" tabIndex={zoneMode ? -1 : 0} aria-label={`${zone.name}, reserved zone ${zone.width.toFixed(1)} by ${zone.height.toFixed(1)} inches`} className={`reserved-zone ${focusedZone === zone.uid ? "focused" : ""} ${zoneResize?.uid === zone.uid ? "resizing" : ""}`} style={{ left:`${zone.x / boardWidth * 100}%`, top:`${zone.y / boardHeight * 100}%`, width:`${zone.width / boardWidth * 100}%`, height:`${zone.height / boardHeight * 100}%` }} onPointerDown={(event) => { if (zoneMode) return; event.stopPropagation(); setFocusedZone(zone.uid); selectOnly(null); setMessage(`${zone.name} selected · drag a corner to resize`); }} onFocus={() => setFocusedZone(zone.uid)}><strong>{zone.name}</strong><span>{zone.width.toFixed(1)} × {zone.height.toFixed(1)}″</span>{!zoneMode && (["nw","ne","sw","se"] as ZoneCorner[]).map((corner) => <button key={corner} className={`zone-handle ${corner}`} aria-label={`Resize ${zone.name} from ${corner} corner`} title="Drag to resize" onPointerDown={(event) => beginZoneResize(event, zone, corner)} />)}</div>)}
+              {zones.map((zone) => <div key={zone.uid} role="group" tabIndex={zoneMode ? -1 : 0} aria-label={`${zone.name}, reserved zone ${zone.width.toFixed(1)} by ${zone.height.toFixed(1)} inches`} className={`reserved-zone ${focusedZone === zone.uid ? "focused" : ""} ${zoneResize?.uid === zone.uid ? "resizing" : ""} ${zoneDrag?.uid === zone.uid ? "moving" : ""}`} style={{ left:`${zone.x / boardWidth * 100}%`, top:`${zone.y / boardHeight * 100}%`, width:`${zone.width / boardWidth * 100}%`, height:`${zone.height / boardHeight * 100}%` }} onPointerDown={(event) => beginZoneDrag(event, zone)} onFocus={() => setFocusedZone(zone.uid)}><strong>{zone.name}</strong><span>{zone.width.toFixed(1)} × {zone.height.toFixed(1)}″</span>{!zoneMode && (["nw","ne","sw","se"] as ZoneCorner[]).map((corner) => <button key={corner} className={`zone-handle ${corner}`} aria-label={`Resize ${zone.name} from ${corner} corner`} title="Drag to resize" onPointerDown={(event) => beginZoneResize(event, zone, corner)} />)}</div>)}
               {zoneDraft && (() => { const zone = normaliseZoneDraft(zoneDraft); return <div className="reserved-zone draft" style={{ left:`${zone.x / boardWidth * 100}%`, top:`${zone.y / boardHeight * 100}%`, width:`${zone.width / boardWidth * 100}%`, height:`${zone.height / boardHeight * 100}%` }}><strong>{zoneName.trim() || "Hangar"}</strong><span>{zone.width.toFixed(1)} × {zone.height.toFixed(1)}″</span></div>; })()}
               {marquee && (() => { const left = Math.min(marquee.startX, marquee.currentX); const top = Math.min(marquee.startY, marquee.currentY); return <div className="selection-marquee" aria-hidden="true" style={{ left:`${left / boardWidth * 100}%`, top:`${top / boardHeight * 100}%`, width:`${Math.abs(marquee.currentX - marquee.startX) / boardWidth * 100}%`, height:`${Math.abs(marquee.currentY - marquee.startY) / boardHeight * 100}%` }} />; })()}
               {pieces.map((piece) => {
@@ -1326,7 +1405,7 @@ export default function Home() {
                 const width = piece.rotation === 90 ? def.depth : def.width;
                 const height = piece.rotation === 90 ? def.width : def.depth;
                 const isSelected = selectedIds.includes(piece.uid);
-                return <button key={piece.uid} title={`${def.name} · ${def.note} × ${Math.round(piece.height * MM_PER_IN)} mm high`} aria-label={`${def.name}, ${Math.round(piece.height * MM_PER_IN)} millimetres high${isSelected ? ", selected" : ""}`} aria-pressed={isSelected} className={`placed-piece ${def.kind} ${def.kind === "door" && piece.servesDoorway === false ? "shut" : ""} ${def.visual ? `visual-${def.visual}` : ""} ${piece.facing !== undefined ? `facing-${piece.facing}` : ""} ${piece.rotation === 90 ? "rotated" : ""} ${isSelected ? "selected" : ""}`} style={{ left:`${piece.x / boardWidth * 100}%`, top:`${piece.y / boardHeight * 100}%`, width:`${width / boardWidth * 100}%`, height:`${height / boardHeight * 100}%` }} onDoubleClick={() => rotatePiece(piece.uid)} onContextMenu={(event) => { event.preventDefault(); setFocusedZone(null); selectOnly(piece.uid); rotatePiece(piece.uid); }} onPointerDown={(event) => beginPieceDrag(event, piece)}><span className="terrain-detail" /></button>;
+                return <button key={piece.uid} title={`${def.name} · ${def.note} × ${Math.round(piece.height * MM_PER_IN)} mm high`} aria-label={`${def.name}, ${Math.round(piece.height * MM_PER_IN)} millimetres high${isSelected ? ", selected" : ""}`} aria-pressed={isSelected} className={`placed-piece piece-${def.id} ${def.kind} ${def.kind === "door" && piece.servesDoorway === false ? "shut" : ""} ${def.visual ? `visual-${def.visual}` : ""} ${piece.facing !== undefined ? `facing-${piece.facing}` : ""} ${piece.rotation === 90 ? "rotated" : ""} ${isSelected ? "selected" : ""}`} style={{ left:`${piece.x / boardWidth * 100}%`, top:`${piece.y / boardHeight * 100}%`, width:`${width / boardWidth * 100}%`, height:`${height / boardHeight * 100}%` }} onDoubleClick={() => rotatePiece(piece.uid)} onContextMenu={(event) => { event.preventDefault(); setFocusedZone(null); selectOnly(piece.uid); rotatePiece(piece.uid); }} onPointerDown={(event) => beginPieceDrag(event, piece)}><span className="terrain-detail" /></button>;
               })}
             </div>
             <button className={`board-resize-handle ${boardResize ? "resizing" : ""}`} aria-label="Resize board" title={`Drag to resize the board · max ${MAX_BOARD_WIDTH}″ × ${MAX_BOARD_HEIGHT}″`} onPointerDown={beginBoardResize} onPointerMove={onBoardResizeMove} onPointerUp={finishBoardResize} onPointerCancel={finishBoardResize} />
