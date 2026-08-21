@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { generate, type Anchor, type GenerateReport } from "./generate.ts";
 import {
   APPEARANCE_STORAGE_KEY, BOARDING_INVENTORY, BOARD_SIZES, BOARD_STORAGE_KEY, MANUFACTURERS,
@@ -64,6 +64,7 @@ export default function Home() {
   const boardRef = useRef<HTMLDivElement>(null);
   const boardAreaRef = useRef<HTMLDivElement>(null);
   const boardPanRef = useRef<{ pointerId:number; x:number; y:number; scrollLeft:number; scrollTop:number } | null>(null);
+  const zoomAnchorRef = useRef<{ xRatio:number; yRatio:number; clientX:number; clientY:number } | null>(null);
   const [pieces, setPieces] = useState<PlacedPiece[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
@@ -133,6 +134,34 @@ export default function Home() {
       return next;
     });
   };
+  const zoomBoardAtPointer = (event:React.WheelEvent<HTMLDivElement>) => {
+    if (Math.abs(event.deltaY) < Math.abs(event.deltaX) || !boardRef.current) return;
+    event.preventDefault();
+    const direction = event.deltaY < 0 ? 1 : -1;
+    const index = BOARD_ZOOM_STEPS.findIndex((value) => value === boardZoom);
+    if (index + direction < 0 || index + direction >= BOARD_ZOOM_STEPS.length) {
+      zoomAnchorRef.current = null;
+      return;
+    }
+    const rect = boardRef.current.getBoundingClientRect();
+    zoomAnchorRef.current = {
+      xRatio:clamp((event.clientX - rect.left) / rect.width, 0, 1),
+      yRatio:clamp((event.clientY - rect.top) / rect.height, 0, 1),
+      clientX:event.clientX,
+      clientY:event.clientY,
+    };
+    changeBoardZoom(direction);
+  };
+  useLayoutEffect(() => {
+    const anchor = zoomAnchorRef.current;
+    if (!anchor || !boardAreaRef.current || !boardRef.current) return;
+    const rect = boardRef.current.getBoundingClientRect();
+    const nextClientX = rect.left + rect.width * anchor.xRatio;
+    const nextClientY = rect.top + rect.height * anchor.yRatio;
+    boardAreaRef.current.scrollLeft += nextClientX - anchor.clientX;
+    boardAreaRef.current.scrollTop += nextClientY - anchor.clientY;
+    zoomAnchorRef.current = null;
+  }, [boardZoom]);
   const beginBoardPan = (event:React.PointerEvent<HTMLDivElement>) => {
     if (event.button !== 1 || !boardAreaRef.current) return;
     event.preventDefault();
@@ -1432,7 +1461,7 @@ export default function Home() {
           </div>
           {zoneMode && <div className="zone-designator panel"><label><span>Zone name</span><input aria-label="Zone name" value={zoneName} maxLength={32} onChange={(event) => setZoneName(event.target.value)} /></label><p>Drag on the grid to reserve a clear area. Hold <kbd>Shift</kbd> while dragging for a perfect square.</p><strong>{zones.length} saved</strong></div>}
 
-          <div ref={boardAreaRef} className={`board-area ${boardPanning ? "panning" : ""}`} title="Scroll to zoom · hold the mouse wheel and drag to pan" onWheel={(event) => { if (Math.abs(event.deltaY) < Math.abs(event.deltaX)) return; event.preventDefault(); changeBoardZoom(event.deltaY < 0 ? 1 : -1); }} onPointerDownCapture={beginBoardPan} onPointerMoveCapture={moveBoardPan} onPointerUpCapture={finishBoardPan} onPointerCancelCapture={finishBoardPan} onAuxClick={(event) => { if (event.button === 1) event.preventDefault(); }}><div className="board-pan-stage" style={{ "--board-stage-width":`${boardZoom + Math.max(0, boardZoom - 100) * .9}cqw`, "--board-stage-height":`${boardZoom + Math.max(0, boardZoom - 100) * .9}cqh` } as CSSProperties}><div className="board-frame" style={{ "--board-ratio":boardWidth / boardHeight, "--board-zoom":boardZoom / 100 } as CSSProperties}>
+          <div ref={boardAreaRef} className={`board-area ${boardPanning ? "panning" : ""}`} title="Scroll to zoom · hold the mouse wheel and drag to pan" onWheel={zoomBoardAtPointer} onPointerDownCapture={beginBoardPan} onPointerMoveCapture={moveBoardPan} onPointerUpCapture={finishBoardPan} onPointerCancelCapture={finishBoardPan} onAuxClick={(event) => { if (event.button === 1) event.preventDefault(); }}><div className="board-pan-stage" style={{ "--board-stage-width":`${boardZoom + Math.max(0, boardZoom - 100) * .9}cqw`, "--board-stage-height":`${boardZoom + Math.max(0, boardZoom - 100) * .9}cqh` } as CSSProperties}><div className="board-frame" style={{ "--board-ratio":boardWidth / boardHeight, "--board-zoom":boardZoom / 100 } as CSSProperties}>
             <div className="ruler ruler-top">{Array.from({ length:boardWidth / 12 + 1 }, (_, index) => index * 12).map((inch) => <span key={inch}>{inch}{inch === boardWidth ? "″" : ""}</span>)}</div>
             <div className="ruler ruler-left">{Array.from({ length:boardHeight / 12 + 1 }, (_, index) => index * 12).map((inch) => <span key={inch}>{inch}{inch === boardHeight ? "″" : ""}</span>)}</div>
             <div id="layout-board" ref={boardRef} style={{ "--minor-x":`${100 / boardWidth}%`, "--minor-y":`${100 / boardHeight}%`, "--major-x":`${1200 / boardWidth}%`, "--major-y":`${1200 / boardHeight}%` } as CSSProperties} className={`board ${theme}-board ${drag ? "dragging" : ""} ${marquee ? "selecting" : ""} ${zoneMode ? "zone-mode" : ""} ${zoneResize ? "resizing-zone" : ""} ${zoneDrag ? "dragging-zone" : ""}`} aria-label={`${boardWidth.toFixed(1)} by ${boardHeight.toFixed(1)} inch layout board`} aria-describedby="board-help" onDragOver={(event) => event.preventDefault()} onDrop={onDrop} onPointerMove={onBoardPointerMove} onPointerUp={() => { if (zoneDraft) finishZone(); if (marquee) finishMarquee(); if (zoneResize) { const zone = zones.find((item) => item.uid === zoneResize.uid); if (zone) setMessage(`${zone.name} resized · ${zone.width.toFixed(1)} × ${zone.height.toFixed(1)} in`); setZoneResize(null); } if (zoneDrag) { const zone = zones.find((item) => item.uid === zoneDrag.uid); if (zone) setMessage(`${zone.name} moved · ${zone.x.toFixed(1)}, ${zone.y.toFixed(1)} in`); setZoneDrag(null); } setDrag(null); }} onPointerCancel={() => { setZoneDraft(null); setZoneResize(null); setZoneDrag(null); setMarquee(null); setDrag(null); }} onPointerDown={beginZone}>
