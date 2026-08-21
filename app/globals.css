@@ -239,11 +239,17 @@ kbd { padding-left:4px; color:var(--muted); font:11px var(--font-geist-mono, ui-
 .switch-label input:checked + .toggle { border-color:var(--ink-2); background:var(--ink-2); }
 .switch-label input:checked + .toggle:after { transform:translateX(10px); }
 .settings select { min-height:30px; padding:5px 20px 5px 7px; border:1px solid var(--line); border-radius:3px; background:var(--surface); color:var(--ink-2); font-size:12px; }
+.zoom-control { flex:0 0 auto; display:flex; align-items:center; height:30px; border:1px solid var(--line); border-radius:3px; overflow:hidden; background:var(--surface); }
+.zoom-control button { min-width:27px; height:28px; padding:0 6px; background:transparent; color:var(--ink-2); font-size:15px; line-height:1; }
+.zoom-control button:hover:not(:disabled) { background:var(--hover); color:var(--ink); }
+.zoom-control button + button { border-left:1px solid var(--line); }
+.zoom-control .zoom-value { min-width:47px; font:600 11px var(--font-geist-mono, ui-monospace),monospace; }
 .theme-switch { display:flex; gap:2px; padding:2px; border:1px solid var(--line); border-radius:3px; background:var(--sunken); }
 .theme-switch button { min-height:26px; padding:4px 7px; border-radius:2px; background:transparent; color:var(--muted); font-size:11px; text-transform:capitalize; }
 .theme-switch button.active { background:var(--surface); color:var(--ink); box-shadow:0 1px 2px var(--piece-shadow); }
-.board-area { flex:1; min-height:0; display:grid; place-items:center; container-type:size; }
-.board-frame { position:relative; width:min(100%,780px); aspect-ratio:var(--board-ratio,1); padding:16px 0 0 16px; margin:0; }
+.board-area { flex:1; min-height:0; display:grid; place-items:center; overflow:auto; overscroll-behavior:contain; container-type:size; scrollbar-width:thin; }
+.board-area.panning, .board-area.panning * { cursor:grabbing !important; user-select:none; }
+.board-frame { position:relative; width:min(100%,780px); aspect-ratio:var(--board-ratio,1); padding:16px 0 0 16px; margin:0; zoom:var(--board-zoom,1); }
 .board { width:100%; height:100%; border:1px solid var(--line-strong); position:relative; overflow:hidden; touch-action:none; user-select:none; box-shadow:0 6px 20px var(--piece-shadow); }
 @supports (width:1cqmin) {
   .board-frame { width:min(100cqw,calc(100cqh * var(--board-ratio,1))); height:auto; }

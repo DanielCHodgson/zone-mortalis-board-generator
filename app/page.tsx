@@ -38,6 +38,7 @@ type ZoneCorner = "nw" | "ne" | "sw" | "se";
 const MIN_BOARD_SIZE = 12;
 const MAX_BOARD_WIDTH = BOARD_SIZES["60x48"].width;
 const MAX_BOARD_HEIGHT = BOARD_SIZES["60x48"].height;
+const BOARD_ZOOM_STEPS = [50, 75, 100, 125, 150, 175, 200] as const;
 
 /** A piece being dragged toward the board. "palette" drags an existing palette
  *  entry (already counted in `limits`); "catalogue" drags a not-yet-added kit
@@ -59,6 +60,8 @@ const catalogueSalt = (catalogue: CatalogueId) =>
 
 export default function Home() {
   const boardRef = useRef<HTMLDivElement>(null);
+  const boardAreaRef = useRef<HTMLDivElement>(null);
+  const boardPanRef = useRef<{ pointerId:number; x:number; y:number; scrollLeft:number; scrollTop:number } | null>(null);
   const [pieces, setPieces] = useState<PlacedPiece[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
@@ -74,6 +77,8 @@ export default function Home() {
   // being what it says: a deliberate way to hold pieces back.
   const [generationPercent, setGenerationPercent] = useState(100);
   const [gridSize, setGridSize] = useState(1);
+  const [boardZoom, setBoardZoom] = useState(100);
+  const [boardPanning, setBoardPanning] = useState(false);
   const [theme, setTheme] = useState<"industrial" | "gothic" | "desert">("industrial");
   const [boardPreset, setBoardPreset] = useState<BoardPreset | "custom">("card");
   const [boardReady, setBoardReady] = useState(false);
@@ -95,7 +100,7 @@ export default function Home() {
   // Where a complex smaller than the board goes. Not cosmetic — the board border is
   // a free wall, so a corner uses two of them and spends more of the kit on interior
   // structure, while a centred island has to build its own perimeter.
-  const [anchor, setAnchor] = useState<Anchor>("auto");
+  const [anchor, setAnchor] = useState<Anchor>("fill");
   const [enabled, setEnabled] = useState<Record<string, boolean>>(() => Object.fromEntries(TERRAIN.map((item) => [item.id, Boolean(BOARDING_INVENTORY[item.id])])));
   const [limits, setLimits] = useState<Record<string, number>>(() => Object.fromEntries(TERRAIN.map((item) => [item.id, BOARDING_INVENTORY[item.id] || 0])));
   const [kitAddAmounts, setKitAddAmounts] = useState<Record<string, number>>({});
@@ -118,6 +123,38 @@ export default function Home() {
   const generationInventoryRef = useRef<Record<string, number> | null>(null);
   const lastReportRef = useRef<GenerateReport | null>(null);
   const { width:boardWidth, height:boardHeight } = boardPreset === "custom" ? customBoardSize : BOARD_SIZES[boardPreset];
+  const changeBoardZoom = (direction:-1 | 1) => {
+    setBoardZoom((current) => {
+      const index = BOARD_ZOOM_STEPS.findIndex((value) => value === current);
+      const next = BOARD_ZOOM_STEPS[clamp(index + direction, 0, BOARD_ZOOM_STEPS.length - 1)];
+      setMessage(`Board zoom ${next}%`);
+      return next;
+    });
+  };
+  const beginBoardPan = (event:React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 1 || !boardAreaRef.current) return;
+    event.preventDefault();
+    event.stopPropagation();
+    boardPanRef.current = { pointerId:event.pointerId, x:event.clientX, y:event.clientY, scrollLeft:boardAreaRef.current.scrollLeft, scrollTop:boardAreaRef.current.scrollTop };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setBoardPanning(true);
+  };
+  const moveBoardPan = (event:React.PointerEvent<HTMLDivElement>) => {
+    const pan = boardPanRef.current;
+    if (!pan || pan.pointerId !== event.pointerId || !boardAreaRef.current) return;
+    event.preventDefault();
+    event.stopPropagation();
+    boardAreaRef.current.scrollLeft = pan.scrollLeft - (event.clientX - pan.x);
+    boardAreaRef.current.scrollTop = pan.scrollTop - (event.clientY - pan.y);
+  };
+  const finishBoardPan = (event:React.PointerEvent<HTMLDivElement>) => {
+    if (boardPanRef.current?.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    boardPanRef.current = null;
+    setBoardPanning(false);
+  };
 
   const manufacturerKits = useMemo(() => TERRAIN_KITS.filter((kit) => kit.catalogue === activeCatalogue), [activeCatalogue]);
   const activeCatalogueMeta = TERRAIN_KITS.find((kit) => kit.id === activeKitId) || TERRAIN_KITS[0];
@@ -1384,6 +1421,7 @@ export default function Home() {
           <div className="board-toolbar panel" role="toolbar" aria-label="Layout tools">
             <div className="tool-group primary-tools"><button className={`tool ${!zoneMode ? "active" : ""}`} aria-pressed={!zoneMode} onClick={() => { setZoneMode(false); setZoneDraft(null); }}>Select</button><button className={`tool ${zoneMode ? "active zone-tool" : ""}`} aria-pressed={zoneMode} onClick={() => { setZoneMode(true); selectOnly(null); setFocusedZone(null); setZoneResize(null); setMarquee(null); setMessage("Name the zone, then drag it on the board"); }}>Draw zone</button><span className="tool-divider" aria-hidden="true" /><button className="tool" title="Copy selected terrain" onClick={copySelected} disabled={!selectedIds.length || zoneMode}>Copy <kbd>Ctrl C</kbd></button><button className="tool" title="Paste copied terrain" onClick={pasteCopied} disabled={!copyBuffer || zoneMode}>Paste <kbd>Ctrl V</kbd></button><button className="tool" title="Duplicate selected terrain" onClick={duplicateSelected} disabled={!selectedIds.length || zoneMode}>Duplicate <kbd>Ctrl D</kbd></button><button className="tool" onClick={rotateSelected} disabled={!selectedIds.length || zoneMode}>Rotate <kbd>R</kbd></button><button className="tool danger" onClick={deleteSelected} disabled={!selectedIds.length || zoneMode}>Delete</button><span className="tool-divider" aria-hidden="true" /><button className="tool danger" title="Remove terrain but preserve reserved zones" onClick={clearTerrain} disabled={!pieces.length}>Clear terrain</button><button className="tool danger" title="Remove reserved zones but preserve terrain" onClick={() => { setZones([]); setFocusedZone(null); setZoneDraft(null); setZoneResize(null); setMessage("Reserved zones cleared · terrain preserved"); }} disabled={!zones.length}>Clear zones</button></div>
             <div className="tool-group settings">
+              <div className="zoom-control" role="group" aria-label="Board zoom"><button aria-label="Zoom board out" title="Zoom out" onClick={() => changeBoardZoom(-1)} disabled={boardZoom === BOARD_ZOOM_STEPS[0]}>−</button><button className="zoom-value" aria-label={`Reset board zoom, currently ${boardZoom}%`} title="Reset to 100%" onClick={() => { setBoardZoom(100); setMessage("Board zoom 100%"); }}>{boardZoom}%</button><button aria-label="Zoom board in" title="Zoom in" onClick={() => changeBoardZoom(1)} disabled={boardZoom === BOARD_ZOOM_STEPS.at(-1)}>+</button></div>
               <label className="switch-label" title="Snaps matching kit connectors and compatible ordinary wall faces across kits"><input type="checkbox" checked={smartFit} onChange={(event) => { setSmartFit(event.target.checked); setMessage(event.target.checked ? "Smart fit enabled · compatible same-kit and cross-kit wall faces snap cleanly" : "Smart fit disabled · free overlap allowed"); }} /><span className="toggle" /> Smart fit</label>
               <label className="switch-label"><input type="checkbox" checked={snap} onChange={(event) => setSnap(event.target.checked)} /><span className="toggle" /> Snap</label>
               {snap && <select aria-label="Snap grid size" value={gridSize} onChange={(event) => setGridSize(Number(event.target.value))}><option value="1">1″ grid</option><option value="0.5">½″ grid</option><option value="0.25">¼″ grid</option></select>}
@@ -1392,7 +1430,7 @@ export default function Home() {
           </div>
           {zoneMode && <div className="zone-designator panel"><label><span>Zone name</span><input aria-label="Zone name" value={zoneName} maxLength={32} onChange={(event) => setZoneName(event.target.value)} /></label><p>Drag on the grid to reserve a clear area. Hold <kbd>Shift</kbd> while dragging for a perfect square.</p><strong>{zones.length} saved</strong></div>}
 
-          <div className="board-area"><div className="board-frame" style={{ "--board-ratio":boardWidth / boardHeight } as CSSProperties}>
+          <div ref={boardAreaRef} className={`board-area ${boardPanning ? "panning" : ""}`} title="Scroll to zoom · hold the mouse wheel and drag to pan" onWheel={(event) => { if (Math.abs(event.deltaY) < Math.abs(event.deltaX)) return; event.preventDefault(); changeBoardZoom(event.deltaY < 0 ? 1 : -1); }} onPointerDownCapture={beginBoardPan} onPointerMoveCapture={moveBoardPan} onPointerUpCapture={finishBoardPan} onPointerCancelCapture={finishBoardPan} onAuxClick={(event) => { if (event.button === 1) event.preventDefault(); }}><div className="board-frame" style={{ "--board-ratio":boardWidth / boardHeight, "--board-zoom":boardZoom / 100 } as CSSProperties}>
             <div className="ruler ruler-top">{Array.from({ length:boardWidth / 12 + 1 }, (_, index) => index * 12).map((inch) => <span key={inch}>{inch}{inch === boardWidth ? "″" : ""}</span>)}</div>
             <div className="ruler ruler-left">{Array.from({ length:boardHeight / 12 + 1 }, (_, index) => index * 12).map((inch) => <span key={inch}>{inch}{inch === boardHeight ? "″" : ""}</span>)}</div>
             <div id="layout-board" ref={boardRef} style={{ "--minor-x":`${100 / boardWidth}%`, "--minor-y":`${100 / boardHeight}%`, "--major-x":`${1200 / boardWidth}%`, "--major-y":`${1200 / boardHeight}%` } as CSSProperties} className={`board ${theme}-board ${drag ? "dragging" : ""} ${marquee ? "selecting" : ""} ${zoneMode ? "zone-mode" : ""} ${zoneResize ? "resizing-zone" : ""} ${zoneDrag ? "dragging-zone" : ""}`} aria-label={`${boardWidth.toFixed(1)} by ${boardHeight.toFixed(1)} inch layout board`} aria-describedby="board-help" onDragOver={(event) => event.preventDefault()} onDrop={onDrop} onPointerMove={onBoardPointerMove} onPointerUp={() => { if (zoneDraft) finishZone(); if (marquee) finishMarquee(); if (zoneResize) { const zone = zones.find((item) => item.uid === zoneResize.uid); if (zone) setMessage(`${zone.name} resized · ${zone.width.toFixed(1)} × ${zone.height.toFixed(1)} in`); setZoneResize(null); } if (zoneDrag) { const zone = zones.find((item) => item.uid === zoneDrag.uid); if (zone) setMessage(`${zone.name} moved · ${zone.x.toFixed(1)}, ${zone.y.toFixed(1)} in`); setZoneDrag(null); } setDrag(null); }} onPointerCancel={() => { setZoneDraft(null); setZoneResize(null); setZoneDrag(null); setMarquee(null); setDrag(null); }} onPointerDown={beginZone}>
@@ -1411,7 +1449,7 @@ export default function Home() {
             <button className={`board-resize-handle ${boardResize ? "resizing" : ""}`} aria-label="Resize board" title={`Drag to resize the board · max ${MAX_BOARD_WIDTH}″ × ${MAX_BOARD_HEIGHT}″`} onPointerDown={beginBoardResize} onPointerMove={onBoardResizeMove} onPointerUp={finishBoardResize} onPointerCancel={finishBoardResize} />
           </div></div>
           {layoutReport?.metrics && <div className="metrics-strip" aria-label="Generated layout readings"><span><strong>{layoutReport.plan?.lattice.cols} × {layoutReport.plan?.lattice.rows}</strong> squares</span><span>density <strong>{layoutReport.metrics.density.toFixed(2)}</strong></span><span>sight <strong>{layoutReport.metrics.meanSight.toFixed(1)}</strong> / {layoutReport.metrics.longestSight} sq</span><span>runs <strong>{layoutReport.metrics.meanRun.toFixed(1)}</strong> avg</span><span>{layoutReport.leftover > 0 ? <><strong>{layoutReport.leftover}</strong> panels in the box</> : <>whole palette spent</>}</span></div>}
-          <div className="status-line" id="board-help"><span role="status" aria-live="polite">{message}</span><span>{smartFit ? "Smart fit · " : "Overlap allowed · "}{zones.length ? `${zones.length} zone${zones.length === 1 ? "" : "s"} · ` : ""}{snap ? `Grid ${gridSize}″` : "Free placement"} · Drag empty space to multi-select · Ctrl C / V</span></div>
+          <div className="status-line" id="board-help"><span role="status" aria-live="polite">{message}</span><span>Zoom {boardZoom}% (scroll) · Wheel-drag to pan · {smartFit ? "Smart fit · " : "Overlap allowed · "}{zones.length ? `${zones.length} zone${zones.length === 1 ? "" : "s"} · ` : ""}{snap ? `Grid ${gridSize}″` : "Free placement"} · Drag empty space to multi-select · Ctrl C / V</span></div>
         </div>
 
         <aside className="inspector panel">
@@ -1426,7 +1464,7 @@ export default function Home() {
             </div>
             {catalogueTotal > 0 && <div className="palette-generation-controls">
               <label className="generation-target palette-generation-target" title="Share of the palette the generator may spend. The board is filled to real density regardless; lower this only to deliberately hold pieces back."><span>Spend <strong>{generationPercent}%</strong></span><input type="range" min="20" max="100" step="5" value={generationPercent} onChange={(event) => setGenerationPercent(Number(event.target.value))} aria-label="Footprint coverage target" /></label>
-              <label className="generation-target palette-generation-target" title="Where a complex smaller than the board sits. The board border is a free wall, so a corner spends more of the kit on interior structure and a centred island must build its own perimeter. Fill the table sizes the grid to the BOARD instead of to the palette: runs reach the board edge on every side and no panel is spent on a perimeter, at the cost of a thinner interior when the palette is small for the table."><span>Placement</span><select value={anchor} onChange={(event) => setAnchor(event.target.value as Anchor)} aria-label="Where to anchor a complex smaller than the board"><option value="auto">Automatic</option><option value="fill">Fill the table</option><option value="corner">Into a corner</option><option value="edge">Against an edge</option><option value="centre">Centred island</option></select></label>
+              <label className="generation-target palette-generation-target" title="Where a complex smaller than the board sits. The board border is a free wall, so a corner spends more of the kit on interior structure and a centred island must build its own perimeter. Fill the table sizes the grid to the BOARD instead of to the palette: runs reach the board edge on every side and no panel is spent on a perimeter, at the cost of a thinner interior when the palette is small for the table."><span>Placement</span><select value={anchor} onChange={(event) => setAnchor(event.target.value as Anchor)} aria-label="Where to anchor a complex smaller than the board"><option value="fill">Fill the table</option><option value="corner">Into a corner</option><option value="edge">Against an edge</option><option value="centre">Centred island</option></select></label>
               <button className="primary palette-generate" onClick={generateFromPalette} aria-label="Generate layout from current terrain palette">Generate from palette</button>
             </div>}
             {catalogueTotal > 0 && <div className="palette-range"><span>{paletteMaker}</span><strong>{paletteLabel}</strong><em>{Math.max(0, catalogueTotal - paletteUsed)} unplaced</em></div>}
