@@ -406,7 +406,30 @@ const sizeLattice = (
   // four sides and the board edge does the walling for free, at the cost of a
   // sparser interior. Worth it when you want the terrain to span the table, and
   // the reason it is a choice rather than the default.
-  if (anchor === "fill") return { cols:maxCols, rows:maxRows, maxCols, maxRows };
+  // Filling the table sizes to the board with the margin spent the other way: the
+  // perimeter nodes are allowed to land ON the edge and half-overhang it, rather than
+  // being held a half-column inside it.
+  //
+  // The margin above is right for an inset complex and wrong here, because on a real
+  // board the slack it leaves is not a margin — it is a whole unused grid square, and
+  // it is lost to rounding noise. Eberleg's pitch is 152.41 mm, or 6.0004", so ten
+  // cells need 60.004" of a 60" table. Four thousandths of an inch over, and with a
+  // further half-column held back, `floor(58.98 / 6.0004)` gives 9 columns and 54" of
+  // lattice: 6" of slack, centred as a 3" gap on every side. The one mode that exists
+  // to reach the board edge was drawing a three-inch moat around itself.
+  //
+  // Spending the half-column as overhang instead buys the tenth column, and a column
+  // centred on the table edge is what the printed card board does with its own corner
+  // columns — it is also what lets `exteriorEdges` read that perimeter as the hull and
+  // charge no panels for it.
+  if (anchor === "fill") {
+    const fillCols = Math.max(2, Math.floor((boardWidth + support / 2) / pitch));
+    const fillRows = Math.max(2, Math.floor((boardHeight + support / 2) / pitch));
+    return {
+      cols:fillCols, rows:fillRows,
+      maxCols:Math.max(maxCols, fillCols), maxRows:Math.max(maxRows, fillRows),
+    };
+  }
 
   const aspect = Math.log(boardWidth / boardHeight);
   let best:{ cols:number; rows:number } | null = null;

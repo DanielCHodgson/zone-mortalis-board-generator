@@ -328,8 +328,9 @@ kbd { padding-left:4px; color:var(--muted); font:11px var(--font-geist-mono, ui-
  * `facing` is degrees clockwise from the casting's canonical orientation, which
  * is the corner's arms pointing west and south and the T's pointing west, east
  * and south -- read straight off the STL. See `CANONICAL_ARMS` in build.ts. */
-.placed-piece.visual-corner,.placed-piece.visual-t-junction { background:transparent; border-color:transparent; }
-.placed-piece.visual-corner::before,.placed-piece.visual-t-junction::before { content:""; position:absolute; inset:0; background:var(--pillar); box-shadow:inset 0 0 0 1px var(--pillar-line); }
+.placed-piece.visual-corner,.placed-piece.visual-t-junction { background:transparent; border-color:transparent; box-shadow:none; }
+.placed-piece.visual-corner.selected,.placed-piece.visual-t-junction.selected { box-shadow:0 0 0 2px var(--focus-halo),0 0 0 4px var(--accent),0 2px 5px rgba(0,0,0,.35); }
+.placed-piece.visual-corner::before,.placed-piece.visual-t-junction::before { content:""; position:absolute; inset:0; background:var(--pillar); }
 .placed-piece.visual-corner.selected::before,.placed-piece.visual-t-junction.selected::before { background:var(--pillar); }
 /* Corner: arms west + south at facing 0, turning clockwise from there. */
 .placed-piece.visual-corner::before { clip-path:polygon(0 0,100% 0,100% 100%,49.2% 100%,49.2% 50.8%,0 50.8%); }
