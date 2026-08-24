@@ -30,7 +30,7 @@ test("server-renders the Mortalis Architect workspace", async () => {
 
   const html = await response.text();
   assert.match(html, /<title>Mortalis Architect<\/title>/i);
-  assert.match(html, /Horus Heresy layout utility/);
+  assert.match(html, /Wargaming layout utility/);
   assert.match(html, /Boarding Actions Terrain Set/);
   assert.match(html, /Current generator palette/);
   assert.match(html, /Available pieces|Selected kit/);

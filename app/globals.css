@@ -364,6 +364,89 @@ kbd { padding-left:4px; color:var(--muted); font:11px var(--font-geist-mono, ui-
 .placed-piece.piece-tt-vertical-door.door.shut .terrain-detail,
 .placed-piece.piece-tt-sliding-door.door.shut .terrain-detail { background:var(--door-void); box-shadow:inset 0 0 0 1px var(--door-frame); }
 
+/* ---------------------------------------------------------------------------
+   Studio workspace refresh.
+
+   The app keeps its catalogue → canvas → inspector workflow, but treats those
+   areas as one professional workspace rather than three boxes competing for
+   attention. Warm metal is an accent, not a theme: the hierarchy stays neutral
+   enough to support non-Heresy games later.
+   --------------------------------------------------------------------------- */
+.ui-icon { flex:0 0 auto; width:16px; height:16px; display:block; }
+.app-shell { padding:0 16px 14px; }
+.topbar { flex-basis:76px; gap:24px; }
+.app-brand { min-width:max-content; display:flex; align-items:center; gap:11px; }
+.brand-mark { width:38px; height:38px; display:grid; place-items:center; border-radius:10px; background:var(--ink); color:var(--on-ink); box-shadow:0 5px 14px color-mix(in srgb,var(--piece-shadow) 55%,transparent); }
+.brand-mark .ui-icon { width:20px; height:20px; }
+.app-brand > div { display:grid; gap:2px; }
+.app-brand h1 { font-size:21px; line-height:1.05; letter-spacing:-.035em; }
+.app-brand p { color:var(--muted); font-size:11px; font-weight:650; letter-spacing:.06em; }
+.top-actions { min-width:0; justify-content:flex-end; }
+.top-actions button { display:inline-flex; align-items:center; justify-content:center; gap:7px; }
+.workspace { grid-template-columns:318px minmax(440px,1fr) 334px; gap:12px; padding-top:12px; }
+.panel { border-color:var(--line-soft); border-radius:10px; box-shadow:0 1px 2px color-mix(in srgb,var(--piece-shadow) 22%,transparent); }
+.catalogue,.inspector { padding:16px; }
+.catalogue-selectors { gap:10px; padding:0 0 16px; margin-bottom:16px; }
+.catalogue-selectors label { gap:6px; font-size:11px; font-weight:700; letter-spacing:.035em; }
+.catalogue-selectors select { min-height:38px; padding:8px 28px 8px 10px; border-radius:7px; font-size:12px; }
+.section-heading { padding:0 2px 13px; }
+.section-heading h2 { font-size:16px; letter-spacing:-.02em; }
+.section-heading .eyebrow { font-size:10px; }
+.section-intro { padding:0 2px 13px; line-height:1.5; }
+.kit-piece-list,.palette-list { gap:3px; }
+.kit-piece-row,.palette-row { border-radius:7px; }
+.kit-piece-row:hover,.palette-row:hover { background:var(--hover); }
+.inspector-tabs { gap:0; padding:3px; margin-bottom:18px; border-color:var(--line-soft); border-radius:8px; }
+.inspector-tab { min-height:34px; border-radius:6px; font-size:12px; }
+.palette-selection-summary { border-radius:8px; }
+.palette-generation-controls { gap:14px; padding:16px 4px 8px; }
+.palette-generation-target select,.door-range-control select { border-radius:6px; }
+.palette-generate { min-height:42px; }
+.board-toolbar { min-height:0; padding:7px; margin-bottom:10px; display:grid; gap:6px; border-radius:9px; }
+.board-toolbar > .tool-group { min-width:0; }
+.board-toolbar > .primary-tools { flex-wrap:nowrap; overflow-x:auto; padding-bottom:1px; scrollbar-width:thin; }
+.board-toolbar > .settings { justify-content:flex-end; padding-top:6px; border-top:1px solid var(--line-soft); }
+.board-toolbar .tool-group { gap:3px; }
+.tool { min-height:34px; padding:7px 9px; display:inline-flex; align-items:center; justify-content:center; gap:7px; border-radius:6px; font-weight:600; }
+.tool.icon-tool { width:34px; padding:7px; }
+.tool:hover,.tool.active { border-color:var(--line-soft); }
+.tool.active { background:var(--accent-soft); color:var(--accent-ink); }
+.tool[aria-pressed="true"] { background:var(--accent-soft); color:var(--accent-ink); }
+.tool.zone-tool.active { border-color:var(--warn-line); }
+.tool-divider { height:22px; margin:0 4px; background:var(--line-soft); }
+.compact-danger { margin-left:auto; }
+.compact-danger + .compact-danger { margin-left:0; }
+.zoom-control,.settings select,.theme-switch { border-radius:6px; }
+.theme-switch button { border-radius:4px; }
+.appearance-switch { gap:1px; padding:3px; border-color:var(--line-soft); border-radius:8px; }
+.appearance-switch button { min-height:30px; padding:5px 8px; display:inline-flex; gap:6px; border-radius:5px; font-family:inherit; letter-spacing:0; text-transform:capitalize; }
+.appearance-switch button.active { box-shadow:0 1px 2px var(--piece-shadow); }
+.board-size-control { gap:7px; font-size:10px; letter-spacing:.05em; }
+.board-size-control select { min-height:36px; padding:7px 27px 7px 9px; border-color:var(--line-soft); border-radius:7px; }
+.export-action { min-height:36px; padding:8px 11px; border-color:var(--line-soft); border-radius:7px; }
+.primary { min-height:36px; display:inline-flex; align-items:center; justify-content:center; gap:7px; border-radius:7px; }
+.board-area { border-radius:10px; background:color-mix(in srgb,var(--sunken) 65%,transparent); }
+.board { border-radius:2px; box-shadow:0 12px 30px color-mix(in srgb,var(--piece-shadow) 70%,transparent); }
+.board.grid-hidden { background-image:none !important; }
+.board.grid-hidden:after { display:none; }
+.metrics-strip { border-radius:7px; }
+.status-line { padding-inline:4px; }
+
+@media (min-width:1501px) {
+  .board-toolbar { grid-template-columns:minmax(0,1fr) auto; align-items:center; }
+  .board-toolbar > .settings { padding-top:0; border-top:0; }
+}
+@media (max-width:1280px) {
+  .workspace { grid-template-columns:290px minmax(400px,1fr) 310px; }
+  .board-chip { display:none; }
+  .top-actions { gap:6px; }
+}
+@media (min-width:1051px) and (max-width:1500px) {
+  .primary-tools .tool-label { display:none; }
+  .primary-tools .tool:not(.icon-tool) { width:34px; padding-inline:7px; }
+  .primary-tools { justify-content:center; }
+}
+
 .placed-piece.door .terrain-detail { position:absolute; background:var(--door-void); box-shadow:inset 0 0 0 1px var(--door-frame); }
 .placed-piece.door .terrain-detail { inset:1px 30%; }
 .placed-piece.door.rotated .terrain-detail { inset:30% 1px; }
