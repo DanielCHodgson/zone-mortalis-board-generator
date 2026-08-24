@@ -158,6 +158,22 @@ test("Zone Mortalis and Deadbolt use measured six-inch-class bays, not two-inch 
   assert.equal(deadbolt.cells.get("drd-double-wall"), 1);
 });
 
+test("Zone Mortalis spends solid walls before doors across a 50-board batch", () => {
+  const inventory = Object.fromEntries(TERRAIN
+    .filter((def) => def.catalogue === "mortalis" && def.kind !== "scatter")
+    .map((def) => [def.id, def.limit * 4]));
+  for (let seed = 0; seed < 50; seed++) {
+    const { report } = run({ width:48, height:48, catalogue:"mortalis", inventory, seed });
+    assert.ok(report.plan, `seed ${seed}: nothing built — ${report.note}`);
+    const doors = report.pieces.filter((piece) => piece.defId === "zm-door" || piece.defId === "zm-wide-door");
+    assert.ok(doors.every((piece) => piece.servesDoorway === true),
+      `seed ${seed}: a dedicated Zone Mortalis door was used as a wall`);
+    const shortWalls = report.pieces.filter((piece) => piece.defId === "zm-wall").length;
+    assert.ok(shortWalls >= 14,
+      `seed ${seed}: only ${shortWalls} of 16 short solid walls were used`);
+  }
+});
+
 test("Zone Mortalis and Deadbolt build around a large reserved hangar in one shot", () => {
   for (const catalogue of ["mortalis", "deathray"] as const) {
     const inventory = Object.fromEntries(TERRAIN_KITS

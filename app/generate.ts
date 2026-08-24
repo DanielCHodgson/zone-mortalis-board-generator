@@ -337,10 +337,12 @@ export const readKit = (defs:KitDef[], inventory:Record<string, number>, catalog
       straddles:def.span !== undefined,
       halfEdge:def.halfEdge,
       jointSlack:def.jointSlack,
-      // Iron Labyrinth doors are separate door products, not ordinary wall
-      // panels that happen to carry a hatch. Keep them for planned tactical
-      // openings; using them as wall filler created rows of doors to nowhere.
-      substitutesWall:def.kind !== "door" || def.catalogue !== "ttcombat",
+      // Only Gallowdark hatchway panels are ordinary wall stock with a door leaf
+      // moulded into them. Zone Mortalis, Deadbolt and Iron Labyrinth doors are
+      // dedicated doorway assemblies. Letting those substitute for a solid panel
+      // spent the full-width doors first, drew them as two competing kinds of wall,
+      // and left the actual solid-wall sprues in the box.
+      substitutesWall:def.kind !== "door" || def.catalogue === "boarding",
     })),
     ...supports.map((def) => ({
       id:def.id, kind:def.kind as "pillar" | "connector", length:Math.max(def.width, def.depth),

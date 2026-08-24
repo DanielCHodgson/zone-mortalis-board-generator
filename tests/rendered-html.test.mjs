@@ -30,17 +30,17 @@ test("server-renders the Mortalis Architect workspace", async () => {
 
   const html = await response.text();
   assert.match(html, /<title>Mortalis Architect<\/title>/i);
-  assert.match(html, /Wargaming layout utility/);
+  assert.match(html, /Terrain layout studio/);
   assert.match(html, /Workspace shortcuts/);
   assert.match(html, /Browse pieces/);
   assert.match(html, /Shape the board/);
   assert.match(html, /Close terrain library/);
   assert.doesNotMatch(html, /aria-label="Right panel view"/);
   assert.match(html, /Boarding Actions Terrain Set/);
-  assert.match(html, /Current generator palette/);
+  assert.match(html, /Generator palette/);
   assert.match(html, /Available pieces|Selected kit/);
   assert.match(html, /Generate from palette/);
-  assert.ok(html.indexOf("Available pieces · selected kit") < html.indexOf("Current generator palette"), "kit pieces should appear before layout inventory");
+  assert.ok(html.indexOf("Selected kit") < html.indexOf("Generator palette"), "kit pieces should appear before layout inventory");
   assert.doesNotMatch(html, /Generate uses only this persistent list/);
   // The default board is one Boarding Actions card board, 704 x 607 mm, which is
   // the board the kit is cut for and the one a single set fills.
@@ -98,6 +98,8 @@ test("keeps the desktop workspace fixed while panels scroll independently", asyn
   assert.match(css, /\.workspace-rail/);
   assert.match(css, /\.stage-heading/);
   assert.match(css, /\.workspace\.library-closed/);
+  assert.match(css, /\.placed-piece\.piece-zm-column::before[^}]*clip-path:polygon/s);
+  assert.match(css, /\.placed-piece\.piece-zm-wide-door \.terrain-detail[^}]*linear-gradient/s);
 });
 
 test("ships persistent light and dark interface colour palettes", async () => {
