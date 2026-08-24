@@ -100,14 +100,13 @@ test("keeps the desktop workspace fixed while panels scroll independently", asyn
   assert.match(css, /\.workspace\.library-closed/);
 });
 
-test("ships three persistent interface colour palettes", async () => {
+test("ships persistent light and dark interface colour palettes", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   const css = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
 
-  assert.match(page, /\["taupe", "dark", "light"\]/);
+  assert.match(page, /\["dark", "light"\]/);
   assert.match(page, /APPEARANCE_STORAGE_KEY/);
   assert.doesNotMatch(page, /scrollIntoView/);
-  assert.match(css, /data-appearance="taupe"/);
   assert.match(css, /data-appearance="dark"/);
-  assert.match(css, /--paper:#f5f6f4/);
+  assert.match(css, /--paper:#e9f0f4/);
 });

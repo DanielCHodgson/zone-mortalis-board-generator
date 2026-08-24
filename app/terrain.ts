@@ -210,7 +210,7 @@ export const APPEARANCE_STORAGE_KEY = "mortalis-architect-appearance-v1";
 
 /** The interface colour palette. Separate from the board STYLE, which describes
  *  what the terrain is made of, not how the app is lit. */
-export type Appearance = "taupe" | "dark" | "light";
+export type Appearance = "dark" | "light";
 
 /**
  * `joint` is the assembly model, and it is the only structural difference between

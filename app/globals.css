@@ -9,35 +9,34 @@
    when the attribute is absent, and the page then renders one theme's text on the
    other theme's ground.
 
-   Light is the drafting sheet: white working surfaces, near-black terrain and a
-   restrained rust accent. Dark is the neutral instrument: black and graphite with
-   a warm metal accent. Taupe is the expressive workspace: high-contrast charcoal,
-   cream terrain and the chosen taupe palette.
+   Light is the contemporary product workspace: cool mist, white surfaces, navy
+   type and a restrained marine-blue accent. Dark is the neutral instrument:
+   black and graphite with a warm metal accent.
 
-   Three states, not two: an explicit choice stamps data-appearance, and the
-   default "system" setting stamps nothing at all.
+   An explicit choice stamps data-appearance, while the initial system setting
+   stamps nothing at all.
    --------------------------------------------------------------------------- */
 :root {
-  --ink:#17191c; --ink-2:#34383d; --muted:#687078;
-  --paper:#f5f6f4; --panel:#ffffff; --surface:#ffffff; --sunken:#eef0ed;
-  --line:#cdd2cf; --line-soft:#e5e8e6; --line-strong:#9ea6a2;
-  --accent:#9a643f; --accent-soft:#f4eae1; --accent-ink:#70452b;
-  --on-ink:#ffffff; --hover:#f0f2ef;
-  --warn:#6f5427; --warn-bg:#f8f2e4; --warn-line:#c6a867;
-  --danger:#8a402c; --danger-bg:#f6ebe6;
-  --focus-halo:#ffffff; --focus-ring:#8c5837;
+  --ink:#142536; --ink-2:#344a5f; --muted:#687d90;
+  --paper:#e9f0f4; --panel:#ffffff; --surface:#ffffff; --sunken:#f0f5f7;
+  --line:#b9c9d3; --line-soft:#dce6eb; --line-strong:#8da3b2;
+  --accent:#176b87; --accent-soft:#d9edf3; --accent-ink:#0d536c;
+  --on-ink:#ffffff; --hover:#e8f1f4;
+  --warn:#80601e; --warn-bg:#fbf4df; --warn-line:#d2b56d;
+  --danger:#a14336; --danger-bg:#faece9;
+  --focus-halo:#ffffff; --focus-ring:#2584a3;
   /* The board and the pieces on it. Terrain is dark on a mid-grey deck here, and
      light on a dark deck in the other palette, so a layout reads either way. */
-  --board-industrial:#858b88; --board-gothic:#626866; --board-desert:#b8a98e;
-  --board-rule:rgba(23,25,28,.22); --board-rule-light:rgba(255,255,255,.12);
-  --board-inner:rgba(255,255,255,.12);
-  --wall:#3b4044; --wall-line:#1d2124; --wall-detail:rgba(235,238,235,.20);
-  --door:#85513a; --door-void:#202427; --door-frame:#c47a58;
-  --pillar:#252a2d; --pillar-line:#d9ddda;
-  --connector:#343a3d; --end:#59605f;
-  --scatter:#4b6d65; --scatter-line:#21322e;
-  --piece-shadow:rgba(12,14,15,.32);
-  --board-mark:rgba(250,252,250,.62);
+  --board-industrial:#70808a; --board-gothic:#53636e; --board-desert:#ad9f86;
+  --board-rule:rgba(15,35,51,.27); --board-rule-light:rgba(255,255,255,.14);
+  --board-inner:rgba(255,255,255,.13);
+  --wall:#263c4d; --wall-line:#102634; --wall-detail:rgba(231,240,244,.22);
+  --door:#b46f4e; --door-void:#18303f; --door-frame:#df9a76;
+  --pillar:#172f3e; --pillar-line:#d6e2e7;
+  --connector:#294657; --end:#5b7180;
+  --scatter:#477b72; --scatter-line:#1f403a;
+  --piece-shadow:rgba(20,37,54,.26);
+  --board-mark:rgba(246,251,253,.65);
 }
 @media (prefers-color-scheme:dark) {
   :root:not([data-appearance]) {
@@ -81,28 +80,8 @@
   --piece-shadow:rgba(0,0,0,.45);
   --board-mark:rgba(230,234,238,.56);
 }
-:root[data-appearance="taupe"] {
-  --ink:#f6ebd9; --ink-2:#dfd0b8; --muted:#c0b4a3;
-  --paper:#171c23; --panel:#2c323a; --surface:#393e46; --sunken:#222831;
-  --line:#59616c; --line-soft:#414851; --line-strong:#948979;
-  --accent:#dfd0b8; --accent-soft:#46484a; --accent-ink:#f6ebd9;
-  --on-ink:#222831; --hover:#393e46;
-  --warn:#e0c28f; --warn-bg:#352f27; --warn-line:#8f7653;
-  --danger:#efa087; --danger-bg:#3a2727;
-  --focus-halo:#171c23; --focus-ring:#dfd0b8;
-  --board-industrial:#3d444d; --board-gothic:#2b3038; --board-desert:#665c4c;
-  --board-rule:rgba(10,13,17,.6); --board-rule-light:rgba(223,208,184,.15);
-  --board-inner:rgba(255,255,255,.1);
-  --wall:#f3e7d4; --wall-line:#fffaf1; --wall-detail:rgba(57,62,70,.3);
-  --door:#c4a87f; --door-void:#222831; --door-frame:#f2dfc2;
-  --pillar:#f6ebd9; --pillar-line:#59616c;
-  --connector:#dfd0b8; --end:#a99d8c;
-  --scatter:#889b91; --scatter-line:#34423d;
-  --piece-shadow:rgba(0,0,0,.48);
-  --board-mark:rgba(246,235,217,.58);
-}
 :root { color-scheme:light; }
-:root[data-appearance="dark"],:root[data-appearance="taupe"] { color-scheme:dark; }
+:root[data-appearance="dark"] { color-scheme:dark; }
 @media (prefers-color-scheme:dark) { :root:not([data-appearance]) { color-scheme:dark; } }
 * { box-sizing:border-box; }
 html { min-width:320px; height:100%; }
@@ -754,8 +733,8 @@ kbd { padding-left:4px; color:var(--muted); font:11px var(--font-geist-mono, ui-
    the board. These rules sit after the legacy responsive layer so the shell is
    one coherent system rather than another cosmetic skin over three boxes.
    --------------------------------------------------------------------------- */
-.app-shell { padding:10px 12px 12px; background:var(--paper); }
-.topbar { flex:0 0 72px; min-height:72px; padding:9px 13px; gap:18px; justify-content:flex-start; border:1px solid var(--line-soft); border-bottom-color:var(--line); border-radius:14px 14px 0 0; background:var(--panel); }
+.app-shell { padding:0; background:var(--paper); }
+.topbar { flex:0 0 72px; min-height:72px; padding:9px 13px; gap:18px; justify-content:flex-start; border:0; border-bottom:1px solid var(--line); border-radius:0; background:var(--panel); }
 .app-brand { min-width:228px; }
 .brand-mark { width:40px; height:40px; border-radius:11px; background:var(--accent); color:var(--on-ink); box-shadow:0 8px 20px color-mix(in srgb,var(--piece-shadow) 55%,transparent); }
 .app-brand h1 { font-size:20px; }
@@ -770,7 +749,7 @@ kbd { padding-left:4px; color:var(--muted); font:11px var(--font-geist-mono, ui-
 .appearance-switch button { min-height:32px; }
 .board-size-control span { display:none; }
 .board-size-control select { min-width:178px; }
-.workspace { flex:1; min-height:0; grid-template-columns:62px 286px minmax(440px,1fr) 320px; gap:0; padding-top:0; overflow:hidden; border:1px solid var(--line-soft); border-top:0; border-radius:0 0 14px 14px; background:var(--panel); }
+.workspace { flex:1; min-height:0; grid-template-columns:62px 286px minmax(440px,1fr) 320px; gap:0; padding-top:0; overflow:hidden; border:0; border-radius:0; background:var(--panel); }
 .workspace.library-closed { grid-template-columns:62px minmax(440px,1fr) 320px; }
 .workspace.library-closed .catalogue { display:none; }
 .workspace-rail { min-height:0; padding:10px 7px; display:flex; flex-direction:column; justify-content:space-between; border-right:1px solid var(--line-soft); background:var(--surface); }
