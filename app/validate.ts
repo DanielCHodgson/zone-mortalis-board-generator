@@ -479,7 +479,7 @@ export const invariants = ({ plan, pieces, defs, inventory, boardWidth, boardHei
     // its ends land on something.
     if (def.halfEdge) return false;
     const span = def.cells * pitch;
-    if (def.straddles) return !pitchIsBuildable(def.length, span, support);
+    if (def.straddles) return !pitchIsBuildable(def.length, span, support, def.jointSlack);
     return def.length > span - support + .04;
   });
   if (misseated.length) {

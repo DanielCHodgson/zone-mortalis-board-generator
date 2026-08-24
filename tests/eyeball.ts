@@ -13,6 +13,7 @@
 
 import { TERRAIN, BOARD_SIZES, type BoardPreset, type CatalogueId } from "../app/terrain.ts";
 import { generate } from "../app/generate.ts";
+import type { Anchor } from "../app/generate.ts";
 import { renderPlan } from "../app/deckplan.ts";
 import { edgeRuns } from "../app/lattice.ts";
 
@@ -22,6 +23,7 @@ const count = Number(process.argv[4] ?? 3);
 // Which catalogue to build from. Was hard-coded to Boarding Actions, which meant the
 // only range anyone could eyeball was the one already known to work.
 const catalogue = (process.argv[5] ?? "boarding") as CatalogueId;
+const anchor = (process.argv[6] ?? "auto") as Anchor;
 
 const setsOf = (sets:number) => Object.fromEntries(
   TERRAIN
@@ -34,7 +36,7 @@ for (let index = 0; index < count; index++) {
   let uid = 0;
   const report = generate({
     boardWidth:width, boardHeight:height, catalogue,
-    defs:TERRAIN, inventory:setsOf(sets), heights:{}, zones:[], anchor:"auto",
+    defs:TERRAIN, inventory:setsOf(sets), heights:{}, zones:[], anchor,
     seed:(index * 2654435761 + 7) >>> 0, nextUid:() => `u${uid++}`,
   });
   const m = report.metrics;

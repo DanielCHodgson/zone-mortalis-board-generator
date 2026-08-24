@@ -321,8 +321,8 @@ export const sightLines = (lattice:Lattice, plan:Map<string, EdgeState>) => {
  * The 125 mm Gallowdark pitch failed this by 0.67" — a 3.15" panel and a 1.10"
  * column cannot span 4.92" between them, whatever order you assemble them in.
  */
-export const pitchIsBuildable = (panelLength:number, pitch:number, columnWidth:number) =>
-  pitch >= panelLength - 1e-6 && pitch <= panelLength + columnWidth + 1e-6;
+export const pitchIsBuildable = (panelLength:number, pitch:number, columnWidth:number, jointSlack=0) =>
+  pitch >= panelLength - 1e-6 && pitch <= panelLength + columnWidth + jointSlack + 1e-6;
 
 /**
  * How far a panel end reaches into the column at each end of its span.

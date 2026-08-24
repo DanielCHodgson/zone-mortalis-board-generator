@@ -19,7 +19,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  TERRAIN, TERRAIN_KITS, BOARDING_INVENTORY, BOARD_SIZES, EBERLEG_GRID, GALLOWDARK_GRID, MM_PER_IN as MM,
+  TERRAIN, TERRAIN_KITS, BOARDING_INVENTORY, BOARD_SIZES, DEATHRAY_GRID, EBERLEG_GRID,
+  GALLOWDARK_GRID, MORTALIS_GRID, MM_PER_IN as MM,
   type CatalogueId,
 } from "../app/terrain.ts";
 import { cellsThatFit, generate, readKit, type KitDef } from "../app/generate.ts";
@@ -44,6 +45,7 @@ const run = (options:{
   width?:number; height?:number; sets?:number; seed?:number;
   catalogue?:CatalogueId; inventory?:Record<string, number>;
   anchor?:"auto" | "corner" | "edge" | "centre" | "fill";
+  zones?:Array<{ x:number; y:number; width:number; height:number }>;
 } = {}) => {
   const width = options.width ?? BOARD_SIZES.card.width;
   const height = options.height ?? BOARD_SIZES.card.height;
@@ -52,7 +54,7 @@ const run = (options:{
     catalogue:options.catalogue ?? "boarding",
     defs,
     inventory:options.inventory ?? scaled(options.sets ?? 1),
-    heights, zones:[],
+    heights, zones:options.zones ?? [],
     anchor:options.anchor,
     seed:options.seed ?? 1,
     nextUid,
@@ -139,6 +141,39 @@ test("Eberleg castings close on one measured 152.4 mm node grid", () => {
   const hubHalf = mm("eb-column", "width") / 2;
   const armReach = mm("eb-stub", "width") - hubHalf;
   assert.ok(Math.abs(armReach - EBERLEG_GRID * MM / 2) < .01);
+});
+
+test("Zone Mortalis and Deadbolt use measured six-inch-class bays, not two-inch nodes", () => {
+  assert.ok(Math.abs(MORTALIS_GRID * MM - 147) < 1e-9);
+  assert.ok(Math.abs(DEATHRAY_GRID * MM - 152.4) < 1e-9);
+  const mortalis = readKit(defs, TERRAIN_KITS.find((kit) => kit.id === "zm-columns-and-walls")!.inventory, "mortalis")!;
+  const deadboltInventory = Object.fromEntries(TERRAIN_KITS
+    .filter((kit) => kit.catalogue === "deathray")
+    .flatMap((kit) => Object.entries(kit.inventory))
+    .map(([id, count]) => [id, count]));
+  const deadbolt = readKit(defs, deadboltInventory, "deathray")!;
+  assert.equal(mortalis.cells.get("zm-wall"), .5);
+  assert.equal(mortalis.cells.get("zm-wide-wall"), 1);
+  assert.equal(deadbolt.cells.get("drd-single-wall"), .5);
+  assert.equal(deadbolt.cells.get("drd-double-wall"), 1);
+});
+
+test("Zone Mortalis and Deadbolt build around a large reserved hangar in one shot", () => {
+  for (const catalogue of ["mortalis", "deathray"] as const) {
+    const inventory = Object.fromEntries(TERRAIN_KITS
+      .filter((kit) => kit.catalogue === catalogue)
+      .flatMap((kit) => Object.entries(kit.inventory))
+      .map(([id, count]) => [id, count]));
+    SEEDS.forEach((seed) => {
+      const { report } = run({
+        width:48, height:48, catalogue, inventory, anchor:"fill", seed,
+        zones:[{ x:0, y:0, width:24, height:24 }],
+      });
+      assert.ok(report.plan, `${catalogue} seed ${seed}: nothing built — ${report.note}`);
+      assert.ok(report.pieces.length >= (catalogue === "deathray" ? 20 : 6),
+        `${catalogue} seed ${seed}: collapsed to ${report.pieces.length} pieces`);
+    });
+  }
 });
 
 test("Eberleg never uses more singles than its four-way nodes require", () => {
@@ -1065,7 +1100,7 @@ test("every panel the generator will place seats in its span without overlapping
           // Slots into a column standing on the node: may be shorter than its span by up
           // to one column, and that difference is the slot.
           assert.ok(
-            def.length <= span + 1e-6 && span - def.length <= reading.support + 1e-6,
+            pitchIsBuildable(def.length, span, reading.support, def.jointSlack),
             `${kit.name}/${def.id}: ${(def.length * MM).toFixed(0)}mm panel does not slot into a ${(span * MM).toFixed(0)}mm span`,
           );
         } else {

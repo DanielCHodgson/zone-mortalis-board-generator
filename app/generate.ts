@@ -49,8 +49,11 @@ export type KitDef = {
   /** HUB KITS ONLY: which arrangement of moulded wall arms this node casting
    *  carries — see BuildDef in build.ts. Undefined everywhere else. */
   shape?:"column" | "stub" | "straight" | "corner" | "t" | "cross";
-  /** HUB KITS ONLY: a filler panel covering half an edge. */
+  /** A panel covering half an edge. Hub kits use these as fillers; modular
+   *  straddle kits can pair two of them between their columns. */
   halfEdge?:boolean;
+  /** Extra seating slack published for a loose straddle joint. */
+  jointSlack?:number;
 };
 
 /**
@@ -164,10 +167,17 @@ export type KitReading = {
 export const cellsThatFit = (def:KitDef, pitch:number, support:number):number | null => {
   const straddles = def.span !== undefined;
   const seat = .04; // ~1 mm, the slack a butt joint can absorb
+  const straddleSeat = def.jointSlack ?? 0;
+  if (def.halfEdge && straddles) {
+    const halfGap = (pitch - support) / 2;
+    return def.width <= halfGap + support / 4 + seat && halfGap - def.width <= support / 4 + seat
+      ? .5
+      : null;
+  }
   for (let cells = 1; cells <= 4; cells++) {
     const span = cells * pitch;
     if (straddles) {
-      if (def.width <= span + 1e-6 && span - def.width <= support + 1e-6) return cells;
+      if (def.width <= span + 1e-6 && span - def.width <= support + straddleSeat + 1e-6) return cells;
     } else if (Math.abs(def.width - (span - support)) <= seat) {
       return cells;
     }
@@ -251,7 +261,7 @@ const readHubKit = (owned:KitDef[], inventory:Record<string, number>):KitReading
 
 export const readKit = (defs:KitDef[], inventory:Record<string, number>, catalogue:KitCatalogue):KitReading | null => {
   const owned = defs.filter((def) => def.catalogue === catalogue && (inventory[def.id] ?? 0) > 0);
-  if (owned.some((def) => def.shape !== undefined || def.halfEdge)) return readHubKit(owned, inventory);
+  if (owned.some((def) => def.shape !== undefined)) return readHubKit(owned, inventory);
   const allPanels = owned.filter((def) => def.kind === "wall" || def.kind === "door");
   const supports = owned.filter((def) => def.kind === "pillar" || def.kind === "connector");
   const caps = owned.filter((def) => def.kind === "end");
@@ -325,6 +335,8 @@ export const readKit = (defs:KitDef[], inventory:Record<string, number>, catalog
       id:def.id, kind:def.kind as "wall" | "door", length:def.width, depth:def.depth,
       cells:cells.get(def.id)!, ownColumns:def.ownColumns ?? 0, height:def.height,
       straddles:def.span !== undefined,
+      halfEdge:def.halfEdge,
+      jointSlack:def.jointSlack,
       // Iron Labyrinth doors are separate door products, not ordinary wall
       // panels that happen to carry a hatch. Keep them for planned tactical
       // openings; using them as wall filler created rows of doors to nowhere.
@@ -346,7 +358,11 @@ export const readKit = (defs:KitDef[], inventory:Record<string, number>, catalog
     pitch, support, cells,
     unbuildable:unbuildable.map((def) => def.id),
     capacity:chosen.capacity,
-    doorways:panels.filter((def) => def.kind === "door").reduce((sum, def) => sum + (inventory[def.id] ?? 0), 0),
+    // A half-edge door consumes only half an edge but still needs another half
+    // casting beside it. Count door capacity in edge-equivalents so the planner
+    // does not demand four complete hatch edges from two full and two half doors.
+    doorways:Math.floor(panels.filter((def) => def.kind === "door")
+      .reduce((sum, def) => sum + (inventory[def.id] ?? 0) * (def.halfEdge ? (cells.get(def.id) ?? .5) : 1), 0)),
     columns:supports.reduce((sum, def) => sum + (inventory[def.id] ?? 0), 0),
     caps:caps.reduce((sum, def) => sum + (inventory[def.id] ?? 0), 0),
     buildDefs,
@@ -710,7 +726,12 @@ export const generate = (input:GenerateInput):GenerateReport => {
    * CHOSEN, because it moves: an experiment that stopped long panels spanning an occupied
    * node took it to 0.79, and a stale figure here mis-sizes every board on the first try.
    */
-  const COLUMNS_PER_WALL_CELL = .9;
+  // Dense modular boards share a support between every wall that meets there.
+  // Boarding Actions averages close to .9 loose supports per wall-cell because
+  // many panels bring moulded hardware; the chunky ZM/Deadbolt systems have no
+  // caps but their junctions share columns much more aggressively. Treating all
+  // three as .9 collapsed a 24-column Deadbolt bundle to a 3x3 postage stamp.
+  const COLUMNS_PER_WALL_CELL = catalogue === "mortalis" || catalogue === "deathray" ? .68 : .9;
 
   /**
    * What the kit can actually build, which is not what it can panel.
@@ -887,7 +908,7 @@ export const generate = (input:GenerateInput):GenerateReport => {
     // otherwise retain the measured pitch rather than invent an unbuildable board.
     const canUsePitch = (pitch:number) => !fixedPitchFill && kit.buildDefs
       .filter((def) => def.kind === "wall" || def.kind === "door")
-      .every((def) => pitchIsBuildable(def.length / def.cells, pitch, kit.support));
+      .every((def) => pitchIsBuildable(def.length / def.cells, pitch, kit.support, def.jointSlack));
     const spreadX = boardWidth / cols;
     const spreadY = boardHeight / rows;
     const pitchX = anchor === "fill" && canUsePitch(spreadX) ? spreadX : kit.pitch;
@@ -970,6 +991,14 @@ export const generate = (input:GenerateInput):GenerateReport => {
       if (built.reason.startsWith("out of columns")) {
         if (spurBudget > 0) spurBudget = Math.floor(spurBudget / 2);
         else shrink();
+        continue;
+      }
+      // Spurs consume panels too. A small Zone Mortalis box can tile the planned
+      // rooms exactly and then fail because two optional cover spurs were added on
+      // top. Back those off before thinning or shrinking the actual structure.
+      if ((catalogue === "mortalis" || catalogue === "deathray")
+        && built.reason.includes("wall-cells") && spurBudget > 0) {
+        spurBudget = Math.floor(spurBudget / 2);
         continue;
       }
       // Short of panels instead. Trimming the interior budget merges compartments, and

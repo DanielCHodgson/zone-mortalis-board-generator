@@ -91,6 +91,8 @@ export type BuildDef = {
   /** HUB KITS ONLY: a filler panel covering half an edge, from one hub's face to
    *  the midpoint of the gap. */
   halfEdge?:boolean;
+  /** Extra seating slack for a deliberately loose straddle joint. */
+  jointSlack?:number;
 };
 
 export type BuiltPiece = {
@@ -133,9 +135,11 @@ export type BuildInput = {
 
 /** A panel as placed: which edges it covers, and which nodes it terminates on. */
 type Placement = {
-  def:BuildDef; edge:LatticeEdge; cells:number; ends:[LatticeNode, LatticeNode];
+  def:BuildDef; edge:LatticeEdge; cells:number; ends:LatticeNode[];
   /** True when the plan marked one of the covered edges as a doorway. */
   servesDoorway:boolean;
+  /** Which half of one lattice edge this casting occupies. */
+  half?:"start" | "end";
 };
 
 /**
@@ -307,9 +311,30 @@ const tileRun = (
     }
     if (!placed) {
       const def = chooseDef(defs, stock, 1, wants(edge), random);
-      if (!def) return null;
-      stock.set(def.id, stock.get(def.id)! - 1);
-      placed = { def, edge, cells:1, ends:nodesOfEdge(edge), servesDoorway:wants(edge) };
+      if (def) {
+        stock.set(def.id, stock.get(def.id)! - 1);
+        placed = { def, edge, cells:1, ends:nodesOfEdge(edge), servesDoorway:wants(edge) };
+      } else {
+        // GW Zone Mortalis builds one node-to-node run from two short castings.
+        // One doorway half plus one solid half serves a hatch edge; a plain edge
+        // uses two solid halves. There is no support at their centre joint.
+        const first = chooseDef(defs, stock, .5, wants(edge), random);
+        if (!first) return null;
+        stock.set(first.id, stock.get(first.id)! - 1);
+        const second = chooseDef(defs, stock, .5, false, random);
+        if (!second) {
+          stock.set(first.id, stock.get(first.id)! + 1);
+          return null;
+        }
+        stock.set(second.id, stock.get(second.id)! - 1);
+        const [from, to] = nodesOfEdge(edge);
+        placements.push(
+          { def:first, edge, cells:.5, ends:[from], servesDoorway:wants(edge), half:"start" },
+          { def:second, edge, cells:.5, ends:[to], servesDoorway:false, half:"end" },
+        );
+        index++;
+        continue;
+      }
     }
     placements.push(placed);
     if (placed.cells === 2) longMidpoints.add(nodeKey(nodesOfEdge(placed.edge)[1]));
@@ -323,17 +348,20 @@ const placePanel = (
   runId:string, sequenceIndex:number,
 ):Omit<BuiltPiece, "uid"> => {
   const { def, edge, cells, servesDoorway } = placement;
-  const span = spanWorld(lattice, edge, cells);
+  const span = spanWorld(lattice, edge, cells === .5 ? 1 : cells);
   const horizontal = span.horizontal;
   // Every panel is centred in its span, which is the whole of the placement rule.
   // A bare panel is shorter than its span and reaches into the column at each end;
   // a "+ pillars" panel is exactly one span long because the moulded half-column at
   // each end takes up the difference. Both come out right from being centred.
   const along = def.length;
+  const halfOffset = placement.half
+    ? (placement.half === "start" ? -1 : 1) * (horizontal ? lattice.pitchX : lattice.pitchY) / 4
+    : 0;
   return {
     defId:def.id,
-    x:span.centre.x - (horizontal ? along : def.depth) / 2,
-    y:span.centre.y - (horizontal ? def.depth : along) / 2,
+    x:span.centre.x + (horizontal ? halfOffset : 0) - (horizontal ? along : def.depth) / 2,
+    y:span.centre.y + (horizontal ? 0 : halfOffset) - (horizontal ? def.depth : along) / 2,
     rotation:horizontal ? 0 : 90,
     height:heights[def.id] ?? def.height,
     runId, sequenceIndex,
@@ -606,7 +634,7 @@ const buildHub = ({ plan, defs, stock, heights, nextUid, seed }:BuildInput):Buil
 export const build = (input:BuildInput):BuildResult => {
   // A hub kit is a different assembly model end to end rather than a variation
   // on this one, so it gets its own pass instead of a flag threaded through here.
-  if (input.defs.some((def) => def.shape !== undefined || def.halfEdge)) return buildHub(input);
+  if (input.defs.some((def) => def.shape !== undefined)) return buildHub(input);
   const { plan, defs, stock, heights, nextUid, seed } = input;
   const { lattice, state } = plan;
   const random = randomFactory(seed);
@@ -634,6 +662,9 @@ export const build = (input:BuildInput):BuildResult => {
   // drain the long panels dry and leave the other with nothing but shorts, which
   // reads as one axis built properly and the other improvised.
   const runs = shuffle(edgeRuns(panelEdges), random);
+  if (defs.some((def) => def.halfEdge && def.shape === undefined)) runs.sort((first, second) =>
+    second.filter((edge) => state.get(edgeKey(edge)) === "hatch").length
+    - first.filter((edge) => state.get(edgeKey(edge)) === "hatch").length);
   const placements:Placement[] = [];
   const pieces:BuiltPiece[] = [];
   const longMidpoints = new Set<string>();
