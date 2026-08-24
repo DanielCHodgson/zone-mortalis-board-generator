@@ -914,7 +914,14 @@ export const generate = (input:GenerateInput):GenerateReport => {
     const spreadY = (boardHeight - kit.support) / rows;
     const nominalOverflowsX = cols * kit.pitch + kit.support > boardWidth;
     const nominalOverflowsY = rows * kit.pitch + kit.support > boardHeight;
-    const calibrateToBoard = !fixedPitchFill && (zones.length === 0 || catalogue === "boarding");
+    // Calibration is only the few-millimetre correction that makes the largest
+    // nominal lattice meet the board edge. Once a retry deliberately chooses a
+    // smaller lattice, stretching those fewer bays back across the entire board
+    // turns six-inch walls into twelve-inch gaps and leaves every panel unseated.
+    // Keep the real pitch there; auto-fit can remove the harmless outer margin.
+    const atSizedFootprint = cols === sized.cols && rows === sized.rows;
+    const calibrateToBoard = !fixedPitchFill
+      && (catalogue === "boarding" || (atSizedFootprint && zones.length === 0));
     const pitchX = calibrateToBoard && (anchor === "fill" || nominalOverflowsX) ? spreadX : kit.pitch;
     const pitchY = calibrateToBoard && (anchor === "fill" || nominalOverflowsY) ? spreadY : kit.pitch;
     const gridWidth = cols * pitchX;
@@ -1049,6 +1056,16 @@ export const generate = (input:GenerateInput):GenerateReport => {
     }
 
     const metrics = measure(plan);
+    // Hub and chunky modular kits can technically build a handful of disconnected-
+    // looking runs across a large lattice. That passes structural invariants, but it
+    // is not a usable board: auto-fit merely magnifies the sparse result. Reject the
+    // footprint and let the normal pass loop choose a tighter lattice where supports
+    // are shared and the same stock forms coherent rooms.
+    const minimumCatalogueDensity = catalogue === "mortalis" ? .22 : catalogue === "eberleg" ? .28 : 0;
+    if (metrics.density < minimumCatalogueDensity) {
+      rejected["catalogue density"] = (rejected["catalogue density"] ?? 0) + 1;
+      continue;
+    }
     // The single scorer. Distance to a reference board, so overshooting is
     // penalised exactly as much as undershooting and no metric can run away with
     // the result. Utilisation is deliberately absent: it is an output.
@@ -1093,6 +1110,9 @@ export const generate = (input:GenerateInput):GenerateReport => {
   // `length` in buildDefs is `width` here, so the catalogue serves both.
   const sizeOf = new Map(defs.map((def) => [def.id, { along:def.width, across:def.depth }]));
   const boxOf = (piece:BuiltPiece) => {
+    if (piece.footprintWidth !== undefined && piece.footprintHeight !== undefined) {
+      return { x:piece.x, y:piece.y, width:piece.footprintWidth, height:piece.footprintHeight };
+    }
     const size = sizeOf.get(piece.defId);
     const along = size?.along ?? .5;
     const across = size?.across ?? .5;

@@ -287,6 +287,9 @@ type Box = { x:number; y:number; width:number; height:number };
 
 const rectOf = (piece:BuiltPiece, defs:Map<string, BuildDef>):Box => {
   const def = defs.get(piece.defId)!;
+  if (piece.footprintWidth !== undefined && piece.footprintHeight !== undefined) {
+    return { x:piece.x, y:piece.y, width:piece.footprintWidth, height:piece.footprintHeight };
+  }
   return piece.rotation === 90
     ? { x:piece.x, y:piece.y, width:def.depth, height:def.length }
     : { x:piece.x, y:piece.y, width:def.length, height:def.depth };

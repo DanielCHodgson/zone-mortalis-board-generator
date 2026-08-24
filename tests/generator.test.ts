@@ -19,7 +19,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  TERRAIN, TERRAIN_KITS, BOARDING_INVENTORY, BOARD_SIZES, DEATHRAY_GRID, EBERLEG_GRID,
+  TERRAIN, TERRAIN_KITS, BOARDING_INVENTORY, BOARD_SIZES, DEATHRAY_GRID, EBERLEG_GRID, EBERLEG_HUB,
   GALLOWDARK_GRID, MORTALIS_GRID, MM_PER_IN as MM,
   type CatalogueId,
 } from "../app/terrain.ts";
@@ -168,8 +168,8 @@ test("fill layouts keep every rendered footprint inside a 4 by 4 board", () => {
       assert.ok(report.plan, `${catalogue} seed ${seed}: nothing built — ${report.note}`);
       report.pieces.forEach((piece) => {
         const def = TERRAIN.find((candidate) => candidate.id === piece.defId)!;
-        const width = piece.rotation === 90 ? def.depth : def.width;
-        const height = piece.rotation === 90 ? def.width : def.depth;
+        const width = piece.footprintWidth ?? (piece.rotation === 90 ? def.depth : def.width);
+        const height = piece.footprintHeight ?? (piece.rotation === 90 ? def.width : def.depth);
         assert.ok(piece.x >= -.01 && piece.y >= -.01
           && piece.x + width <= 48.01 && piece.y + height <= 48.01,
         `${catalogue} seed ${seed}: ${def.shortName} leaves the board at ${piece.x.toFixed(2)},${piece.y.toFixed(2)}`);
@@ -191,6 +191,35 @@ test("Zone Mortalis spends solid walls before doors across a 50-board batch", ()
     const shortWalls = report.pieces.filter((piece) => piece.defId === "zm-wall").length;
     assert.ok(shortWalls >= 14,
       `seed ${seed}: only ${shortWalls} of 16 short solid walls were used`);
+  }
+});
+
+test("Zone Mortalis produces a coherent, stocked board across 50 generations", () => {
+  const kit = TERRAIN_KITS.find((candidate) => candidate.id === "zm-columns-and-walls")!;
+  const inventory = Object.fromEntries(Object.entries(kit.inventory).map(([id, count]) => [id, count * 5]));
+  for (let seed = 0; seed < 50; seed++) {
+    const { report } = run({ width:48, height:48, catalogue:"mortalis", inventory, anchor:"fill", seed });
+    assert.ok(report.plan, `seed ${seed}: nothing built — ${report.note}`);
+    assert.ok(report.pieces.length >= 30, `seed ${seed}: collapsed to ${report.pieces.length} pieces`);
+    assert.ok(report.metrics!.density >= .22, `seed ${seed}: sparse density ${report.metrics!.density.toFixed(2)}`);
+    assert.ok(report.plan!.lattice.cols * report.plan!.lattice.rows >= 30,
+      `seed ${seed}: footprint collapsed to ${report.plan!.lattice.cols} x ${report.plan!.lattice.rows}`);
+  }
+});
+
+test("Eberleg keeps a useful footprint and density across 50 generations", () => {
+  const kit = TERRAIN_KITS.find((candidate) => candidate.id === "eberleg-all")!;
+  for (let seed = 0; seed < 50; seed++) {
+    const { report } = run({ width:48, height:48, catalogue:"eberleg", inventory:kit.inventory, anchor:"fill", seed });
+    assert.ok(report.plan, `seed ${seed}: nothing built — ${report.note}`);
+    assert.ok(report.pieces.length >= 24, `seed ${seed}: collapsed to ${report.pieces.length} pieces`);
+    assert.ok(report.metrics!.density >= .28, `seed ${seed}: sparse density ${report.metrics!.density.toFixed(2)}`);
+    assert.equal(report.plan!.lattice.cols * report.plan!.lattice.rows, 64,
+      `seed ${seed}: footprint changed to ${report.plan!.lattice.cols} x ${report.plan!.lattice.rows}`);
+    assert.ok(Math.abs(report.plan!.lattice.cols * report.plan!.lattice.pitchX + EBERLEG_HUB - 48) < .001,
+      `seed ${seed}: horizontal grid does not close exactly on the board`);
+    assert.ok(Math.abs(report.plan!.lattice.rows * report.plan!.lattice.pitchY + EBERLEG_HUB - 48) < .001,
+      `seed ${seed}: vertical grid does not close exactly on the board`);
   }
 });
 

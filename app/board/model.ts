@@ -6,6 +6,7 @@ export type Facing = 0 | 90 | 180 | 270;
 export type PlacedPiece = {
   uid:string; defId:string; x:number; y:number; rotation:Rotation; height:number;
   runId?:string; sequenceIndex?:number; servesDoorway?:boolean; facing?:Facing;
+  footprintWidth?:number; footprintHeight?:number;
 };
 
 export type ReservedZone = {
@@ -27,8 +28,8 @@ export const pieceRect = (piece:PlacedPiece):Rect => {
   return {
     x:piece.x,
     y:piece.y,
-    width:piece.rotation === 90 ? def.depth : def.width,
-    height:piece.rotation === 90 ? def.width : def.depth,
+    width:piece.footprintWidth ?? (piece.rotation === 90 ? def.depth : def.width),
+    height:piece.footprintHeight ?? (piece.rotation === 90 ? def.width : def.depth),
   };
 };
 

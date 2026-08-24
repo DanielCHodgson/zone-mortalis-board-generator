@@ -98,6 +98,9 @@ export type BuildDef = {
 export type BuiltPiece = {
   uid:string;
   defId:string; x:number; y:number; rotation:0 | 90; height:number;
+  /** Generated plan footprint. Hub kits may tune a measured casting by a few
+   * millimetres so every arm lands on the same exact mathematical grid. */
+  footprintWidth?:number; footprintHeight?:number;
   runId?:string; sequenceIndex?:number;
   /**
    * Whether this panel's hatchway is a DOORWAY the plan routes through, as opposed to a
@@ -593,12 +596,14 @@ const buildHub = ({ plan, defs, stock, heights, nextUid, seed }:BuildInput):Buil
       rotation:width >= height ? 0 : 90,
       height:heights[def.id] ?? def.height,
       facing,
+      footprintWidth:width,
+      footprintHeight:height,
     });
   });
 
   fillers.forEach(({ def, node, dir }) => {
     const world = nodeWorld(lattice, node);
-    const along = def.length;
+    const along = reachOf(dir) - hubHalf;
     const across = def.depth;
     const horizontal = dir === "e" || dir === "w";
     pieces.push({
@@ -608,6 +613,8 @@ const buildHub = ({ plan, defs, stock, heights, nextUid, seed }:BuildInput):Buil
       rotation:horizontal ? 0 : 90,
       height:heights[def.id] ?? def.height,
       servesDoorway:def.kind === "door",
+      footprintWidth:horizontal ? along : across,
+      footprintHeight:horizontal ? across : along,
     });
   });
 
@@ -618,13 +625,16 @@ const buildHub = ({ plan, defs, stock, heights, nextUid, seed }:BuildInput):Buil
     const midY = (from.y + to.y) / 2;
     const def = job.wide!;
     const horizontal = job.edge.axis === "h";
+    const along = (horizontal ? lattice.pitchX : lattice.pitchY) - hubHalf * 2;
     pieces.push({
       uid:nextUid(), defId:def.id,
-      x:horizontal ? midX - def.length / 2 : midX - def.depth / 2,
-      y:horizontal ? midY - def.depth / 2 : midY - def.length / 2,
+      x:horizontal ? midX - along / 2 : midX - def.depth / 2,
+      y:horizontal ? midY - def.depth / 2 : midY - along / 2,
       rotation:horizontal ? 0 : 90,
       height:heights[def.id] ?? def.height,
       servesDoorway:true,
+      footprintWidth:horizontal ? along : def.depth,
+      footprintHeight:horizontal ? def.depth : along,
     });
   });
 

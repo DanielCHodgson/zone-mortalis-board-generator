@@ -106,6 +106,10 @@ export default function Home() {
   const [message, setMessage] = useState("Ready to build");
   const uidRef = useRef(0);
   const generationInventoryRef = useRef<Record<string, number> | null>(null);
+  // Auto-fit changes only the viewport around a generated result. Keep the board
+  // the user actually chose separately so Remix never feeds that fitted result
+  // back into generation and ratchets the board smaller on every click.
+  const generationBoardSizeRef = useRef<{ width:number; height:number }>(BOARD_SIZES.card);
   const lastReportRef = useRef<GenerateReport | null>(null);
   const { width:boardWidth, height:boardHeight } = boardPreset === "custom" ? customBoardSize : BOARD_SIZES[boardPreset];
   const changeBoardZoom = (direction:-1 | 1) => {
@@ -216,7 +220,7 @@ export default function Home() {
   }, [used]);
   const paletteUsed = catalogueTerrain.reduce((sum, def) => sum + Math.min(used[def.id] || 0, limits[def.id] || 0), 0);
   const wallPieces = pieces.filter((piece) => ["wall", "door"].includes(getDef(piece.defId).kind));
-  const coverage = Math.min(100, pieces.reduce((sum, piece) => { const def = getDef(piece.defId); return sum + def.width * def.depth; }, 0) / (boardWidth * boardHeight) * 100);
+  const coverage = Math.min(100, pieces.reduce((sum, piece) => { const rect = pieceRect(piece); return sum + rect.width * rect.height; }, 0) / (boardWidth * boardHeight) * 100);
   const doors = pieces.filter((piece) => getDef(piece.defId).kind === "door").length;
   const loops = Math.max(0, Math.min(6, Math.floor(wallPieces.length / 5) - 1));
   const chambers = Math.max(0, Math.min(7, Math.floor(wallPieces.length / 4)));
@@ -258,7 +262,13 @@ export default function Home() {
     const restoreTimer = window.setTimeout(() => {
       try {
         const saved = window.localStorage.getItem(BOARD_STORAGE_KEY) as BoardPreset | null;
-        if (saved && saved in BOARD_SIZES) setBoardPreset(saved);
+        if (saved && saved in BOARD_SIZES) {
+          setBoardPreset(saved);
+          generationBoardSizeRef.current = {
+            width:BOARD_SIZES[saved].width,
+            height:BOARD_SIZES[saved].height,
+          };
+        }
       } catch { /* Board size persistence is optional. */ }
       setBoardReady(true);
     }, 0);
@@ -327,9 +337,7 @@ export default function Home() {
   }, []);
   const quantize = useCallback((value: number) => snap ? Math.round(value / gridSize) * gridSize : Math.round(value * 10) / 10, [gridSize, snap]);
   const pieceIntersectsReservedZone = (piece: PlacedPiece, padding = .08) => {
-    const def = getDef(piece.defId);
-    const width = piece.rotation === 90 ? def.depth : def.width;
-    const height = piece.rotation === 90 ? def.width : def.depth;
+    const { width, height } = pieceRect(piece);
     return zones.some((zone) => piece.x < zone.x + zone.width + padding && piece.x + width > zone.x - padding && piece.y < zone.y + zone.height + padding && piece.y + height > zone.y - padding);
   };
   const reservedCoverage = zones.reduce((sum, zone) => sum + zone.width * zone.height, 0) / (boardWidth * boardHeight) * 100;
@@ -347,6 +355,7 @@ export default function Home() {
   const changeBoardSize = (preset: BoardPreset | "custom") => {
     if (preset === "custom") return;
     const next = BOARD_SIZES[preset];
+    generationBoardSizeRef.current = { width:next.width, height:next.height };
     setBoardPreset(preset);
     fitTerrainToBoardSize(next);
     selectOnly(null);
@@ -359,6 +368,7 @@ export default function Home() {
     setZones(fitted.zones);
     setCustomBoardSize(fitted.size);
     setBoardPreset("custom");
+    generationBoardSizeRef.current = { width:fitted.size.width, height:fitted.size.height };
     selectOnly(null);
     setMessage(`Board shrunk to terrain · ${fitted.size.width.toFixed(1)}″ × ${fitted.size.height.toFixed(1)}″`);
   };
@@ -383,6 +393,7 @@ export default function Home() {
     const height = clamp(quantize(boardResize.startHeight + (event.clientY - boardResize.startY) / boardResize.scale), minimumBoardHeight(), MAX_BOARD_HEIGHT);
     setBoardPreset("custom");
     setCustomBoardSize({ width, height });
+    generationBoardSizeRef.current = { width, height };
   };
   const finishBoardResize = () => {
     if (!boardResize) return;
@@ -454,14 +465,16 @@ export default function Home() {
       if (piece.facing !== undefined) {
         const facing = ((piece.facing + 90) % 360) as 0 | 90 | 180 | 270;
         const rotation: 0 | 90 = facing === 90 || facing === 270 ? 90 : 0;
-        const w = rotation === 90 ? def.depth : def.width;
-        const h = rotation === 90 ? def.width : def.depth;
-        return { ...piece, facing, rotation, x: quantize(clamp(piece.x, 0, boardWidth - w)), y: quantize(clamp(piece.y, 0, boardHeight - h)) };
+        const current = pieceRect(piece);
+        const w = piece.footprintWidth === undefined ? (rotation === 90 ? def.depth : def.width) : current.height;
+        const h = piece.footprintHeight === undefined ? (rotation === 90 ? def.width : def.depth) : current.width;
+        return { ...piece, facing, rotation, footprintWidth:w, footprintHeight:h, x: quantize(clamp(piece.x, 0, boardWidth - w)), y: quantize(clamp(piece.y, 0, boardHeight - h)) };
       }
       const rotation = piece.rotation === 0 ? 90 : 0;
-      const w = rotation === 90 ? def.depth : def.width;
-      const h = rotation === 90 ? def.width : def.depth;
-      return { ...piece, rotation, x: quantize(clamp(piece.x, 0, boardWidth - w)), y: quantize(clamp(piece.y, 0, boardHeight - h)) };
+      const current = pieceRect(piece);
+      const w = piece.footprintWidth === undefined ? (rotation === 90 ? def.depth : def.width) : current.height;
+      const h = piece.footprintHeight === undefined ? (rotation === 90 ? def.width : def.depth) : current.width;
+      return { ...piece, rotation, footprintWidth:w, footprintHeight:h, x: quantize(clamp(piece.x, 0, boardWidth - w)), y: quantize(clamp(piece.y, 0, boardHeight - h)) };
     }));
     setMessage("Piece rotated 90°");
   }, [boardHeight, boardWidth, quantize, setMessage]);
@@ -479,9 +492,7 @@ export default function Home() {
       if (selection.length < 2) return current;
 
       const rects = selection.map((piece) => {
-        const def = getDef(piece.defId);
-        const width = piece.rotation === 90 ? def.depth : def.width;
-        const height = piece.rotation === 90 ? def.width : def.depth;
+        const { width, height } = pieceRect(piece);
         return { piece, width, height };
       });
       const minX = Math.min(...rects.map(({ piece }) => piece.x));
@@ -505,7 +516,12 @@ export default function Home() {
         const nextCentreX = centreX - (pieceCentreY - centreY);
         const nextCentreY = centreY + (pieceCentreX - centreX);
         return {
-          piece:{ ...piece, rotation, facing, x:nextCentreX - nextWidth / 2, y:nextCentreY - nextHeight / 2 },
+          piece:{
+            ...piece, rotation, facing,
+            footprintWidth:piece.footprintWidth === undefined ? undefined : nextWidth,
+            footprintHeight:piece.footprintHeight === undefined ? undefined : nextHeight,
+            x:nextCentreX - nextWidth / 2, y:nextCentreY - nextHeight / 2,
+          },
           width:nextWidth,
           height:nextHeight,
         };
@@ -685,10 +701,11 @@ export default function Home() {
     // The palette IS the inventory. Wanting a second set means adding it from the kit
     // browser above, which is where quantities belong.
     const inventory = Object.fromEntries(TERRAIN.map((def) => [def.id, override ? override[def.id] || 0 : limits[def.id] || 0]));
-    const seed = (Date.now() + uidRef.current * 2654435761 + boardWidth * 101 + boardHeight * 211 + catalogueSalt(catalogue)) >>> 0;
+    const generationBoard = generationBoardSizeRef.current;
+    const seed = (Date.now() + uidRef.current * 2654435761 + generationBoard.width * 101 + generationBoard.height * 211 + catalogueSalt(catalogue)) >>> 0;
     const report = generate({
-      boardWidth,
-      boardHeight,
+      boardWidth:generationBoard.width,
+      boardHeight:generationBoard.height,
       catalogue,
       defs:TERRAIN,
       inventory,
@@ -706,7 +723,8 @@ export default function Home() {
   };
 
   const commitGeneratedLayout = (generated:PlacedPiece[]) => {
-    if (!shrinkAfterGeneration) {
+    const eberlegOnly = generated.length > 0 && generated.every((piece) => getDef(piece.defId).catalogue === "eberleg");
+    if (!shrinkAfterGeneration || eberlegOnly) {
       setPieces(generated);
       return null;
     }
@@ -1163,8 +1181,7 @@ export default function Home() {
               {dropPreview && <div className="menu-drop-preview" aria-hidden="true" style={{ left:`${dropPreview.x / boardWidth * 100}%`, top:`${dropPreview.y / boardHeight * 100}%`, width:`${dropPreview.width / boardWidth * 100}%`, height:`${dropPreview.height / boardHeight * 100}%` }} />}
               {pieces.map((piece) => {
                 const def = getDef(piece.defId);
-                const width = piece.rotation === 90 ? def.depth : def.width;
-                const height = piece.rotation === 90 ? def.width : def.depth;
+                const { width, height } = pieceRect(piece);
                 const isSelected = selectedIds.includes(piece.uid);
                 return <button key={piece.uid} title={`${def.name} · ${def.note} × ${Math.round(piece.height * MM_PER_IN)} mm high`} aria-label={`${def.name}, ${Math.round(piece.height * MM_PER_IN)} millimetres high${isSelected ? ", selected" : ""}`} aria-pressed={isSelected} className={`placed-piece piece-${def.id} ${def.kind} ${def.kind === "door" && piece.servesDoorway === false ? "shut" : ""} ${def.visual ? `visual-${def.visual}` : ""} ${piece.facing !== undefined ? `facing-${piece.facing}` : ""} ${piece.rotation === 90 ? "rotated" : ""} ${isSelected ? "selected" : ""}`} style={{ left:`${piece.x / boardWidth * 100}%`, top:`${piece.y / boardHeight * 100}%`, width:`${width / boardWidth * 100}%`, height:`${height / boardHeight * 100}%` }} onDoubleClick={() => rotatePiece(piece.uid)} onContextMenu={(event) => { event.preventDefault(); setFocusedZone(null); selectOnly(piece.uid); rotatePiece(piece.uid); }} onPointerDown={(event) => beginPieceDrag(event, piece)}><span className="terrain-detail" /></button>;
               })}
