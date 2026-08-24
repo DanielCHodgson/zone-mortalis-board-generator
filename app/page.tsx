@@ -9,13 +9,13 @@ import {
   type Appearance, type BoardPreset, type CatalogueId, type TerrainDef,
 } from "./terrain.ts";
 import {
-  boundsOf, clamp, connectionCandidates, normaliseZoneDraft, pieceRect, piecesOverlap, structuralEndpoints,
+  boundsOf, clamp, connectionCandidates, fitLayoutToContent, normaliseZoneDraft, pieceRect, piecesOverlap, structuralEndpoints,
   type PlacedPiece, type ReservedZone,
 } from "./board/model.ts";
 import { UiIcon } from "./ui/icon.tsx";
 import { BoardToolbar, type BoardTheme } from "./ui/board-toolbar.tsx";
 import { AnalysisPanel, type InventoryGroup } from "./ui/analysis-panel.tsx";
-import { pieceIconClass } from "./ui/piece-icon.ts";
+import { BoardSelectionSummary } from "./ui/board-selection-summary.tsx";
 import { PalettePanel } from "./ui/palette-panel.tsx";
 import { TerrainLibrary } from "./ui/terrain-library.tsx";
 import { Topbar } from "./ui/topbar.tsx";
@@ -31,7 +31,8 @@ const BOARD_ZOOM_STEPS = [50, 75, 100, 125, 150, 175, 200] as const;
 /** A piece being dragged toward the board. "palette" drags an existing palette
  *  entry (already counted in `limits`); "catalogue" drags a not-yet-added kit
  *  piece, which drops with `amount` copies added to the palette on release. */
-type PaletteDragState = { defId: string; x: number; y: number; source: "palette" | "catalogue"; amount?: number };
+type PaletteDragState = { defId:string; x:number; y:number; startX:number; startY:number; source:"palette" | "catalogue"; amount?:number; moved:boolean };
+type DropPreview = { defId:string; x:number; y:number; width:number; height:number };
 
 /** One way a dragged piece could meet a fixed one: the offset that joins them, and
  *  the rotation the move implies where the joint only works at right angles (a wall
@@ -57,12 +58,7 @@ export default function Home() {
   const [showGrid, setShowGrid] = useState(true);
   const [inspectorTab, setInspectorTab] = useState<"palette" | "analysis">("palette");
   const [libraryOpen, setLibraryOpen] = useState(true);
-  // Spend the whole palette by default. This used to default to 60% and cap at 60%,
-  // which made every generated board 40% short of what the box could build — and it
-  // was needed back when nothing else stopped the generator cramming terrain in.
-  // The density cap in generate.ts does that job properly now, so this is back to
-  // being what it says: a deliberate way to hold pieces back.
-  const [generationPercent, setGenerationPercent] = useState(100);
+  const [shrinkAfterGeneration, setShrinkAfterGeneration] = useState(true);
   const [doorRange, setDoorRange] = useState({ min:2, max:5 });
   const [gridSize, setGridSize] = useState(1);
   const [boardZoom, setBoardZoom] = useState(100);
@@ -105,6 +101,8 @@ export default function Home() {
   const [focusedZone, setFocusedZone] = useState<string | null>(null);
   const [paletteDrag, setPaletteDrag] = useState<PaletteDragState | null>(null);
   const paletteDragRef = useRef<PaletteDragState | null>(null);
+  const suppressMenuClickRef = useRef(false);
+  const [dropPreview, setDropPreview] = useState<DropPreview | null>(null);
   const [message, setMessage] = useState("Ready to build");
   const uidRef = useRef(0);
   const generationInventoryRef = useRef<Record<string, number> | null>(null);
@@ -355,24 +353,14 @@ export default function Home() {
     setMessage(`Board changed to ${next.label} · existing terrain kept within bounds`);
   };
   const shrinkBoardToTerrain = () => {
-    const bounds = [
-      ...pieces.map(pieceRect),
-      ...zones.map((zone) => ({ x:zone.x, y:zone.y, width:zone.width, height:zone.height })),
-    ];
-    if (!bounds.length) return;
-    const content = boundsOf(bounds)!;
-    const contentWidth = content.width;
-    const contentHeight = content.height;
-    const width = clamp(Math.ceil(contentWidth * 10) / 10, MIN_BOARD_SIZE, MAX_BOARD_WIDTH);
-    const height = clamp(Math.ceil(contentHeight * 10) / 10, MIN_BOARD_SIZE, MAX_BOARD_HEIGHT);
-    const offsetX = (width - contentWidth) / 2 - content.x;
-    const offsetY = (height - contentHeight) / 2 - content.y;
-    setPieces((current) => current.map((piece) => ({ ...piece, x:piece.x + offsetX, y:piece.y + offsetY })));
-    setZones((current) => current.map((zone) => ({ ...zone, x:zone.x + offsetX, y:zone.y + offsetY })));
-    setCustomBoardSize({ width, height });
+    const fitted = fitLayoutToContent(pieces, zones, MIN_BOARD_SIZE, { width:MAX_BOARD_WIDTH, height:MAX_BOARD_HEIGHT });
+    if (!fitted) return;
+    setPieces(fitted.pieces);
+    setZones(fitted.zones);
+    setCustomBoardSize(fitted.size);
     setBoardPreset("custom");
     selectOnly(null);
-    setMessage(`Board shrunk to terrain · ${width.toFixed(1)}″ × ${height.toFixed(1)}″`);
+    setMessage(`Board shrunk to terrain · ${fitted.size.width.toFixed(1)}″ × ${fitted.size.height.toFixed(1)}″`);
   };
   // The floor a manual drag can shrink to — unlike picking a preset from the
   // dropdown, dragging must never move or clip terrain that's already on the
@@ -707,7 +695,7 @@ export default function Home() {
       heights:heightDefaults,
       zones,
       anchor,
-      usage:override ? 1 : generationPercent / 100,
+      usage:1,
       doorRange:{ min:effectiveDoorMin, max:effectiveDoorMax },
       seed,
       nextUid,
@@ -715,6 +703,23 @@ export default function Home() {
     lastReportRef.current = report;
     setLayoutReport(report);
     return report.pieces as PlacedPiece[];
+  };
+
+  const commitGeneratedLayout = (generated:PlacedPiece[]) => {
+    if (!shrinkAfterGeneration) {
+      setPieces(generated);
+      return null;
+    }
+    const fitted = fitLayoutToContent(generated, zones, MIN_BOARD_SIZE, { width:MAX_BOARD_WIDTH, height:MAX_BOARD_HEIGHT });
+    if (!fitted) {
+      setPieces(generated);
+      return null;
+    }
+    setPieces(fitted.pieces);
+    setZones(fitted.zones);
+    setCustomBoardSize(fitted.size);
+    setBoardPreset("custom");
+    return fitted.size;
   };
 
   const generateFromPalette = () => {
@@ -736,11 +741,12 @@ export default function Home() {
       setMessage(lastReportRef.current?.note || "That palette cannot form a supported layout · add compatible walls or connectors");
       return;
     }
-    setPieces(finalized);
+    const fittedSize = commitGeneratedLayout(finalized);
     selectOnly(null);
     const joined = paletteCatalogues.length > 1 ? " · compatible cross-kit wall joins enabled" : "";
     const fit = lastReportRef.current?.note ? ` · ${lastReportRef.current.note}` : "";
-    setMessage(`${paletteLabel} generated · ${finalized.length} pieces${zones.length ? ` · ${zones.length} zone${zones.length === 1 ? "" : "s"} respected` : ""}${joined}${fit}`);
+    const boardFit = fittedSize ? ` · board fit ${fittedSize.width.toFixed(1)} × ${fittedSize.height.toFixed(1)}″` : "";
+    setMessage(`${paletteLabel} generated · ${finalized.length} pieces${zones.length ? ` · ${zones.length} zone${zones.length === 1 ? "" : "s"} respected` : ""}${joined}${boardFit}${fit}`);
   };
 
   const generateLayout = () => {
@@ -793,10 +799,11 @@ export default function Home() {
         setMessage(lastReportRef.current?.note || "That terrain cannot form a supported layout");
         return;
       }
-      setPieces(finalized);
+      const fittedSize = commitGeneratedLayout(finalized);
       selectOnly(null);
       const held = pieces.length - finalized.length;
-      setMessage(`Layout regenerated · ${finalized.length} pieces${held > 0 ? ` · ${held} held back` : ""}${lastReportRef.current?.note ? ` · ${lastReportRef.current.note}` : ""}`);
+      const boardFit = fittedSize ? ` · board fit ${fittedSize.width.toFixed(1)} × ${fittedSize.height.toFixed(1)}″` : "";
+      setMessage(`Layout regenerated · ${finalized.length} pieces${held > 0 ? ` · ${held} held back` : ""}${boardFit}${lastReportRef.current?.note ? ` · ${lastReportRef.current.note}` : ""}`);
     } finally {
       generationInventoryRef.current = null;
     }
@@ -919,45 +926,77 @@ export default function Home() {
     setMessage(`Moving ${zone.name} · release to place`);
   };
 
-  const onDrop = (event: React.DragEvent) => {
-    event.preventDefault();
-    const defId = event.dataTransfer.getData("terrain/def-id");
-    if (!defId || !boardRef.current) return;
-    const point = boardPoint(event.clientX, event.clientY);
-    addPiece(defId, point.x, point.y);
+  const finishMenuDrag = () => {
+    paletteDragRef.current = null;
+    setPaletteDrag(null);
+    setDropPreview(null);
   };
 
-  useEffect(() => {
-    const onPaletteMove = (event: PointerEvent) => {
-      if (!paletteDragRef.current) return;
-      const nextDrag = { ...paletteDragRef.current, x:event.clientX, y:event.clientY };
-      paletteDragRef.current = nextDrag;
-      setPaletteDrag(nextDrag);
-    };
-    const onPaletteUp = (event: PointerEvent) => {
-      const currentPaletteDrag = paletteDragRef.current;
-      if (!currentPaletteDrag || !boardRef.current) return;
+  const beginMenuPointerDrag = (event:React.PointerEvent<HTMLElement>, defId:string, source:PaletteDragState["source"], amount?:number) => {
+    if (event.button !== 0) return;
+    const payload:PaletteDragState = { defId, source, amount, x:event.clientX, y:event.clientY, startX:event.clientX, startY:event.clientY, moved:false };
+    try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* Pointer capture may be unavailable in embedded browsers. */ }
+    paletteDragRef.current = payload;
+    setPaletteDrag(payload);
+  };
+
+  const updateDropPreviewAt = (clientX:number, clientY:number) => {
+    const current = paletteDragRef.current;
+    const board = boardRef.current;
+    if (!current || !board) return;
+    const rect = board.getBoundingClientRect();
+    if (clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom) { setDropPreview(null); return; }
+    const def = getDef(current.defId);
+    const point = boardPoint(clientX, clientY);
+    const x = quantize(clamp(point.x - def.width / 2, 0, boardWidth - def.width));
+    const y = quantize(clamp(point.y - def.depth / 2, 0, boardHeight - def.depth));
+    setDropPreview({ defId:current.defId, x, y, width:def.width, height:def.depth });
+  };
+
+  const moveMenuPointerDrag = (event:React.PointerEvent<HTMLElement>) => {
+    const current = paletteDragRef.current;
+    if (!current) return;
+    const moved = current.moved || Math.hypot(event.clientX - current.startX, event.clientY - current.startY) >= 4;
+    const next = { ...current, x:event.clientX, y:event.clientY, moved };
+    paletteDragRef.current = next;
+    setPaletteDrag(next);
+    if (moved) { event.preventDefault(); updateDropPreviewAt(event.clientX, event.clientY); }
+  };
+
+  const finishMenuPointerDrag = (event:React.PointerEvent<HTMLElement>) => {
+    const current = paletteDragRef.current;
+    if (!current) return;
+    try { event.currentTarget.releasePointerCapture(event.pointerId); } catch { /* Capture may already be released. */ }
+    if (current.moved && boardRef.current) {
       const rect = boardRef.current.getBoundingClientRect();
       if (event.clientX >= rect.left && event.clientX <= rect.right && event.clientY >= rect.top && event.clientY <= rect.bottom) {
         const point = boardPoint(event.clientX, event.clientY);
-        if (currentPaletteDrag.source === "catalogue") {
-          addFromCatalogue(currentPaletteDrag.defId, currentPaletteDrag.amount ?? 1, point.x, point.y);
-        } else {
-          addPiece(currentPaletteDrag.defId, point.x, point.y);
-        }
+        if (current.source === "catalogue") addFromCatalogue(current.defId, current.amount ?? 1, point.x, point.y);
+        else addPiece(current.defId, point.x, point.y);
       }
-      paletteDragRef.current = null;
-      setPaletteDrag(null);
-    };
-    window.addEventListener("pointermove", onPaletteMove);
-    window.addEventListener("pointerup", onPaletteUp);
-    window.addEventListener("pointercancel", onPaletteUp);
-    return () => {
-      window.removeEventListener("pointermove", onPaletteMove);
-      window.removeEventListener("pointerup", onPaletteUp);
-      window.removeEventListener("pointercancel", onPaletteUp);
-    };
-  }, [addFromCatalogue, addPiece, boardPoint]);
+      suppressMenuClickRef.current = true;
+      window.setTimeout(() => { suppressMenuClickRef.current = false; }, 0);
+    }
+    finishMenuDrag();
+  };
+
+  const updateMenuDropPreview = (event:React.DragEvent<HTMLDivElement>) => { event.preventDefault(); updateDropPreviewAt(event.clientX, event.clientY); };
+
+  const onDrop = (event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const encoded = event.dataTransfer.getData("application/x-mortalis-terrain");
+    const fallback = paletteDragRef.current;
+    let payload = fallback;
+    if (encoded) {
+      try { payload = { ...JSON.parse(encoded), x:event.clientX, y:event.clientY, startX:event.clientX, startY:event.clientY, moved:true } as PaletteDragState; } catch { /* The in-memory payload remains the fallback. */ }
+    }
+    const defId = payload?.defId || event.dataTransfer.getData("terrain/def-id");
+    if (!defId || !boardRef.current) return;
+    const point = boardPoint(event.clientX, event.clientY);
+    if (payload?.source === "catalogue") addFromCatalogue(defId, payload.amount ?? 1, point.x, point.y);
+    else addPiece(defId, point.x, point.y);
+    finishMenuDrag();
+  };
 
   const onBoardPointerMove = (event: React.PointerEvent) => {
     if (zoneResize && boardRef.current) {
@@ -1087,15 +1126,16 @@ export default function Home() {
           onAmountChange={(key, amount) => setKitAddAmounts((current) => ({ ...current, [key]:clamp(amount, 1, 999) }))}
           onAddStock={addToPalette}
           onPlaceOne={addFromCatalogue}
-          onPiecePointerDown={(event, defId, amount) => {
-            const nextDrag:PaletteDragState = { defId, x:event.clientX, y:event.clientY, source:"catalogue", amount };
-            paletteDragRef.current = nextDrag;
-            setPaletteDrag(nextDrag);
-          }}
+          onPiecePointerDown={(event, defId, amount) => beginMenuPointerDrag(event, defId, "catalogue", amount)}
+          onPiecePointerMove={moveMenuPointerDrag}
+          onPiecePointerUp={finishMenuPointerDrag}
         />
 
         <div className="board-column">
-          <div className="stage-heading"><div><p className="eyebrow">Editing board</p><h2>{boardWidth.toFixed(0)} × {boardHeight.toFixed(0)} in · {theme}</h2></div><span>{pieces.length} placed · {zones.length} reserved zone{zones.length === 1 ? "" : "s"}</span></div>
+          <div className="stage-heading">
+            <div className="stage-title"><p className="eyebrow">Editing board</p><h2>{boardWidth.toFixed(0)} × {boardHeight.toFixed(0)} in · {theme}</h2></div>
+            <BoardSelectionSummary selectedPiece={selectedPiece} selectedCount={selectedIds.length} placedCount={pieces.length} paletteUsed={paletteUsed} catalogueTotal={catalogueTotal} zoneCount={zones.length} onSelectedHeightChange={setSelectedHeightMm} />
+          </div>
           <BoardToolbar
             zoneMode={zoneMode} showGrid={showGrid} hasSelection={selectedIds.length > 0}
             canPaste={copyBuffer !== null} hasTerrain={pieces.length > 0} hasZones={zones.length > 0}
@@ -1115,11 +1155,12 @@ export default function Home() {
           <div ref={boardAreaRef} className={`board-area ${boardPanning ? "panning" : ""}`} title="Scroll to zoom · hold the mouse wheel and drag to pan" onWheel={zoomBoardAtPointer} onPointerDownCapture={beginBoardPan} onPointerMoveCapture={moveBoardPan} onPointerUpCapture={finishBoardPan} onPointerCancelCapture={finishBoardPan} onAuxClick={(event) => { if (event.button === 1) event.preventDefault(); }}><div className="board-pan-stage" style={{ "--board-stage-width":`${boardZoom + Math.max(0, boardZoom - 100) * .9}cqw`, "--board-stage-height":`${boardZoom + Math.max(0, boardZoom - 100) * .9}cqh` } as CSSProperties}><div className="board-frame" style={{ "--board-ratio":boardWidth / boardHeight, "--board-zoom":boardZoom / 100 } as CSSProperties}>
             <div className="ruler ruler-top">{Array.from({ length:boardWidth / 12 + 1 }, (_, index) => index * 12).map((inch) => <span key={inch}>{inch}{inch === boardWidth ? "″" : ""}</span>)}</div>
             <div className="ruler ruler-left">{Array.from({ length:boardHeight / 12 + 1 }, (_, index) => index * 12).map((inch) => <span key={inch}>{inch}{inch === boardHeight ? "″" : ""}</span>)}</div>
-            <div id="layout-board" ref={boardRef} style={{ "--minor-x":`${100 / boardWidth}%`, "--minor-y":`${100 / boardHeight}%`, "--major-x":`${1200 / boardWidth}%`, "--major-y":`${1200 / boardHeight}%` } as CSSProperties} className={`board ${theme}-board ${showGrid ? "grid-visible" : "grid-hidden"} ${drag ? "dragging" : ""} ${marquee ? "selecting" : ""} ${zoneMode ? "zone-mode" : ""} ${zoneResize ? "resizing-zone" : ""} ${zoneDrag ? "dragging-zone" : ""}`} aria-label={`${boardWidth.toFixed(1)} by ${boardHeight.toFixed(1)} inch layout board`} aria-describedby="board-help" onDragOver={(event) => event.preventDefault()} onDrop={onDrop} onPointerMove={onBoardPointerMove} onPointerUp={() => { if (zoneDraft) finishZone(); if (marquee) finishMarquee(); if (zoneResize) { const zone = zones.find((item) => item.uid === zoneResize.uid); if (zone) setMessage(`${zone.name} resized · ${zone.width.toFixed(1)} × ${zone.height.toFixed(1)} in`); setZoneResize(null); } if (zoneDrag) { const zone = zones.find((item) => item.uid === zoneDrag.uid); if (zone) setMessage(`${zone.name} moved · ${zone.x.toFixed(1)}, ${zone.y.toFixed(1)} in`); setZoneDrag(null); } setDrag(null); }} onPointerCancel={() => { setZoneDraft(null); setZoneResize(null); setZoneDrag(null); setMarquee(null); setDrag(null); }} onPointerDown={beginZone}>
+            <div id="layout-board" ref={boardRef} style={{ "--minor-x":`${100 / boardWidth}%`, "--minor-y":`${100 / boardHeight}%`, "--major-x":`${1200 / boardWidth}%`, "--major-y":`${1200 / boardHeight}%` } as CSSProperties} className={`board ${theme}-board ${showGrid ? "grid-visible" : "grid-hidden"} ${drag ? "dragging" : ""} ${paletteDrag ? "menu-dragging" : ""} ${marquee ? "selecting" : ""} ${zoneMode ? "zone-mode" : ""} ${zoneResize ? "resizing-zone" : ""} ${zoneDrag ? "dragging-zone" : ""}`} aria-label={`${boardWidth.toFixed(1)} by ${boardHeight.toFixed(1)} inch layout board`} aria-describedby="board-help" onDragOver={updateMenuDropPreview} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropPreview(null); }} onDrop={onDrop} onPointerMove={onBoardPointerMove} onPointerUp={() => { if (zoneDraft) finishZone(); if (marquee) finishMarquee(); if (zoneResize) { const zone = zones.find((item) => item.uid === zoneResize.uid); if (zone) setMessage(`${zone.name} resized · ${zone.width.toFixed(1)} × ${zone.height.toFixed(1)} in`); setZoneResize(null); } if (zoneDrag) { const zone = zones.find((item) => item.uid === zoneDrag.uid); if (zone) setMessage(`${zone.name} moved · ${zone.x.toFixed(1)}, ${zone.y.toFixed(1)} in`); setZoneDrag(null); } setDrag(null); }} onPointerCancel={() => { setZoneDraft(null); setZoneResize(null); setZoneDrag(null); setMarquee(null); setDrag(null); }} onPointerDown={beginZone}>
               {pieces.length === 0 && <div className="board-mark"><strong>{boardPreset === "custom" ? `${boardWidth.toFixed(1)}″ × ${boardHeight.toFixed(1)}″` : BOARD_SIZES[boardPreset].label}</strong><span>{zoneMode ? "DRAG TO RESERVE A CLEAR ZONE" : "DROP TERRAIN TO PLACE"}</span></div>}
               {zones.map((zone) => <div key={zone.uid} role="group" tabIndex={zoneMode ? -1 : 0} aria-label={`${zone.name}, reserved zone ${zone.width.toFixed(1)} by ${zone.height.toFixed(1)} inches`} className={`reserved-zone ${focusedZone === zone.uid ? "focused" : ""} ${zoneResize?.uid === zone.uid ? "resizing" : ""} ${zoneDrag?.uid === zone.uid ? "moving" : ""}`} style={{ left:`${zone.x / boardWidth * 100}%`, top:`${zone.y / boardHeight * 100}%`, width:`${zone.width / boardWidth * 100}%`, height:`${zone.height / boardHeight * 100}%` }} onPointerDown={(event) => beginZoneDrag(event, zone)} onFocus={() => setFocusedZone(zone.uid)}><strong>{zone.name}</strong><span>{zone.width.toFixed(1)} × {zone.height.toFixed(1)}″</span>{!zoneMode && (["nw","ne","sw","se"] as ZoneCorner[]).map((corner) => <button key={corner} className={`zone-handle ${corner}`} aria-label={`Resize ${zone.name} from ${corner} corner`} title="Drag to resize" onPointerDown={(event) => beginZoneResize(event, zone, corner)} />)}</div>)}
               {zoneDraft && (() => { const zone = normaliseZoneDraft(zoneDraft); return <div className="reserved-zone draft" style={{ left:`${zone.x / boardWidth * 100}%`, top:`${zone.y / boardHeight * 100}%`, width:`${zone.width / boardWidth * 100}%`, height:`${zone.height / boardHeight * 100}%` }}><strong>{zoneName.trim() || "Hangar"}</strong><span>{zone.width.toFixed(1)} × {zone.height.toFixed(1)}″</span></div>; })()}
               {marquee && (() => { const left = Math.min(marquee.startX, marquee.currentX); const top = Math.min(marquee.startY, marquee.currentY); return <div className="selection-marquee" aria-hidden="true" style={{ left:`${left / boardWidth * 100}%`, top:`${top / boardHeight * 100}%`, width:`${Math.abs(marquee.currentX - marquee.startX) / boardWidth * 100}%`, height:`${Math.abs(marquee.currentY - marquee.startY) / boardHeight * 100}%` }} />; })()}
+              {dropPreview && <div className="menu-drop-preview" aria-hidden="true" style={{ left:`${dropPreview.x / boardWidth * 100}%`, top:`${dropPreview.y / boardHeight * 100}%`, width:`${dropPreview.width / boardWidth * 100}%`, height:`${dropPreview.height / boardHeight * 100}%` }} />}
               {pieces.map((piece) => {
                 const def = getDef(piece.defId);
                 const width = piece.rotation === 90 ? def.depth : def.width;
@@ -1135,24 +1176,24 @@ export default function Home() {
         </div>
 
         <aside id="generator-panel" className="inspector panel">
-          <div className="inspector-heading"><p className="eyebrow">{inspectorTab === "palette" ? "Generation studio" : "Board intelligence"}</p><h2>{inspectorTab === "palette" ? "Shape the board" : "Review the layout"}</h2></div>
+          {inspectorTab === "analysis" && <div className="inspector-heading"><p className="eyebrow">Board intelligence</p><h2>Review the layout</h2></div>}
           {inspectorTab === "palette" ? <PalettePanel
-            selectedPiece={selectedPiece} selectedCount={selectedIds.length}
-            placedCount={pieces.length} paletteUsed={paletteUsed} catalogueTotal={catalogueTotal}
-            zoneCount={zones.length} generationPercent={generationPercent} anchor={anchor}
+            paletteUsed={paletteUsed} catalogueTotal={catalogueTotal}
+            shrinkAfterGeneration={shrinkAfterGeneration} anchor={anchor}
             doorTotal={paletteDoorTotal} doorMin={effectiveDoorMin} doorMax={effectiveDoorMax}
             paletteMaker={paletteMaker} paletteLabel={paletteLabel} terrain={catalogueTerrain}
             used={used} limits={limits} heightDefaults={heightDefaults}
-            onSelectedHeightChange={setSelectedHeightMm} onClear={clearPalette}
-            onGenerationPercentChange={setGenerationPercent} onAnchorChange={setAnchor}
+            onClear={clearPalette}
+            onShrinkAfterGenerationChange={setShrinkAfterGeneration} onAnchorChange={setAnchor}
             onDoorMinChange={(min) => setDoorRange((current) => ({ min, max:Math.max(min, current.max) }))}
             onDoorMaxChange={(max) => setDoorRange((current) => ({ min:Math.min(current.min, max), max }))}
-            onGenerate={generateFromPalette} onPlace={addPiece} onQuantityChange={setPaletteQuantity}
-            onPiecePointerDown={(event, defId) => {
-              const nextDrag:PaletteDragState = { defId, x:event.clientX, y:event.clientY, source:"palette" };
-              paletteDragRef.current = nextDrag;
-              setPaletteDrag(nextDrag);
-            }}
+            onGenerate={generateFromPalette} onPlace={(defId) => {
+              if (suppressMenuClickRef.current) { suppressMenuClickRef.current = false; return; }
+              addPiece(defId);
+            }} onQuantityChange={setPaletteQuantity}
+            onPiecePointerDown={(event, defId) => beginMenuPointerDrag(event, defId, "palette")}
+            onPiecePointerMove={moveMenuPointerDrag}
+            onPiecePointerUp={finishMenuPointerDrag}
           /> : <AnalysisPanel
             pieces={pieces} selectedPiece={selectedPiece} selectedCount={selectedIds.length}
             paletteUsed={paletteUsed} catalogueTotal={catalogueTotal}
@@ -1177,7 +1218,6 @@ export default function Home() {
           />}
         </aside>
       </section>
-      {paletteDrag && <div className="drag-preview" style={{ left:paletteDrag.x, top:paletteDrag.y }}><span className={pieceIconClass(getDef(paletteDrag.defId))}><i /></span><small>{getDef(paletteDrag.defId).shortName}</small></div>}
     </main>
   );
 }

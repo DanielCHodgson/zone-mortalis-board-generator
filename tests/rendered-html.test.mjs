@@ -33,13 +33,15 @@ test("server-renders the Mortalis Architect workspace", async () => {
   assert.match(html, /Terrain layout studio/);
   assert.match(html, /Workspace shortcuts/);
   assert.match(html, /Browse pieces/);
-  assert.match(html, /Shape the board/);
+  assert.doesNotMatch(html, /Generation studio|Shape the board/);
   assert.match(html, /Close terrain library/);
   assert.doesNotMatch(html, /aria-label="Right panel view"/);
   assert.match(html, /Boarding Actions Terrain Set/);
   assert.match(html, /Generator palette/);
   assert.match(html, /Available pieces|Selected kit/);
   assert.match(html, /Generate from palette/);
+  assert.match(html, /Shrink board after generation/);
+  assert.match(html, /Trim unused board margin after each generated layout/);
   assert.ok(html.indexOf("Selected kit") < html.indexOf('<h2 id="generator-palette-heading">Generator palette</h2>'), "kit pieces should appear before layout inventory");
   assert.doesNotMatch(html, /Generate uses only this persistent list/);
   // The default board is one Boarding Actions card board, 704 x 607 mm, which is
@@ -85,7 +87,10 @@ test("ships the complete first-pass catalogues and planner tools", async () => {
   assert.match(page, /PALETTE_STORAGE_KEY/);
   assert.match(page, /mergeGeneratedSystems/);
   assert.match(page, /compatible cross-kit wall joins enabled/);
-  assert.match(page, /palette-selection-summary/);
+  assert.match(page, /board-selection-summary/);
+  assert.match(page, /application\/x-mortalis-terrain/);
+  assert.match(page, /menu-drop-preview/);
+  assert.doesNotMatch(page, /drag-pickup/);
   assert.match(page, /Eberleg terrain legend/);
   assert.match(page, /print-at-home proxy for Games Workshop’s Zone Mortalis terrain/);
   assert.doesNotMatch(page, /The planner scores 24 connector-node layouts/);

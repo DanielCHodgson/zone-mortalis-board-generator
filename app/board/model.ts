@@ -16,6 +16,8 @@ export type Rect = { x:number; y:number; width:number; height:number };
 export type Point = { x:number; y:number };
 export type ZoneDraft = { startX:number; startY:number; currentX:number; currentY:number };
 export type ConnectionCandidate = { dx:number; dy:number; rotation?:Rotation };
+export type BoardSize = { width:number; height:number };
+export type FittedLayout = { pieces:PlacedPiece[]; zones:ReservedZone[]; size:BoardSize };
 
 export const clamp = (value:number, min:number, max:number) =>
   Number.isFinite(value) ? Math.min(max, Math.max(min, value)) : min;
@@ -37,6 +39,33 @@ export const boundsOf = (rects:Rect[]):Rect | null => {
   const right = Math.max(...rects.map((rect) => rect.x + rect.width));
   const bottom = Math.max(...rects.map((rect) => rect.y + rect.height));
   return { x:left, y:top, width:right - left, height:bottom - top };
+};
+
+/**
+ * Resize a board around real piece footprints and translate the complete layout as
+ * one unit. Keeping this pure lets manual and post-generation fitting share exactly
+ * the same geometry instead of racing React state updates.
+ */
+export const fitLayoutToContent = (
+  pieces:PlacedPiece[], zones:ReservedZone[], minimum:number, maximum:BoardSize,
+):FittedLayout | null => {
+  const content = boundsOf([
+    ...pieces.map(pieceRect),
+    ...zones.map(({ x, y, width, height }) => ({ x, y, width, height })),
+  ]);
+  if (!content) return null;
+
+  const size = {
+    width:clamp(Math.ceil(content.width * 10) / 10, minimum, maximum.width),
+    height:clamp(Math.ceil(content.height * 10) / 10, minimum, maximum.height),
+  };
+  const offsetX = (size.width - content.width) / 2 - content.x;
+  const offsetY = (size.height - content.height) / 2 - content.y;
+  return {
+    pieces:pieces.map((piece) => ({ ...piece, x:piece.x + offsetX, y:piece.y + offsetY })),
+    zones:zones.map((zone) => ({ ...zone, x:zone.x + offsetX, y:zone.y + offsetY })),
+    size,
+  };
 };
 
 export const normaliseZoneDraft = (draft:ZoneDraft):Rect => ({

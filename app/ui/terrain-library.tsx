@@ -17,12 +17,14 @@ type TerrainLibraryProps = {
   onAddStock:(defId:string, amount:number) => void;
   onPlaceOne:(defId:string, amount:number) => void;
   onPiecePointerDown:(event:React.PointerEvent<HTMLDivElement>, defId:string, amount:number) => void;
+  onPiecePointerMove:(event:React.PointerEvent<HTMLDivElement>) => void;
+  onPiecePointerUp:(event:React.PointerEvent<HTMLDivElement>) => void;
 };
 
 export function TerrainLibrary({
   activeCatalogue, activeKitId, activeKit, manufacturerKits, pieces, kitTotal, addAmounts,
   onClose, onManufacturerChange, onKitChange, onAddKit, onAmountChange, onAddStock,
-  onPlaceOne, onPiecePointerDown,
+  onPlaceOne, onPiecePointerDown, onPiecePointerMove, onPiecePointerUp,
 }:TerrainLibraryProps) {
   return <aside id="terrain-library" className="catalogue panel">
     <div className="catalogue-heading"><div><p className="eyebrow">Terrain library</p><h2>Browse pieces</h2></div><button aria-label="Close terrain library" title="Close terrain library" onClick={onClose}>×</button></div>
@@ -43,7 +45,7 @@ export function TerrainLibrary({
           return <div className="kit-piece-row" key={def.id} onPointerDown={(event) => {
             if ((event.target as HTMLElement).closest("input, button")) return;
             onPiecePointerDown(event, def.id, amount);
-          }}>
+          }} onPointerMove={onPiecePointerMove} onPointerUp={onPiecePointerUp} onPointerCancel={onPiecePointerUp}>
             <span className={pieceIconClass(def)}><i /></span>
             <span className="piece-copy"><strong>{def.shortName}</strong><small>{def.note} · kit includes {activeKit.inventory[def.id]}</small></span>
             <div className="kit-piece-actions">

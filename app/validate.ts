@@ -20,7 +20,7 @@
 
 import {
   cellInside, cellKey, cellRegions, edgeKey, edgeRuns, internalEdgeCount, isBorderEdge,
-  nodeKey, nodesOfEdge, passable, pitchIsBuildable, sightLines,
+  nodeKey, nodesOfEdge, passable, sightLines,
   type LatticeCell, type LatticeEdge,
 } from "./lattice.ts";
 import type { DeckPlan } from "./deckplan.ts";
@@ -396,11 +396,17 @@ export const invariants = ({ plan, pieces, defs, inventory, boardWidth, boardHei
     const kind = defs.get(piece.defId)?.kind;
     return kind === "wall" || kind === "door";
   });
-  structural.forEach((piece, index) => {
+  // Check every physical footprint, including supports. Checking panels alone let
+  // half of every perimeter column hang outside the board while all invariants
+  // still passed.
+  pieces.forEach((piece) => {
     const rect = rectOf(piece, defs);
     if (rect.x < -.01 || rect.y < -.01 || rect.x + rect.width > boardWidth + .01 || rect.y + rect.height > boardHeight + .01) {
       failures.push({ rule:"bounds", detail:`${piece.defId} at ${rect.x.toFixed(2)},${rect.y.toFixed(2)} leaves the board` });
     }
+  });
+  structural.forEach((piece, index) => {
+    const rect = rectOf(piece, defs);
     structural.slice(index + 1).forEach((other) => {
       if (panelsClash(rect, rectOf(other, defs))) {
         failures.push({ rule:"overlap", detail:`${piece.defId} overlaps ${other.defId} at ${rect.x.toFixed(2)},${rect.y.toFixed(2)}` });
@@ -479,7 +485,14 @@ export const invariants = ({ plan, pieces, defs, inventory, boardWidth, boardHei
     // its ends land on something.
     if (def.halfEdge) return false;
     const span = def.cells * pitch;
-    if (def.straddles) return !pitchIsBuildable(def.length, span, support, def.jointSlack);
+    if (def.straddles) {
+      // Generated schematics calibrate a nominal board by a few millimetres so the
+      // real row count fits between complete perimeter supports. Catalogue lengths
+      // remain untouched; this small drawing tolerance is allowed at the joint.
+      const calibration = .12; // 3.05 mm across the complete placed panel.
+      return def.length > span + calibration
+        || span > def.length + support + (def.jointSlack ?? 0) + calibration;
+    }
     return def.length > span - support + .04;
   });
   if (misseated.length) {

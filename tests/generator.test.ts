@@ -158,6 +158,26 @@ test("Zone Mortalis and Deadbolt use measured six-inch-class bays, not two-inch 
   assert.equal(deadbolt.cells.get("drd-double-wall"), 1);
 });
 
+test("fill layouts keep every rendered footprint inside a 4 by 4 board", () => {
+  for (const catalogue of ["boarding", "mortalis", "deathray", "eberleg"] as const) {
+    const inventory = Object.fromEntries(TERRAIN
+      .filter((def) => def.catalogue === catalogue && def.kind !== "scatter")
+      .map((def) => [def.id, def.limit * 4]));
+    for (let seed = 0; seed < 8; seed++) {
+      const { report } = run({ width:48, height:48, catalogue, inventory, anchor:"fill", seed });
+      assert.ok(report.plan, `${catalogue} seed ${seed}: nothing built — ${report.note}`);
+      report.pieces.forEach((piece) => {
+        const def = TERRAIN.find((candidate) => candidate.id === piece.defId)!;
+        const width = piece.rotation === 90 ? def.depth : def.width;
+        const height = piece.rotation === 90 ? def.width : def.depth;
+        assert.ok(piece.x >= -.01 && piece.y >= -.01
+          && piece.x + width <= 48.01 && piece.y + height <= 48.01,
+        `${catalogue} seed ${seed}: ${def.shortName} leaves the board at ${piece.x.toFixed(2)},${piece.y.toFixed(2)}`);
+      });
+    }
+  }
+});
+
 test("Zone Mortalis spends solid walls before doors across a 50-board batch", () => {
   const inventory = Object.fromEntries(TERRAIN
     .filter((def) => def.catalogue === "mortalis" && def.kind !== "scatter")

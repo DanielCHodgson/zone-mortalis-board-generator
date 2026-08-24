@@ -18,7 +18,6 @@
 
 import {
   cellsOfEdge, edgeKey, internalEdgeCount, makeLattice, nodeWorld, columnBite,
-  pitchIsBuildable,
   type Lattice, type LatticeEdge,
 } from "./lattice.ts";
 import { buildDeckPlan, renderPlan, type DeckPlan, type Rect } from "./deckplan.ts";
@@ -412,15 +411,13 @@ const sizeLattice = (
   boardWidth:number, boardHeight:number, pitch:number, support:number,
   capacity:number, targetDensity:number, anchor:Anchor, fixedPitchFill=false,
 ) => {
-  // A lattice flush to the board edge would centre a column on the edge itself and
-  // hang half of it over the side, so a margin is kept for the complex to be inset
-  // into. Half a column, not a whole one: the real Gallowdark card board leaves a
-  // 12.5 mm border against a 14 mm half-column, so its own corner columns overhang
-  // the print slightly. Demanding a full column here is 1.5 mm stricter than Games
-  // Workshop and costs a whole square off both axes — a 7 x 6 card board came out
-  // 6 x 5.
-  const maxCols = Math.floor((boardWidth - support / 2) / pitch);
-  const maxRows = Math.floor((boardHeight - support / 2) / pitch);
+  // Cell counts describe distances BETWEEN support centres. The complete physical
+  // footprint also includes half a support beyond the first and last centre. Keep
+  // that full support inside the board; putting a centre directly on the boundary
+  // is what made edge-seeking layouts visibly overflow on every side.
+  const margin = fixedPitchFill ? support : support / 2;
+  const maxCols = Math.floor((boardWidth - margin) / pitch);
+  const maxRows = Math.floor((boardHeight - margin) / pitch);
   if (maxCols < 2 || maxRows < 2) return null;
 
   // Filling the table is the one mode that sizes to the BOARD instead of to the
@@ -455,7 +452,7 @@ const sizeLattice = (
     // Rounding `side / pitch` chose 11 Iron cells on 48", then the two connector
     // halves made the terrain 3.34" too wide — nearly a wall end off each side.
     const fit = (side:number) => fixedPitchFill
-      ? Math.max(2, Math.round((side - support) / pitch))
+      ? Math.max(2, Math.floor((side - support) / pitch))
       : Math.floor((side + support / 2) / pitch);
     const fillCols = Math.max(2, fit(boardWidth));
     const fillRows = Math.max(2, fit(boardHeight));
@@ -773,7 +770,12 @@ export const generate = (input:GenerateInput):GenerateReport => {
     Math.max(0, boardHeight - roughRows * kit.pitch),
   );
 
-  const fixedPitchFill = kit.buildDefs.some((def) => (def.kind === "wall" || def.kind === "door") && !def.straddles);
+  // Catalogue measurements remain the source of labels and inventory data, while
+  // generated straddling and hub layouts may absorb a few millimetres across each
+  // bay to preserve the real-world row count on a nominal board. Butt-jointed
+  // panels cannot do that without opening a visible gap between connectors.
+  const fixedPitchFill = kit.buildDefs.some((def) =>
+    (def.kind === "wall" || def.kind === "door") && !def.straddles);
   const sized = sizeLattice(boardWidth, boardHeight, kit.pitch, kit.support, spendable, reference.density, anchor, fixedPitchFill);
   if (!sized) return empty("the board is smaller than one grid square");
 
@@ -864,7 +866,10 @@ export const generate = (input:GenerateInput):GenerateReport => {
   // below backs them off when the columns cannot bracket them.
   let spurBudget = kit.capacity;
   let best:{ pieces:BuiltPiece[]; metrics:Metrics; lattice:Lattice; plan:DeckPlan; score:number } | null = null;
-  const maxSight = Math.max(3, Math.round(reference.longestSight + 2));
+  // A board-spanning fill lattice has one more bay than its inset counterpart on
+  // several presets. Permit that single extra bay so the generator keeps the real
+  // row count instead of shrinking solely to satisfy a cell-count metric.
+  const maxSight = Math.max(3, Math.round(reference.longestSight + (anchor === "fill" ? 3 : 2)));
 
   const shrink = () => {
     if (cols >= rows && cols > 3) cols--;
@@ -901,24 +906,21 @@ export const generate = (input:GenerateInput):GenerateReport => {
   for (let pass = 0; pass < passes && !best; pass++) {
   if (pass > 0 && !shrink()) break;
   for (let attempt = 0; attempt < candidates; attempt++) {
-    // Fill means the OUTERMOST CONNECTOR CENTRES land on the board boundary.
-    // Keeping the catalogue's nominal pitch on a board that does not divide by
-    // 97 mm left a visible moat (48" is the common case: 12 cells stopped 2.17"
-    // short). Gallowdark joints have physical adjustment: an 80 mm short panel
-    // slots into 28 mm columns, so pitches from 80 through 108 mm remain valid.
-    // Spread each axis only when every owned panel still reaches its supports;
-    // otherwise retain the measured pitch rather than invent an unbuildable board.
-    const canUsePitch = (pitch:number) => !fixedPitchFill && kit.buildDefs
-      .filter((def) => def.kind === "wall" || def.kind === "door")
-      .every((def) => pitchIsBuildable(def.length / def.cells, pitch, kit.support, def.jointSlack));
-    const spreadX = boardWidth / cols;
-    const spreadY = boardHeight / rows;
-    const pitchX = anchor === "fill" && canUsePitch(spreadX) ? spreadX : kit.pitch;
-    const pitchY = anchor === "fill" && canUsePitch(spreadY) ? spreadY : kit.pitch;
+    // Fill means the OUTER FACES of the perimeter supports approach the board edge,
+    // not their centres. The usable centre span is therefore the board dimension
+    // minus one complete support. Straddling joints may absorb the small remainder;
+    // fixed-pitch systems keep their measured pitch and are centred with a margin.
+    const spreadX = (boardWidth - kit.support) / cols;
+    const spreadY = (boardHeight - kit.support) / rows;
+    const nominalOverflowsX = cols * kit.pitch + kit.support > boardWidth;
+    const nominalOverflowsY = rows * kit.pitch + kit.support > boardHeight;
+    const calibrateToBoard = !fixedPitchFill && (zones.length === 0 || catalogue === "boarding");
+    const pitchX = calibrateToBoard && (anchor === "fill" || nominalOverflowsX) ? spreadX : kit.pitch;
+    const pitchY = calibrateToBoard && (anchor === "fill" || nominalOverflowsY) ? spreadY : kit.pitch;
     const gridWidth = cols * pitchX;
     const gridHeight = rows * pitchY;
-    const slackX = anchor === "fill" ? boardWidth - gridWidth : Math.max(0, boardWidth - gridWidth);
-    const slackY = anchor === "fill" ? boardHeight - gridHeight : Math.max(0, boardHeight - gridHeight);
+    const slackX = Math.max(0, boardWidth - gridWidth);
+    const slackY = Math.max(0, boardHeight - gridHeight);
     const inset = Math.max(0, Math.min(kit.support / 2, slackX / 2, slackY / 2));
     // Where zones exist, the complex is nudged to CONTAIN them rather than to avoid
     // them. A hangar or command room drawn on the board is meant to be a room in the
