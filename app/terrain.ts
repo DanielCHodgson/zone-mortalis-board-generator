@@ -208,9 +208,9 @@ export const PALETTE_STORAGE_KEY = "mortalis-architect-terrain-palette-v4";
 export const BOARD_STORAGE_KEY = "mortalis-architect-board-size-v1";
 export const APPEARANCE_STORAGE_KEY = "mortalis-architect-appearance-v1";
 
-/** Light or dark for the interface as a whole. Separate from the board STYLE,
- *  which describes what the terrain is made of, not how the app is lit. */
-export type Appearance = "light" | "dark";
+/** The interface colour palette. Separate from the board STYLE, which describes
+ *  what the terrain is made of, not how the app is lit. */
+export type Appearance = "taupe" | "dark" | "light";
 
 /**
  * `joint` is the assembly model, and it is the only structural difference between

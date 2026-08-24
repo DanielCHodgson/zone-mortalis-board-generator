@@ -31,6 +31,11 @@ test("server-renders the Mortalis Architect workspace", async () => {
   const html = await response.text();
   assert.match(html, /<title>Mortalis Architect<\/title>/i);
   assert.match(html, /Wargaming layout utility/);
+  assert.match(html, /Workspace shortcuts/);
+  assert.match(html, /Browse pieces/);
+  assert.match(html, /Shape the board/);
+  assert.match(html, /Close terrain library/);
+  assert.doesNotMatch(html, /aria-label="Right panel view"/);
   assert.match(html, /Boarding Actions Terrain Set/);
   assert.match(html, /Current generator palette/);
   assert.match(html, /Available pieces|Selected kit/);
@@ -90,4 +95,19 @@ test("keeps the desktop workspace fixed while panels scroll independently", asyn
   assert.match(css, /\.inspector\s*\{[^}]*overflow:auto/s);
   assert.match(css, /:focus-visible/);
   assert.match(css, /prefers-reduced-motion:reduce/);
+  assert.match(css, /\.workspace-rail/);
+  assert.match(css, /\.stage-heading/);
+  assert.match(css, /\.workspace\.library-closed/);
+});
+
+test("ships three persistent interface colour palettes", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const css = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
+
+  assert.match(page, /\["taupe", "dark", "light"\]/);
+  assert.match(page, /APPEARANCE_STORAGE_KEY/);
+  assert.doesNotMatch(page, /scrollIntoView/);
+  assert.match(css, /data-appearance="taupe"/);
+  assert.match(css, /data-appearance="dark"/);
+  assert.match(css, /--paper:#f5f6f4/);
 });

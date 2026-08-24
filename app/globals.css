@@ -3,88 +3,107 @@
 /* ---------------------------------------------------------------------------
    Appearance tokens.
 
-   Two complete palettes, and every colour in this file comes from one of them —
+   Three complete palettes, and every colour in this file comes from one of them —
    nothing is declared straight into a media query or a [data-appearance] block,
    because a colour whose only definition sits behind an attribute never applies
    when the attribute is absent, and the page then renders one theme's text on the
    other theme's ground.
 
-   Light is the drafting sheet: paper, near-black terrain, rust accent, and the
-   board prints exactly as drawn.
-   Dark is the instrument: slate viewport, light terrain, brass accent — the way
-   every CAD viewport is set, and the reason a grey wall on a grey deck stops being
-   impossible to read.
+   Light is the drafting sheet: white working surfaces, near-black terrain and a
+   restrained rust accent. Dark is the neutral instrument: black and graphite with
+   a warm metal accent. Taupe is the expressive workspace: high-contrast charcoal,
+   cream terrain and the chosen taupe palette.
 
    Three states, not two: an explicit choice stamps data-appearance, and the
    default "system" setting stamps nothing at all.
    --------------------------------------------------------------------------- */
 :root {
-  --ink:#141b19; --ink-2:#33403a; --muted:#5f6c66;
-  --paper:#eef0ec; --panel:#fbfcf9; --surface:#ffffff; --sunken:#f0f2ee;
-  --line:#c9d1cb; --line-soft:#e4e9e5; --line-strong:#9aa5a0;
-  --accent:#9c4a2f; --accent-soft:#f7ece7; --accent-ink:#7a3a24;
-  --on-ink:#fbfcf9; --hover:#e9ece8;
+  --ink:#17191c; --ink-2:#34383d; --muted:#687078;
+  --paper:#f5f6f4; --panel:#ffffff; --surface:#ffffff; --sunken:#eef0ed;
+  --line:#cdd2cf; --line-soft:#e5e8e6; --line-strong:#9ea6a2;
+  --accent:#9a643f; --accent-soft:#f4eae1; --accent-ink:#70452b;
+  --on-ink:#ffffff; --hover:#f0f2ef;
   --warn:#6f5427; --warn-bg:#f8f2e4; --warn-line:#c6a867;
   --danger:#8a402c; --danger-bg:#f6ebe6;
-  --focus-halo:#ffffff; --focus-ring:#8f3f27;
+  --focus-halo:#ffffff; --focus-ring:#8c5837;
   /* The board and the pieces on it. Terrain is dark on a mid-grey deck here, and
      light on a dark deck in the other palette, so a layout reads either way. */
-  --board-industrial:#8c938e; --board-gothic:#626967; --board-desert:#b9aa8b;
-  --board-rule:rgba(29,38,35,.2); --board-rule-light:rgba(240,242,237,.09);
+  --board-industrial:#858b88; --board-gothic:#626866; --board-desert:#b8a98e;
+  --board-rule:rgba(23,25,28,.22); --board-rule-light:rgba(255,255,255,.12);
   --board-inner:rgba(255,255,255,.12);
-  --wall:#3d4844; --wall-line:#222b28; --wall-detail:rgba(220,225,220,.18);
-  --door:#7d4b39; --door-void:#252d2a; --door-frame:#bd7152;
-  --pillar:#26302c; --pillar-line:#d1d5cf;
-  --connector:#34413c; --end:#56615c;
-  --scatter:#4c6f66; --scatter-line:#22322e;
-  --piece-shadow:rgba(15,20,18,.36);
-  --board-mark:rgba(240,245,241,.58);
+  --wall:#3b4044; --wall-line:#1d2124; --wall-detail:rgba(235,238,235,.20);
+  --door:#85513a; --door-void:#202427; --door-frame:#c47a58;
+  --pillar:#252a2d; --pillar-line:#d9ddda;
+  --connector:#343a3d; --end:#59605f;
+  --scatter:#4b6d65; --scatter-line:#21322e;
+  --piece-shadow:rgba(12,14,15,.32);
+  --board-mark:rgba(250,252,250,.62);
 }
 @media (prefers-color-scheme:dark) {
-  :root:not([data-appearance="light"]) {
-    --ink:#e7ece8; --ink-2:#b6c2bb; --muted:#8a978f;
-    --paper:#141b19; --panel:#1b2320; --surface:#212a26; --sunken:#171e1c;
-    --line:#33403a; --line-soft:#27312d; --line-strong:#4c5b54;
-    --accent:#c9922f; --accent-soft:#2a2519; --accent-ink:#e0ae55;
-    --on-ink:#141b19; --hover:#26302c;
-    --warn:#d9b978; --warn-bg:#241f14; --warn-line:#6d5a30;
-    --danger:#d98a68; --danger-bg:#2b1d18;
-    --focus-halo:#141b19; --focus-ring:#e0ae55;
-    --board-industrial:#454e4a; --board-gothic:#333938; --board-desert:#6b6252;
-    --board-rule:rgba(0,0,0,.28); --board-rule-light:rgba(225,232,226,.07);
+  :root:not([data-appearance]) {
+    --ink:#f3f4f5; --ink-2:#c5c9ce; --muted:#939aa3;
+    --paper:#0e1013; --panel:#16191e; --surface:#1d2127; --sunken:#111419;
+    --line:#343a43; --line-soft:#252a31; --line-strong:#535b66;
+    --accent:#c7a87a; --accent-soft:#2c261e; --accent-ink:#e2c89f;
+    --on-ink:#101216; --hover:#242930;
+    --warn:#dfbd7e; --warn-bg:#282116; --warn-line:#715b32;
+    --danger:#e28c72; --danger-bg:#2d1d19;
+    --focus-halo:#0e1013; --focus-ring:#d7b98d;
+    --board-industrial:#3a4048; --board-gothic:#292e34; --board-desert:#655c4d;
+    --board-rule:rgba(0,0,0,.34); --board-rule-light:rgba(240,243,246,.09);
     --board-inner:rgba(255,255,255,.09);
-    --wall:#c3ccc5; --wall-line:#eef2ee; --wall-detail:rgba(30,38,34,.24);
-    --door:#c9922f; --door-void:#33290f; --door-frame:#f0d9a2;
-    --pillar:#e5eae5; --pillar-line:#4a564f;
-    --connector:#d3dad4; --end:#9aa6a0;
-    --scatter:#6fae9f; --scatter-line:#1d2b27;
+    --wall:#d9dde1; --wall-line:#f7f8f9; --wall-detail:rgba(29,33,39,.28);
+    --door:#c7a87a; --door-void:#282116; --door-frame:#f0d8b2;
+    --pillar:#f0f2f3; --pillar-line:#4e5660;
+    --connector:#d0d4d8; --end:#9ca3ab;
+    --scatter:#7d9f98; --scatter-line:#263b37;
     --piece-shadow:rgba(0,0,0,.45);
-    --board-mark:rgba(214,224,217,.5);
+    --board-mark:rgba(230,234,238,.56);
   }
 }
 :root[data-appearance="dark"] {
-  --ink:#e7ece8; --ink-2:#b6c2bb; --muted:#8a978f;
-  --paper:#141b19; --panel:#1b2320; --surface:#212a26; --sunken:#171e1c;
-  --line:#33403a; --line-soft:#27312d; --line-strong:#4c5b54;
-  --accent:#c9922f; --accent-soft:#2a2519; --accent-ink:#e0ae55;
-  --on-ink:#141b19; --hover:#26302c;
-  --warn:#d9b978; --warn-bg:#241f14; --warn-line:#6d5a30;
-  --danger:#d98a68; --danger-bg:#2b1d18;
-  --focus-halo:#141b19; --focus-ring:#e0ae55;
-  --board-industrial:#454e4a; --board-gothic:#333938; --board-desert:#6b6252;
-  --board-rule:rgba(0,0,0,.28); --board-rule-light:rgba(225,232,226,.07);
+  --ink:#f3f4f5; --ink-2:#c5c9ce; --muted:#939aa3;
+  --paper:#0e1013; --panel:#16191e; --surface:#1d2127; --sunken:#111419;
+  --line:#343a43; --line-soft:#252a31; --line-strong:#535b66;
+  --accent:#c7a87a; --accent-soft:#2c261e; --accent-ink:#e2c89f;
+  --on-ink:#101216; --hover:#242930;
+  --warn:#dfbd7e; --warn-bg:#282116; --warn-line:#715b32;
+  --danger:#e28c72; --danger-bg:#2d1d19;
+  --focus-halo:#0e1013; --focus-ring:#d7b98d;
+  --board-industrial:#3a4048; --board-gothic:#292e34; --board-desert:#655c4d;
+  --board-rule:rgba(0,0,0,.34); --board-rule-light:rgba(240,243,246,.09);
   --board-inner:rgba(255,255,255,.09);
-  --wall:#c3ccc5; --wall-line:#eef2ee; --wall-detail:rgba(30,38,34,.24);
-  --door:#c9922f; --door-void:#33290f; --door-frame:#f0d9a2;
-  --pillar:#e5eae5; --pillar-line:#4a564f;
-  --connector:#d3dad4; --end:#9aa6a0;
-  --scatter:#6fae9f; --scatter-line:#1d2b27;
+  --wall:#d9dde1; --wall-line:#f7f8f9; --wall-detail:rgba(29,33,39,.28);
+  --door:#c7a87a; --door-void:#282116; --door-frame:#f0d8b2;
+  --pillar:#f0f2f3; --pillar-line:#4e5660;
+  --connector:#d0d4d8; --end:#9ca3ab;
+  --scatter:#7d9f98; --scatter-line:#263b37;
   --piece-shadow:rgba(0,0,0,.45);
-  --board-mark:rgba(214,224,217,.5);
+  --board-mark:rgba(230,234,238,.56);
+}
+:root[data-appearance="taupe"] {
+  --ink:#f6ebd9; --ink-2:#dfd0b8; --muted:#c0b4a3;
+  --paper:#171c23; --panel:#2c323a; --surface:#393e46; --sunken:#222831;
+  --line:#59616c; --line-soft:#414851; --line-strong:#948979;
+  --accent:#dfd0b8; --accent-soft:#46484a; --accent-ink:#f6ebd9;
+  --on-ink:#222831; --hover:#393e46;
+  --warn:#e0c28f; --warn-bg:#352f27; --warn-line:#8f7653;
+  --danger:#efa087; --danger-bg:#3a2727;
+  --focus-halo:#171c23; --focus-ring:#dfd0b8;
+  --board-industrial:#3d444d; --board-gothic:#2b3038; --board-desert:#665c4c;
+  --board-rule:rgba(10,13,17,.6); --board-rule-light:rgba(223,208,184,.15);
+  --board-inner:rgba(255,255,255,.1);
+  --wall:#f3e7d4; --wall-line:#fffaf1; --wall-detail:rgba(57,62,70,.3);
+  --door:#c4a87f; --door-void:#222831; --door-frame:#f2dfc2;
+  --pillar:#f6ebd9; --pillar-line:#59616c;
+  --connector:#dfd0b8; --end:#a99d8c;
+  --scatter:#889b91; --scatter-line:#34423d;
+  --piece-shadow:rgba(0,0,0,.48);
+  --board-mark:rgba(246,235,217,.58);
 }
 :root { color-scheme:light; }
-:root[data-appearance="dark"] { color-scheme:dark; }
-@media (prefers-color-scheme:dark) { :root:not([data-appearance="light"]) { color-scheme:dark; } }
+:root[data-appearance="dark"],:root[data-appearance="taupe"] { color-scheme:dark; }
+@media (prefers-color-scheme:dark) { :root:not([data-appearance]) { color-scheme:dark; } }
 * { box-sizing:border-box; }
 html { min-width:320px; height:100%; }
 body { font-variant-numeric:tabular-nums; min-height:100%; margin:0; overflow:hidden; background:var(--paper); color:var(--ink); font-family:var(--font-geist-sans, ui-sans-serif),system-ui,-apple-system,sans-serif; font-size:15px; }
@@ -713,8 +732,8 @@ kbd { padding-left:4px; color:var(--muted); font:11px var(--font-geist-mono, ui-
   .kit-caveat { display:none; }
 }
 
-/* Appearance toggle. Two states, not three: the app follows the operating system
-   until the user picks, and after that the pick is what it remembers. */
+/* The first visit follows the operating system; an explicit palette choice is
+   remembered from then on. */
 .appearance-switch { display:flex; gap:2px; padding:2px; border:1px solid var(--line); border-radius:4px; background:var(--sunken); }
 .appearance-switch button { min-height:28px; padding:5px 10px; border-radius:2px; background:transparent; color:var(--muted); font:600 11px var(--font-geist-mono, ui-monospace),monospace; letter-spacing:.09em; text-transform:uppercase; }
 .appearance-switch button:hover { color:var(--ink); }
@@ -725,3 +744,110 @@ kbd { padding-left:4px; color:var(--muted); font:11px var(--font-geist-mono, ui-
    readings next to it than by eye alone. */
 .metrics-strip { flex:0 0 auto; display:flex; flex-wrap:wrap; gap:4px 20px; align-items:center; padding:8px 2px 7px 17px; border-top:1px solid var(--line-soft); color:var(--muted); font:500 12px var(--font-geist-mono, ui-monospace),monospace; letter-spacing:.02em; }
 .metrics-strip strong { color:var(--ink); font-weight:600; }
+
+/* ---------------------------------------------------------------------------
+   Full workspace shell.
+
+   The board is the product, so the redesign gives it a permanent editing stage
+   between a terrain library and a generation studio. The rail is deliberately
+   narrow: it exposes the app's major areas without stealing working width from
+   the board. These rules sit after the legacy responsive layer so the shell is
+   one coherent system rather than another cosmetic skin over three boxes.
+   --------------------------------------------------------------------------- */
+.app-shell { padding:10px 12px 12px; background:var(--paper); }
+.topbar { flex:0 0 72px; min-height:72px; padding:9px 13px; gap:18px; justify-content:flex-start; border:1px solid var(--line-soft); border-bottom-color:var(--line); border-radius:14px 14px 0 0; background:var(--panel); }
+.app-brand { min-width:228px; }
+.brand-mark { width:40px; height:40px; border-radius:11px; background:var(--accent); color:var(--on-ink); box-shadow:0 8px 20px color-mix(in srgb,var(--piece-shadow) 55%,transparent); }
+.app-brand h1 { font-size:20px; }
+.app-brand p { color:var(--muted); font-size:10px; letter-spacing:.08em; text-transform:uppercase; }
+.project-summary { min-width:220px; padding:6px 9px; display:flex; align-items:center; gap:9px; border-left:1px solid var(--line-soft); }
+.project-summary-icon { width:32px; height:32px; display:grid; place-items:center; border-radius:8px; background:var(--sunken); color:var(--accent-ink); }
+.project-summary > span:last-child { min-width:0; display:grid; gap:2px; }
+.project-summary small { color:var(--muted); font-size:10px; font-weight:650; letter-spacing:.04em; text-transform:uppercase; }
+.project-summary strong { max-width:200px; overflow:hidden; color:var(--ink); font-size:12px; text-overflow:ellipsis; white-space:nowrap; }
+.top-actions { flex:1; gap:7px; }
+.appearance-switch { margin-left:auto; }
+.appearance-switch button { min-height:32px; }
+.board-size-control span { display:none; }
+.board-size-control select { min-width:178px; }
+.workspace { flex:1; min-height:0; grid-template-columns:62px 286px minmax(440px,1fr) 320px; gap:0; padding-top:0; overflow:hidden; border:1px solid var(--line-soft); border-top:0; border-radius:0 0 14px 14px; background:var(--panel); }
+.workspace.library-closed { grid-template-columns:62px minmax(440px,1fr) 320px; }
+.workspace.library-closed .catalogue { display:none; }
+.workspace-rail { min-height:0; padding:10px 7px; display:flex; flex-direction:column; justify-content:space-between; border-right:1px solid var(--line-soft); background:var(--surface); }
+.workspace-rail > div { display:grid; gap:6px; }
+.workspace-rail button { position:relative; min-height:54px; padding:6px 2px; display:grid; place-items:center; gap:3px; border-radius:9px; background:transparent; color:var(--muted); }
+.workspace-rail button:hover,.workspace-rail button.active { background:var(--accent-soft); color:var(--accent-ink); }
+.workspace-rail button span { font-size:9px; font-weight:700; letter-spacing:.025em; }
+.workspace-rail button em { position:absolute; right:2px; top:2px; min-width:18px; padding:2px 4px; border-radius:9px; background:var(--accent); color:var(--on-ink); font-size:9px; font-style:normal; }
+.panel { border:0; border-radius:0; box-shadow:none; }
+.catalogue,.inspector { height:100%; padding:16px; background:var(--panel); }
+.catalogue { border-right:1px solid var(--line-soft); }
+.inspector { border-left:1px solid var(--line-soft); }
+.catalogue-heading { flex:0 0 auto; padding:1px 2px 13px; display:flex; align-items:flex-start; justify-content:space-between; gap:8px; }
+.catalogue-heading > div { min-width:0; }
+.catalogue-heading h2 { margin:0; color:var(--ink); font-size:17px; letter-spacing:-.025em; }
+.catalogue-heading .eyebrow { margin-bottom:3px; font-size:9px; }
+.catalogue-heading > button { width:28px; height:28px; display:grid; place-items:center; border-radius:7px; background:transparent; color:var(--muted); font-size:20px; line-height:1; }
+.catalogue-heading > button:hover { background:var(--hover); color:var(--ink); }
+.catalogue-selectors { padding:0 0 15px; background:transparent; border-radius:0; }
+.catalogue-selectors label { color:var(--muted); }
+.catalogue-selectors select { background:var(--sunken); }
+.section-heading { align-items:flex-start; }
+.section-heading h2,.inspector-heading h2,.stage-heading h2 { color:var(--ink); font-size:17px; letter-spacing:-.025em; }
+.inspector-heading { flex:0 0 auto; padding:1px 2px 13px; border-bottom:1px solid var(--line-soft); }
+.inspector-heading h2 { margin:0; }
+.inspector-heading .eyebrow,.stage-heading .eyebrow { margin-bottom:3px; font-size:9px; }
+.inspector-tabs { margin:0 0 15px; }
+.kit-piece-row,.palette-row { padding:10px 7px; border:1px solid transparent; border-top-color:var(--line-soft); }
+.kit-piece-row:hover,.palette-row:hover { border-color:var(--line-soft); background:var(--sunken); box-shadow:none; }
+.board-column { background:var(--paper); }
+.stage-heading { flex:0 0 54px; min-height:54px; padding:8px 13px; display:flex; align-items:center; justify-content:space-between; gap:12px; border-bottom:1px solid var(--line-soft); background:var(--panel); }
+.stage-heading > div { display:grid; gap:1px; }
+.stage-heading h2 { margin:0; font-size:14px; text-transform:capitalize; }
+.stage-heading > span { color:var(--muted); font:500 10px var(--font-geist-mono,ui-monospace),monospace; white-space:nowrap; }
+.board-toolbar { min-height:48px; padding:6px 9px; margin:0; border:0; border-bottom:1px solid var(--line-soft); border-radius:0; background:var(--panel); box-shadow:none; }
+.board-toolbar .tool { border-radius:7px; }
+.board-area { background:color-mix(in srgb,var(--sunken) 72%,var(--paper)); }
+.board { box-shadow:0 18px 38px color-mix(in srgb,var(--piece-shadow) 76%,transparent); }
+.metrics-strip { margin:0; padding-inline:15px; border-radius:0; background:var(--panel); }
+.status-line { min-height:27px; padding:7px 15px 0; background:var(--panel); border-top:1px solid var(--line-soft); }
+.palette-selection-summary,.height-settings,.selected-piece-editor { border-color:var(--line-soft); border-radius:8px; }
+.palette-selection-summary { background:var(--sunken); }
+.palette-generation-controls { margin-inline:-2px; }
+.palette-generate { border-radius:8px; }
+
+@media (max-width:1280px) {
+  .project-summary,.board-chip { display:none; }
+  .workspace { grid-template-columns:56px 270px minmax(400px,1fr) 300px; }
+  .workspace.library-closed { grid-template-columns:56px minmax(400px,1fr) 300px; }
+  .workspace-rail { padding-inline:5px; }
+  .board-size-control select { min-width:142px; }
+}
+@media (max-width:1050px) {
+  .app-shell { padding:0 14px 20px; }
+  .topbar { border-width:0 0 1px; border-radius:0; }
+  .workspace { grid-template-columns:280px minmax(0,1fr); overflow:visible; border:0; border-radius:0; background:transparent; }
+  .workspace.library-closed { grid-template-columns:280px minmax(0,1fr); }
+  .workspace.library-closed .catalogue { display:flex; }
+  .workspace-rail { display:none; }
+  .catalogue,.inspector { border:1px solid var(--line-soft); border-radius:10px; }
+  .inspector { grid-column:1/-1; }
+  .stage-heading { border:1px solid var(--line-soft); border-radius:10px 10px 0 0; }
+}
+@media (max-width:810px) {
+  .topbar { gap:10px; }
+  .app-brand { min-width:0; }
+  .workspace { grid-template-columns:1fr; }
+  .workspace.library-closed { grid-template-columns:1fr; }
+  .board-column { grid-row:1; }
+  .catalogue { grid-row:2; }
+  .inspector { grid-row:3; grid-column:auto; }
+  .stage-heading > span { display:none; }
+}
+@media (max-width:620px) {
+  .topbar { align-items:flex-start; }
+  .top-actions { width:100%; justify-content:flex-start; }
+  .appearance-switch { margin-left:0; }
+  .board-size-control { flex:1; }
+  .board-size-control select { width:100%; min-width:0; }
+}

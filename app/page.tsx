@@ -42,12 +42,13 @@ const BOARD_ZOOM_STEPS = [50, 75, 100, 125, 150, 175, 200] as const;
 const EBERLEG_LEGEND = TERRAIN.filter((def) => def.catalogue === "eberleg");
 const pieceIconClass = (def:TerrainDef) => `piece-icon piece-${def.id} ${def.kind} ${def.width > 5 ? "long" : "short"} ${def.visual ? `visual-${def.visual}` : ""}`;
 
-type UiIconName = "brand" | "sun" | "moon" | "download" | "wand" | "pointer" | "zone" | "copy" | "paste" | "duplicate" | "rotate" | "trash" | "grid" | "shrink";
+type UiIconName = "brand" | "sun" | "moon" | "palette" | "download" | "wand" | "pointer" | "zone" | "copy" | "paste" | "duplicate" | "rotate" | "trash" | "grid" | "shrink";
 const UiIcon = ({ name }: { name:UiIconName }) => {
   const paths:Record<UiIconName, React.ReactNode> = {
     brand:<><rect x="3" y="3" width="8" height="8" rx="1" /><rect x="13" y="3" width="8" height="8" rx="1" /><rect x="3" y="13" width="8" height="8" rx="1" /><path d="M13 17h8M17 13v8" /></>,
     sun:<><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" /></>,
     moon:<path d="M20 15.2A8.5 8.5 0 0 1 8.8 4a8.5 8.5 0 1 0 11.2 11.2Z" />,
+    palette:<><path d="M12 3a9 9 0 0 0 0 18h1.5a2.5 2.5 0 0 0 0-5H12a1.5 1.5 0 0 1 0-3h3.5A5.5 5.5 0 0 0 21 7.5C21 4.8 17 3 12 3Z" /><circle cx="7.5" cy="10" r=".8" fill="currentColor" stroke="none" /><circle cx="9.5" cy="6.8" r=".8" fill="currentColor" stroke="none" /><circle cx="14" cy="6.5" r=".8" fill="currentColor" stroke="none" /></>,
     download:<><path d="M12 3v12M7 10l5 5 5-5" /><path d="M4 19h16" /></>,
     wand:<><path d="m4 20 11-11" /><path d="m14 4 1-2 1 2 2 1-2 1-1 2-1-2-2-1 2-1ZM18 12l.7-1.5.8 1.5 1.5.8-1.5.7-.8 1.5-.7-1.5-1.5-.7 1.5-.8Z" /></>,
     pointer:<path d="m5 3 13 9-6 1-3 6Z" />,
@@ -95,6 +96,7 @@ export default function Home() {
   const [smartFit, setSmartFit] = useState(true);
   const [showGrid, setShowGrid] = useState(true);
   const [inspectorTab, setInspectorTab] = useState<"palette" | "analysis">("palette");
+  const [libraryOpen, setLibraryOpen] = useState(true);
   // Spend the whole palette by default. This used to default to 60% and cap at 60%,
   // which made every generated board 40% short of what the box could build — and it
   // was needed back when nothing else stopped the generator cramming terrain in.
@@ -316,7 +318,7 @@ export default function Home() {
     const restoreTimer = window.setTimeout(() => {
       let saved: Appearance | null = null;
       try { saved = window.localStorage.getItem(APPEARANCE_STORAGE_KEY) as Appearance | null; } catch { /* Appearance persistence is optional. */ }
-      if (saved === "light" || saved === "dark") setAppearance(saved);
+      if (saved === "taupe" || saved === "light" || saved === "dark") setAppearance(saved);
       else setAppearance(window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
       setAppearanceReady(true);
     }, 0);
@@ -1463,11 +1465,16 @@ export default function Home() {
       <a className="skip-link" href="#layout-board">Skip to layout board</a>
       <header className="topbar">
         <div className="app-brand"><span className="brand-mark"><UiIcon name="brand" /></span><div><h1>Mortalis Architect</h1><p>Wargaming layout utility</p></div></div>
-        <div className="top-actions"><div className="appearance-switch" role="group" aria-label="Appearance">{(["light", "dark"] as const).map((mode) => <button key={mode} className={appearance === mode ? "active" : ""} aria-label={`${mode} appearance`} aria-pressed={appearance === mode} onClick={() => setAppearance(mode)}><UiIcon name={mode === "light" ? "sun" : "moon"} /><span>{mode}</span></button>)}</div><label className="board-size-control"><span>Board size</span><select aria-label="Board size" value={boardPreset} onChange={(event) => changeBoardSize(event.target.value as BoardPreset)}>{boardPreset === "custom" && <option value="custom">{boardWidth.toFixed(1)}″ × {boardHeight.toFixed(1)}″ · custom</option>}{(Object.entries(BOARD_SIZES) as Array<[BoardPreset, typeof BOARD_SIZES[BoardPreset]]>).map(([value, size]) => <option key={value} value={value}>{size.label}</option>)}</select></label><span className="board-chip">{boardWidth.toFixed(1)} × {boardHeight.toFixed(1)} IN</span><button className="export-action" onClick={exportLayoutPng} disabled={!pieces.length} aria-label="Export layout and piece manifest as PNG"><UiIcon name="download" />Export</button><button className="primary" onClick={generateLayout} disabled={!pieces.length} aria-label="Generate a new layout using every piece currently on the board"><UiIcon name="wand" />Remix board</button></div>
+        <div className="project-summary"><span className="project-summary-icon"><UiIcon name="grid" /></span><span><small>Current board</small><strong>{activeCatalogueMeta.name}</strong></span></div>
+        <div className="top-actions"><div className="appearance-switch" role="group" aria-label="Colour palette">{(["taupe", "dark", "light"] as const).map((mode) => <button key={mode} className={appearance === mode ? "active" : ""} aria-label={`${mode} colour palette`} aria-pressed={appearance === mode} onClick={() => setAppearance(mode)}><UiIcon name={mode === "light" ? "sun" : mode === "dark" ? "moon" : "palette"} /><span>{mode}</span></button>)}</div><label className="board-size-control"><span>Board size</span><select aria-label="Board size" value={boardPreset} onChange={(event) => changeBoardSize(event.target.value as BoardPreset)}>{boardPreset === "custom" && <option value="custom">{boardWidth.toFixed(1)}″ × {boardHeight.toFixed(1)}″ · custom</option>}{(Object.entries(BOARD_SIZES) as Array<[BoardPreset, typeof BOARD_SIZES[BoardPreset]]>).map(([value, size]) => <option key={value} value={value}>{size.label}</option>)}</select></label><span className="board-chip">{boardWidth.toFixed(1)} × {boardHeight.toFixed(1)} IN</span><button className="export-action" onClick={exportLayoutPng} disabled={!pieces.length} aria-label="Export layout and piece manifest as PNG"><UiIcon name="download" />Export</button><button className="primary" onClick={generateLayout} disabled={!pieces.length} aria-label="Generate a new layout using every piece currently on the board"><UiIcon name="wand" />Remix board</button></div>
       </header>
 
-      <section className="workspace">
-        <aside className="catalogue panel">
+      <section className={`workspace ${libraryOpen ? "" : "library-closed"}`}>
+        <nav className="workspace-rail" aria-label="Workspace shortcuts">
+          <div><button className={libraryOpen ? "active" : ""} aria-label="Toggle terrain library" aria-pressed={libraryOpen} title={libraryOpen ? "Close terrain library" : "Open terrain library"} onClick={() => setLibraryOpen((current) => !current)}><UiIcon name="brand" /><span>Library</span></button><button className={inspectorTab === "palette" ? "active" : ""} aria-label="Generator palette" aria-pressed={inspectorTab === "palette"} title="Generator palette" onClick={() => setInspectorTab("palette")}><UiIcon name="palette" /><span>Palette</span><em>{catalogueTotal}</em></button><button className={inspectorTab === "analysis" ? "active" : ""} aria-label="Board analysis" aria-pressed={inspectorTab === "analysis"} title="Board analysis" onClick={() => setInspectorTab("analysis")}><UiIcon name="wand" /><span>Analysis</span></button></div>
+        </nav>
+        <aside id="terrain-library" className="catalogue panel">
+          <div className="catalogue-heading"><div><p className="eyebrow">Terrain library</p><h2>Browse pieces</h2></div><button aria-label="Close terrain library" title="Close terrain library" onClick={() => setLibraryOpen(false)}>×</button></div>
           <div className="catalogue-selectors" aria-label="Terrain source">
             <label><span>Manufacturer</span><select value={activeCatalogue} onChange={(event) => selectManufacturer(event.target.value as CatalogueId)}>{(Object.keys(MANUFACTURERS) as CatalogueId[]).map((catalogueId) => <option key={catalogueId} value={catalogueId}>{MANUFACTURERS[catalogueId].name} · {MANUFACTURERS[catalogueId].range}</option>)}</select></label>
             <label><span>Kit</span><select value={activeKitId} onChange={(event) => selectKit(event.target.value)}>{manufacturerKits.map((kit) => <option key={kit.id} value={kit.id}>{kit.name}</option>)}</select></label>
@@ -1500,6 +1507,7 @@ export default function Home() {
         </aside>
 
         <div className="board-column">
+          <div className="stage-heading"><div><p className="eyebrow">Editing board</p><h2>{boardWidth.toFixed(0)} × {boardHeight.toFixed(0)} in · {theme}</h2></div><span>{pieces.length} placed · {zones.length} reserved zone{zones.length === 1 ? "" : "s"}</span></div>
           <div className="board-toolbar panel" role="toolbar" aria-label="Layout tools">
             <div className="tool-group primary-tools"><button className={`tool ${!zoneMode ? "active" : ""}`} aria-label="Select terrain" title="Select terrain" aria-pressed={!zoneMode} onClick={() => { setZoneMode(false); setZoneDraft(null); }}><UiIcon name="pointer" /><span className="tool-label">Select</span></button><button className={`tool ${zoneMode ? "active zone-tool" : ""}`} aria-label="Reserve a clear zone" title="Reserve a clear zone" aria-pressed={zoneMode} onClick={() => { setZoneMode(true); selectOnly(null); setFocusedZone(null); setZoneResize(null); setMarquee(null); setMessage("Name the zone, then drag it on the board"); }}><UiIcon name="zone" /><span className="tool-label">Reserve zone</span></button><span className="tool-divider" aria-hidden="true" /><button className="tool icon-tool" title="Copy selected terrain · Ctrl C" aria-label="Copy selected terrain" onClick={copySelected} disabled={!selectedIds.length || zoneMode}><UiIcon name="copy" /></button><button className="tool icon-tool" title="Paste copied terrain · Ctrl V" aria-label="Paste copied terrain" onClick={pasteCopied} disabled={!copyBuffer || zoneMode}><UiIcon name="paste" /></button><button className="tool icon-tool" title="Duplicate selected terrain · Ctrl D" aria-label="Duplicate selected terrain" onClick={duplicateSelected} disabled={!selectedIds.length || zoneMode}><UiIcon name="duplicate" /></button><button className="tool icon-tool" title="Rotate selected terrain · R" aria-label="Rotate selected terrain" onClick={rotateSelected} disabled={!selectedIds.length || zoneMode}><UiIcon name="rotate" /></button><button className="tool icon-tool danger" title="Delete selected terrain" aria-label="Delete selected terrain" onClick={deleteSelected} disabled={!selectedIds.length || zoneMode}><UiIcon name="trash" /></button><span className="tool-divider" aria-hidden="true" /><button className={`tool`} aria-label={showGrid ? "Hide board grid lines" : "Show board grid lines"} aria-pressed={showGrid} title="Show or hide board grid lines" onClick={() => { setShowGrid((current) => !current); setMessage(showGrid ? "Grid lines hidden" : "Grid lines shown"); }}><UiIcon name="grid" /><span className="tool-label">Grid</span></button><button className="tool" aria-label="Shrink board to fit terrain" onClick={shrinkBoardToTerrain} disabled={!pieces.length && !zones.length} title="Crop the board to the terrain bounds"><UiIcon name="shrink" /><span className="tool-label">Shrink to fit</span></button><button className="tool icon-tool danger compact-danger" aria-label="Clear terrain" title="Remove terrain but preserve reserved zones" onClick={clearTerrain} disabled={!pieces.length}><UiIcon name="trash" /></button><button className="tool icon-tool danger" aria-label="Clear reserved zones" title="Remove reserved zones but preserve terrain" onClick={() => { setZones([]); setFocusedZone(null); setZoneDraft(null); setZoneResize(null); setMessage("Reserved zones cleared · terrain preserved"); }} disabled={!zones.length}><UiIcon name="zone" /></button></div>
             <div className="tool-group settings">
@@ -1534,11 +1542,8 @@ export default function Home() {
           <div className="status-line" id="board-help"><span role="status" aria-live="polite">{message}</span><span>Zoom {boardZoom}% (scroll) · Wheel-drag to pan · {smartFit ? "Smart fit · " : "Overlap allowed · "}{zones.length ? `${zones.length} zone${zones.length === 1 ? "" : "s"} · ` : ""}{snap ? `Grid ${gridSize}″` : "Free placement"} · Drag empty space to multi-select · Ctrl C / V</span></div>
         </div>
 
-        <aside className="inspector panel">
-          <div className="inspector-tabs" role="tablist" aria-label="Right panel view">
-            <button role="tab" aria-selected={inspectorTab === "palette"} className={`inspector-tab ${inspectorTab === "palette" ? "active" : ""}`} onClick={() => setInspectorTab("palette")}>Palette{catalogueTotal > 0 ? ` · ${catalogueTotal}` : ""}</button>
-            <button role="tab" aria-selected={inspectorTab === "analysis"} className={`inspector-tab ${inspectorTab === "analysis" ? "active" : ""}`} onClick={() => setInspectorTab("analysis")}>Analysis</button>
-          </div>
+        <aside id="generator-panel" className="inspector panel">
+          <div className="inspector-heading"><p className="eyebrow">{inspectorTab === "palette" ? "Generation studio" : "Board intelligence"}</p><h2>{inspectorTab === "palette" ? "Shape the board" : "Review the layout"}</h2></div>
           {inspectorTab === "palette" ? <section className="palette-builder" aria-labelledby="generator-palette-heading">
             <div className="palette-selection-summary" aria-label="Current board selection">
               {selectedPiece ? <>
