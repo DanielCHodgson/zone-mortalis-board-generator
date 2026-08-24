@@ -18,6 +18,7 @@
 
 import {
   cellsOfEdge, edgeKey, internalEdgeCount, makeLattice, nodeWorld, columnBite,
+  pitchIsBuildable,
   type Lattice, type LatticeEdge,
 } from "./lattice.ts";
 import { buildDeckPlan, renderPlan, type DeckPlan, type Rect } from "./deckplan.ts";
@@ -76,6 +77,9 @@ export type GenerateInput = {
   anchor?:Anchor;
   /** 0-1. Below 1 the palette is deliberately underspent. */
   usage?:number;
+  /** Requested number of operable doorway pieces. Values are clamped to stock;
+   * a range is resolved once, from the generation seed, before candidates run. */
+  doorRange?:{ min:number; max:number };
   seed:number;
   nextUid:() => string;
   candidates?:number;
@@ -321,6 +325,10 @@ export const readKit = (defs:KitDef[], inventory:Record<string, number>, catalog
       id:def.id, kind:def.kind as "wall" | "door", length:def.width, depth:def.depth,
       cells:cells.get(def.id)!, ownColumns:def.ownColumns ?? 0, height:def.height,
       straddles:def.span !== undefined,
+      // Iron Labyrinth doors are separate door products, not ordinary wall
+      // panels that happen to carry a hatch. Keep them for planned tactical
+      // openings; using them as wall filler created rows of doors to nowhere.
+      substitutesWall:def.kind !== "door" || def.catalogue !== "ttcombat",
     })),
     ...supports.map((def) => ({
       id:def.id, kind:def.kind as "pillar" | "connector", length:Math.max(def.width, def.depth),
@@ -384,7 +392,7 @@ const hullCost = (cols:number, rows:number, fillsX:boolean, fillsY:boolean, anch
 
 const sizeLattice = (
   boardWidth:number, boardHeight:number, pitch:number, support:number,
-  capacity:number, targetDensity:number, anchor:Anchor,
+  capacity:number, targetDensity:number, anchor:Anchor, fixedPitchFill=false,
 ) => {
   // A lattice flush to the board edge would centre a column on the edge itself and
   // hang half of it over the side, so a margin is kept for the complex to be inset
@@ -423,8 +431,16 @@ const sizeLattice = (
   // columns — it is also what lets `exteriorEdges` read that perimeter as the hull and
   // charge no panels for it.
   if (anchor === "fill") {
-    const fillCols = Math.max(2, Math.floor((boardWidth + support / 2) / pitch));
-    const fillRows = Math.max(2, Math.floor((boardHeight + support / 2) / pitch));
+    // Butt-jointed kits cannot stretch their pitch without opening gaps between
+    // walls and connectors. Choose the whole-cell count whose COMPLETE footprint
+    // (outer connector edge to outer connector edge) is closest to the board.
+    // Rounding `side / pitch` chose 11 Iron cells on 48", then the two connector
+    // halves made the terrain 3.34" too wide — nearly a wall end off each side.
+    const fit = (side:number) => fixedPitchFill
+      ? Math.max(2, Math.round((side - support) / pitch))
+      : Math.floor((side + support / 2) / pitch);
+    const fillCols = Math.max(2, fit(boardWidth));
+    const fillRows = Math.max(2, fit(boardHeight));
     return {
       cols:fillCols, rows:fillRows,
       maxCols:Math.max(maxCols, fillCols), maxRows:Math.max(maxRows, fillRows),
@@ -657,6 +673,15 @@ export const generate = (input:GenerateInput):GenerateReport => {
   const kit = readKit(defs, inventory, catalogue);
   if (!kit) return empty("the palette has no walls, or no columns to bracket them");
 
+  const requestedMinimum = Math.min(kit.doorways, Math.max(0, Math.floor(input.doorRange?.min ?? 0)));
+  const requestedMaximum = Math.min(kit.doorways, Math.max(requestedMinimum, Math.floor(input.doorRange?.max ?? requestedMinimum)));
+  // Keep this choice independent of candidate generation: changing the number of
+  // candidates must not silently change the user's selected door count.
+  const doorRandom = randomFactory((seed ^ 0x6d2b79f5) >>> 0);
+  const requestedDoorCount = input.doorRange
+    ? requestedMinimum + Math.floor(doorRandom() * (requestedMaximum - requestedMinimum + 1))
+    : null;
+
   // Refusing to build is the right answer when a panel's stated geometry fits no grid the
   // palette can form. A pitch outside the buildable range cannot be assembled, and every
   // board the previous generator produced was downstream of exactly this going unchecked.
@@ -725,7 +750,8 @@ export const generate = (input:GenerateInput):GenerateReport => {
     Math.max(0, boardHeight - roughRows * kit.pitch),
   );
 
-  const sized = sizeLattice(boardWidth, boardHeight, kit.pitch, kit.support, spendable, reference.density, anchor);
+  const fixedPitchFill = kit.buildDefs.some((def) => (def.kind === "wall" || def.kind === "door") && !def.straddles);
+  const sized = sizeLattice(boardWidth, boardHeight, kit.pitch, kit.support, spendable, reference.density, anchor, fixedPitchFill);
   if (!sized) return empty("the board is smaller than one grid square");
 
   // Mutable, because a reserved zone can make a given size unbuildable and the honest
@@ -852,11 +878,25 @@ export const generate = (input:GenerateInput):GenerateReport => {
   for (let pass = 0; pass < passes && !best; pass++) {
   if (pass > 0 && !shrink()) break;
   for (let attempt = 0; attempt < candidates; attempt++) {
-    const gridWidth = cols * kit.pitch;
-    const gridHeight = rows * kit.pitch;
-    const slackX = Math.max(0, boardWidth - gridWidth);
-    const slackY = Math.max(0, boardHeight - gridHeight);
-    const inset = Math.min(kit.support / 2, slackX / 2, slackY / 2);
+    // Fill means the OUTERMOST CONNECTOR CENTRES land on the board boundary.
+    // Keeping the catalogue's nominal pitch on a board that does not divide by
+    // 97 mm left a visible moat (48" is the common case: 12 cells stopped 2.17"
+    // short). Gallowdark joints have physical adjustment: an 80 mm short panel
+    // slots into 28 mm columns, so pitches from 80 through 108 mm remain valid.
+    // Spread each axis only when every owned panel still reaches its supports;
+    // otherwise retain the measured pitch rather than invent an unbuildable board.
+    const canUsePitch = (pitch:number) => !fixedPitchFill && kit.buildDefs
+      .filter((def) => def.kind === "wall" || def.kind === "door")
+      .every((def) => pitchIsBuildable(def.length / def.cells, pitch, kit.support));
+    const spreadX = boardWidth / cols;
+    const spreadY = boardHeight / rows;
+    const pitchX = anchor === "fill" && canUsePitch(spreadX) ? spreadX : kit.pitch;
+    const pitchY = anchor === "fill" && canUsePitch(spreadY) ? spreadY : kit.pitch;
+    const gridWidth = cols * pitchX;
+    const gridHeight = rows * pitchY;
+    const slackX = anchor === "fill" ? boardWidth - gridWidth : Math.max(0, boardWidth - gridWidth);
+    const slackY = anchor === "fill" ? boardHeight - gridHeight : Math.max(0, boardHeight - gridHeight);
+    const inset = Math.max(0, Math.min(kit.support / 2, slackX / 2, slackY / 2));
     // Where zones exist, the complex is nudged to CONTAIN them rather than to avoid
     // them. A hangar or command room drawn on the board is meant to be a room in the
     // building — it is only useful as one if the building is around it. (The previous
@@ -884,7 +924,7 @@ export const generate = (input:GenerateInput):GenerateReport => {
         }))
         .sort((first, second) => excluding ? first.covered - second.covered : second.covered - first.covered)[0].option
       : originsFor(anchor, slackX, slackY, inset, random);
-    const lattice = makeLattice(cols, rows, kit.pitch, kit.pitch, origin.x, origin.y);
+    const lattice = makeLattice(cols, rows, pitchX, pitchY, origin.x, origin.y);
     // The outside wall is not optional and not negotiable, so it is added on top of
     // the interior allowance rather than taken out of it — capped by what the kit
     // actually holds, so a hull it cannot afford still fails honestly in `build`.
@@ -909,7 +949,10 @@ export const generate = (input:GenerateInput):GenerateReport => {
     const plan = buildDeckPlan({
       lattice,
       wallEdgeBudget:Math.min(spendable, interiorBudget + exterior.size),
-      hatchSupply:kit.doorways,
+      hatchSupply:requestedDoorCount ?? (catalogue === "ttcombat"
+        ? Math.min(kit.doorways, Math.max(2, Math.round(interiorBudget * .06)))
+        : kit.doorways),
+      hatchTarget:requestedDoorCount ?? undefined,
       exterior,
       reserved,
       spurBudget,
@@ -976,7 +1019,12 @@ export const generate = (input:GenerateInput):GenerateReport => {
     // The single scorer. Distance to a reference board, so overshooting is
     // penalised exactly as much as undershooting and no metric can run away with
     // the result. Utilisation is deliberately absent: it is an output.
-    const score = -distanceFromReference(metrics, reference);
+    const builtDoorCount = built.pieces.filter((piece) => piece.servesDoorway).length;
+    // An explicit count is a constraint, not a weak aesthetic preference. Keep a
+    // survivable fallback for geometrically impossible requests, but rank exact
+    // candidates ahead of every reference-profile difference.
+    const doorPenalty = requestedDoorCount === null ? 0 : Math.abs(builtDoorCount - requestedDoorCount) * 1000;
+    const score = -distanceFromReference(metrics, reference) - doorPenalty;
     if (!best || score > best.score) best = { pieces:built.pieces, metrics, lattice, plan, score };
   }
   }

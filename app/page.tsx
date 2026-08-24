@@ -79,6 +79,7 @@ export default function Home() {
   // The density cap in generate.ts does that job properly now, so this is back to
   // being what it says: a deliberate way to hold pieces back.
   const [generationPercent, setGenerationPercent] = useState(100);
+  const [doorRange, setDoorRange] = useState({ min:2, max:5 });
   const [gridSize, setGridSize] = useState(1);
   const [boardZoom, setBoardZoom] = useState(100);
   const [boardPanning, setBoardPanning] = useState(false);
@@ -193,6 +194,10 @@ export default function Home() {
   const paletteCatalogues = useMemo(() => ([...new Set(TERRAIN.filter((item) => (limits[item.id] || 0) > 0).map((item) => item.catalogue))]), [limits]);
   const catalogueTerrain = useMemo(() => TERRAIN.filter((item) => (limits[item.id] || 0) > 0), [limits]);
   const catalogueTotal = catalogueTerrain.reduce((sum, item) => sum + (limits[item.id] || 0), 0);
+  const paletteDoorTotal = catalogueTerrain.filter((item) => item.kind === "door")
+    .reduce((sum, item) => sum + (limits[item.id] || 0), 0);
+  const effectiveDoorMin = Math.min(doorRange.min, paletteDoorTotal);
+  const effectiveDoorMax = Math.max(effectiveDoorMin, Math.min(doorRange.max, paletteDoorTotal));
   const activeKitTotal = kitTerrain.reduce((sum, item) => sum + (activeCatalogueMeta.inventory[item.id] || 0), 0);
   const paletteMaker = paletteCatalogues.length ? paletteCatalogues.map((catalogue) => MANUFACTURERS[catalogue].name).join(" + ") : null;
   // Named from the catalogue rather than spelled out per range: with the two names
@@ -379,6 +384,29 @@ export default function Home() {
     fitTerrainToBoardSize(next);
     selectOnly(null);
     setMessage(`Board changed to ${next.label} · existing terrain kept within bounds`);
+  };
+  const shrinkBoardToTerrain = () => {
+    const bounds = [
+      ...pieces.map(pieceRect),
+      ...zones.map((zone) => ({ x:zone.x, y:zone.y, width:zone.width, height:zone.height })),
+    ];
+    if (!bounds.length) return;
+    const minX = Math.min(...bounds.map((rect) => rect.x));
+    const minY = Math.min(...bounds.map((rect) => rect.y));
+    const maxX = Math.max(...bounds.map((rect) => rect.x + rect.width));
+    const maxY = Math.max(...bounds.map((rect) => rect.y + rect.height));
+    const contentWidth = maxX - minX;
+    const contentHeight = maxY - minY;
+    const width = clamp(Math.ceil(contentWidth * 10) / 10, MIN_BOARD_SIZE, MAX_BOARD_WIDTH);
+    const height = clamp(Math.ceil(contentHeight * 10) / 10, MIN_BOARD_SIZE, MAX_BOARD_HEIGHT);
+    const offsetX = (width - contentWidth) / 2 - minX;
+    const offsetY = (height - contentHeight) / 2 - minY;
+    setPieces((current) => current.map((piece) => ({ ...piece, x:piece.x + offsetX, y:piece.y + offsetY })));
+    setZones((current) => current.map((zone) => ({ ...zone, x:zone.x + offsetX, y:zone.y + offsetY })));
+    setCustomBoardSize({ width, height });
+    setBoardPreset("custom");
+    selectOnly(null);
+    setMessage(`Board shrunk to terrain · ${width.toFixed(1)}″ × ${height.toFixed(1)}″`);
   };
   // The floor a manual drag can shrink to — unlike picking a preset from the
   // dropdown, dragging must never move or clip terrain that's already on the
@@ -787,6 +815,7 @@ export default function Home() {
       zones,
       anchor,
       usage:override ? 1 : generationPercent / 100,
+      doorRange:{ min:effectiveDoorMin, max:effectiveDoorMax },
       seed,
       nextUid,
     });
@@ -1412,7 +1441,7 @@ export default function Home() {
       <a className="skip-link" href="#layout-board">Skip to layout board</a>
       <header className="topbar">
         <div><p className="eyebrow">Horus Heresy layout utility</p><h1>Mortalis Architect</h1></div>
-        <div className="top-actions"><div className="appearance-switch" role="group" aria-label="Appearance">{(["light", "dark"] as const).map((mode) => <button key={mode} className={appearance === mode ? "active" : ""} aria-pressed={appearance === mode} onClick={() => setAppearance(mode)}>{mode}</button>)}</div><label className="board-size-control"><span>Board</span><select aria-label="Board size" value={boardPreset} onChange={(event) => changeBoardSize(event.target.value as BoardPreset)}>{boardPreset === "custom" && <option value="custom">{boardWidth.toFixed(1)}″ × {boardHeight.toFixed(1)}″ · custom</option>}{(Object.entries(BOARD_SIZES) as Array<[BoardPreset, typeof BOARD_SIZES[BoardPreset]]>).map(([value, size]) => <option key={value} value={value}>{size.label}</option>)}</select></label><span className="board-chip">{boardWidth.toFixed(1)} × {boardHeight.toFixed(1)} IN</span><button className="export-action" onClick={exportLayoutPng} disabled={!pieces.length} aria-label="Export layout and piece manifest as PNG">Export PNG</button><button className="primary" onClick={generateLayout} disabled={!pieces.length} aria-label="Generate a new layout using every piece currently on the board">Generate layout</button></div>
+        <div className="top-actions"><div className="appearance-switch" role="group" aria-label="Appearance">{(["light", "dark"] as const).map((mode) => <button key={mode} className={appearance === mode ? "active" : ""} aria-pressed={appearance === mode} onClick={() => setAppearance(mode)}>{mode}</button>)}</div><label className="board-size-control"><span>Board</span><select aria-label="Board size" value={boardPreset} onChange={(event) => changeBoardSize(event.target.value as BoardPreset)}>{boardPreset === "custom" && <option value="custom">{boardWidth.toFixed(1)}″ × {boardHeight.toFixed(1)}″ · custom</option>}{(Object.entries(BOARD_SIZES) as Array<[BoardPreset, typeof BOARD_SIZES[BoardPreset]]>).map(([value, size]) => <option key={value} value={value}>{size.label}</option>)}</select></label><span className="board-chip">{boardWidth.toFixed(1)} × {boardHeight.toFixed(1)} IN</span><button className="export-action" onClick={shrinkBoardToTerrain} disabled={!pieces.length && !zones.length} aria-label="Shrink board to fit terrain">Shrink to terrain</button><button className="export-action" onClick={exportLayoutPng} disabled={!pieces.length} aria-label="Export layout and piece manifest as PNG">Export PNG</button><button className="primary" onClick={generateLayout} disabled={!pieces.length} aria-label="Generate a new layout using every piece currently on the board">Generate layout</button></div>
       </header>
 
       <section className="workspace">
@@ -1504,6 +1533,7 @@ export default function Home() {
             {catalogueTotal > 0 && <div className="palette-generation-controls">
               <label className="generation-target palette-generation-target" title="Share of the palette the generator may spend. The board is filled to real density regardless; lower this only to deliberately hold pieces back."><span>Spend <strong>{generationPercent}%</strong></span><input type="range" min="20" max="100" step="5" value={generationPercent} onChange={(event) => setGenerationPercent(Number(event.target.value))} aria-label="Footprint coverage target" /></label>
               <label className="generation-target palette-generation-target" title="Where a complex smaller than the board sits. The board border is a free wall, so a corner spends more of the kit on interior structure and a centred island must build its own perimeter. Fill the table sizes the grid to the BOARD instead of to the palette: runs reach the board edge on every side and no panel is spent on a perimeter, at the cost of a thinner interior when the palette is small for the table."><span>Placement</span><select value={anchor} onChange={(event) => setAnchor(event.target.value as Anchor)} aria-label="Where to anchor a complex smaller than the board"><option value="fill">Fill the table</option><option value="corner">Into a corner</option><option value="edge">Against an edge</option><option value="centre">Centred island</option></select></label>
+              {paletteDoorTotal > 0 && <div className="door-range-control"><span>Doors used</span><label><small>Min</small><select aria-label="Minimum doors used" value={effectiveDoorMin} onChange={(event) => { const min = Number(event.target.value); setDoorRange((current) => ({ min, max:Math.max(min, current.max) })); }}>{Array.from({ length:paletteDoorTotal + 1 }, (_, value) => <option key={value} value={value}>{value}</option>)}</select></label><span aria-hidden="true">–</span><label><small>Max</small><select aria-label="Maximum doors used" value={effectiveDoorMax} onChange={(event) => { const max = Number(event.target.value); setDoorRange((current) => ({ min:Math.min(current.min, max), max })); }}>{Array.from({ length:paletteDoorTotal + 1 }, (_, value) => <option key={value} value={value}>{value}</option>)}</select></label></div>}
               <button className="primary palette-generate" onClick={generateFromPalette} aria-label="Generate layout from current terrain palette">Generate from palette</button>
             </div>}
             {catalogueTotal > 0 && <div className="palette-range"><span>{paletteMaker}</span><strong>{paletteLabel}</strong><em>{Math.max(0, catalogueTotal - paletteUsed)} unplaced</em></div>}

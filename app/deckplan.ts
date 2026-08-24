@@ -76,6 +76,8 @@ export type DeckPlanInput = {
   /** How many hatchway panels are in stock. Doorways beyond this become open
    *  archways, which cost nothing and are a legitimate way into a compartment. */
   hatchSupply:number;
+  /** When set, top up tactically valid boundaries to this explicit user target. */
+  hatchTarget?:number;
   /**
    * Lattice perimeter edges that face open deck rather than the table edge, and
    * must therefore be built as the complex's own outside wall.
@@ -846,6 +848,30 @@ const breakLongBulkheads = (
   }
 };
 
+/** Spend the remaining requested doors on genuine boundaries between regions.
+ * These are compartment entries or cross-compartment shortcuts, unlike spur ends
+ * where a door can simply be walked around. Existing tactical classifications
+ * keep priority; this only fills an explicit user target they did not reach. */
+const fillTacticalHatches = (
+  boundary:LatticeEdge[], state:Map<string, EdgeState>, cellRegion:Int32Array,
+  lattice:Lattice, hatchSupply:number, random:() => number,
+) => {
+  let spare = hatchSupply - [...state.values()].filter((value) => value === "hatch").length;
+  if (spare <= 0) return;
+  const candidates = shuffled(boundary.filter((edge) => {
+    if (state.get(edgeKey(edge)) !== "wall") return false;
+    const cells = cellsOfEdge(lattice, edge);
+    const [first, second] = cells;
+    if (!first || !second) return false;
+    return cellRegion[first.row * lattice.cols + first.col]
+      !== cellRegion[second.row * lattice.cols + second.col];
+  }), random);
+  for (const edge of candidates) {
+    if (spare-- <= 0) break;
+    state.set(edgeKey(edge), "hatch");
+  }
+};
+
 // ---------------------------------------------------------------------------
 // The plan
 // ---------------------------------------------------------------------------
@@ -966,6 +992,9 @@ export const buildDeckPlan = (input:DeckPlanInput):DeckPlan => {
   const structural = [...boundary, ...spurs];
 
   breakLongBulkheads(structural, state, hatchSupply, random);
+  if (input.hatchTarget !== undefined) {
+    fillTacticalHatches(boundary, state, assigned.cellRegion, lattice, input.hatchTarget, random);
+  }
 
   const panelEdges = structural.filter((edge) => state.get(edgeKey(edge)) !== "open");
 

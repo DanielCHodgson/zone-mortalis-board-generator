@@ -363,8 +363,13 @@ export const TERRAIN: TerrainDef[] = [
   { id:"tt-vertical-pipe-wall", catalogue:"ttcombat", name:"Iron Labyrinth vertical pipe wall", shortName:"Vertical pipe", width:64/MM_PER_IN, depth:33/MM_PER_IN, height:60/MM_PER_IN, limit:2, kind:"wall", visual:"vertical-pipe", note:"64 × 33 mm" },
   { id:"tt-reinforced-pipe-wall", catalogue:"ttcombat", name:"Iron Labyrinth reinforced pipe wall", shortName:"Reinforced", width:64/MM_PER_IN, depth:33/MM_PER_IN, height:60/MM_PER_IN, limit:2, kind:"wall", visual:"reinforced", note:"64 × 33 mm" },
   { id:"tt-fan-wall", catalogue:"ttcombat", name:"Iron Labyrinth fan wall", shortName:"Fan wall", width:64/MM_PER_IN, depth:33/MM_PER_IN, height:60/MM_PER_IN, limit:2, kind:"wall", visual:"fan", note:"64 × 33 mm" },
-  { id:"tt-vertical-door", catalogue:"ttcombat", name:"Iron Labyrinth vertical door", shortName:"Vertical door", width:94/MM_PER_IN, depth:33/MM_PER_IN, height:120/MM_PER_IN, limit:2, kind:"door", visual:"door", note:"94 × 33 mm" },
-  { id:"tt-sliding-door", catalogue:"ttcombat", name:"Iron Labyrinth sliding door", shortName:"Sliding door", width:194/MM_PER_IN, depth:50/MM_PER_IN, height:60/MM_PER_IN, limit:2, kind:"door", visual:"door", note:"194 × 50 mm" },
+  // Unlike the 64 mm wall panels, these door frames overlap the 50 mm connector
+  // blocks rather than butting between them. Their published 94/194 mm widths fit
+  // one/two cells on the range's 114 mm connector-centre grid respectively.
+  // Without an explicit span the kit reader treated them as 144/244 mm modules and
+  // excluded both before the builder ever saw the palette.
+  { id:"tt-vertical-door", catalogue:"ttcombat", name:"Iron Labyrinth vertical door", shortName:"Vertical door", width:94/MM_PER_IN, depth:33/MM_PER_IN, height:120/MM_PER_IN, limit:2, kind:"door", span:114/MM_PER_IN, visual:"door", note:"94 × 33 mm · one 114 mm module" },
+  { id:"tt-sliding-door", catalogue:"ttcombat", name:"Iron Labyrinth sliding door", shortName:"Sliding door", width:194/MM_PER_IN, depth:50/MM_PER_IN, height:60/MM_PER_IN, limit:2, kind:"door", span:228/MM_PER_IN, visual:"door", note:"194 × 50 mm · two 114 mm modules" },
   { id:"tt-large-floor", catalogue:"ttcombat", name:"Iron Labyrinth large floor", shortName:"Large floor", width:194/MM_PER_IN, depth:194/MM_PER_IN, height:60/MM_PER_IN, limit:1, kind:"floor", visual:"floor", note:"194 × 194 mm" },
   { id:"tt-small-floor", catalogue:"ttcombat", name:"Iron Labyrinth small floor", shortName:"Small floor", width:94/MM_PER_IN, depth:94/MM_PER_IN, height:60/MM_PER_IN, limit:1, kind:"floor", visual:"floor", note:"94 × 94 mm" },
   { id:"tt-high-connector", catalogue:"ttcombat", name:"Iron Labyrinth high column", shortName:"High column", width:50/MM_PER_IN, depth:50/MM_PER_IN, height:120/MM_PER_IN, limit:3, kind:"connector", note:"50 × 50 mm" },

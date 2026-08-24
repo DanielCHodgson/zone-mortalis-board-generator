@@ -186,15 +186,69 @@ test("a doorway cannot be walked around at the end of its own panel", () => {
     report.plan!.panelEdges.filter((edge) => state.get(edgeKey(edge)) === "hatch").forEach((edge) => {
       const routes = edge.axis === "h"
         ? [
-            [{ axis:"v" as const, col:edge.col, row:edge.row - 1 }, { axis:"h" as const, col:edge.col, row:edge.row - 1 }, { axis:"v" as const, col:edge.col + 1, row:edge.row - 1 }],
-            [{ axis:"v" as const, col:edge.col, row:edge.row }, { axis:"h" as const, col:edge.col, row:edge.row + 1 }, { axis:"v" as const, col:edge.col + 1, row:edge.row }],
+            [{ axis:"v" as const, col:edge.col, row:edge.row - 1 }, { axis:"h" as const, col:edge.col - 1, row:edge.row }, { axis:"v" as const, col:edge.col, row:edge.row }],
+            [{ axis:"v" as const, col:edge.col + 1, row:edge.row - 1 }, { axis:"h" as const, col:edge.col + 1, row:edge.row }, { axis:"v" as const, col:edge.col + 1, row:edge.row }],
           ]
         : [
-            [{ axis:"h" as const, col:edge.col - 1, row:edge.row }, { axis:"v" as const, col:edge.col - 1, row:edge.row }, { axis:"h" as const, col:edge.col - 1, row:edge.row + 1 }],
-            [{ axis:"h" as const, col:edge.col, row:edge.row }, { axis:"v" as const, col:edge.col + 1, row:edge.row }, { axis:"h" as const, col:edge.col, row:edge.row + 1 }],
+            [{ axis:"h" as const, col:edge.col - 1, row:edge.row }, { axis:"v" as const, col:edge.col, row:edge.row - 1 }, { axis:"h" as const, col:edge.col, row:edge.row }],
+            [{ axis:"h" as const, col:edge.col - 1, row:edge.row + 1 }, { axis:"v" as const, col:edge.col, row:edge.row + 1 }, { axis:"h" as const, col:edge.col, row:edge.row + 1 }],
           ];
       assert.equal(routes.some((route) => route.every(open)), false, `seed ${seed}: ${edgeKey(edge)} has an immediate walk-around`);
     });
+  });
+});
+
+test("Boarding Actions doorways cannot be walked around at the end of their panel", () => {
+  SEEDS.forEach((seed) => {
+    const { report } = run({ width:48, height:48, sets:4, anchor:"fill", seed });
+    assert.ok(report.plan, `seed ${seed}: nothing built — ${report.note}`);
+    const { lattice, state } = report.plan!;
+    const inside = (edge:{ axis:"h" | "v"; col:number; row:number }) => edge.axis === "h"
+      ? edge.col >= 0 && edge.col < lattice.cols && edge.row >= 0 && edge.row <= lattice.rows
+      : edge.col >= 0 && edge.col <= lattice.cols && edge.row >= 0 && edge.row < lattice.rows;
+    const open = (edge:{ axis:"h" | "v"; col:number; row:number }) =>
+      inside(edge) && (state.get(edgeKey(edge)) ?? "open") === "open";
+    report.plan!.panelEdges.filter((edge) => state.get(edgeKey(edge)) === "hatch").forEach((edge) => {
+      const routes = edge.axis === "h"
+        ? [
+            [{ axis:"v" as const, col:edge.col, row:edge.row - 1 }, { axis:"h" as const, col:edge.col - 1, row:edge.row }, { axis:"v" as const, col:edge.col, row:edge.row }],
+            [{ axis:"v" as const, col:edge.col + 1, row:edge.row - 1 }, { axis:"h" as const, col:edge.col + 1, row:edge.row }, { axis:"v" as const, col:edge.col + 1, row:edge.row }],
+          ]
+        : [
+            [{ axis:"h" as const, col:edge.col - 1, row:edge.row }, { axis:"v" as const, col:edge.col, row:edge.row - 1 }, { axis:"h" as const, col:edge.col, row:edge.row }],
+            [{ axis:"h" as const, col:edge.col - 1, row:edge.row + 1 }, { axis:"v" as const, col:edge.col, row:edge.row + 1 }, { axis:"h" as const, col:edge.col, row:edge.row + 1 }],
+          ];
+      assert.equal(routes.some((route) => route.every(open)), false, `seed ${seed}: ${edgeKey(edge)} has an immediate walk-around`);
+    });
+  });
+});
+
+test("long Boarding Actions panels never cross, and hatchways never occupy a junction", () => {
+  SEEDS.forEach((seed) => {
+    const { report } = run({ width:48, height:48, sets:4, anchor:"fill", seed });
+    assert.ok(report.plan, `seed ${seed}: nothing built — ${report.note}`);
+    const { lattice, state } = report.plan!;
+    const carries = (axis:"h" | "v", col:number, row:number) => {
+      const value = state.get(`${axis}:${col}:${row}`);
+      return value === "wall" || value === "hatch";
+    };
+    const long = new Set(TERRAIN.filter((def) => def.catalogue === "boarding" && def.span === GALLOWDARK_GRID * 2).map((def) => def.id));
+    const midpoints = new Map<string, Set<"h" | "v">>();
+    report.pieces.filter((piece) => long.has(piece.defId)).forEach((piece) => {
+      const def = TERRAIN.find((candidate) => candidate.id === piece.defId)!;
+      const centreX = piece.x + (piece.rotation === 90 ? def.depth : def.width) / 2;
+      const centreY = piece.y + (piece.rotation === 90 ? def.width : def.depth) / 2;
+      const col = Math.round((centreX - lattice.originX) / lattice.pitchX);
+      const row = Math.round((centreY - lattice.originY) / lattice.pitchY);
+      const incident = Number(carries("h", col - 1, row)) + Number(carries("h", col, row))
+        + Number(carries("v", col, row - 1)) + Number(carries("v", col, row));
+      if (def.kind === "door") assert.equal(incident, 2, `${piece.defId} occupies a ${incident}-way junction at ${col}:${row}`);
+      const key = `${col}:${row}`;
+      const axes = midpoints.get(key) ?? new Set<"h" | "v">();
+      axes.add(piece.rotation === 90 ? "v" : "h");
+      midpoints.set(key, axes);
+    });
+    [...midpoints].forEach(([key, axes]) => assert.equal(axes.size, 1, `long panels cross without a connector at ${key}`));
   });
 });
 
@@ -615,6 +669,35 @@ const TERRAIN_ULTIMA:Record<string, number> = {
   "tt-connector":24, "tt-wall-end":21, "tt-solid-wall":8, "tt-grid-wall":2,
   "tt-solid-pipe-wall":2, "tt-vertical-pipe-wall":2, "tt-reinforced-pipe-wall":2, "tt-fan-wall":2,
 };
+
+test("Iron Labyrinth uses both door kits without excessive fixed-grid overflow", () => {
+  const inventory = {
+    ...Object.fromEntries(Object.entries(TERRAIN_ULTIMA).map(([id, count]) => [id, count * 4])),
+    "tt-vertical-door":8,
+    "tt-sliding-door":8,
+  };
+  const kit = readKit(defs, inventory, "ttcombat")!;
+  assert.equal(Math.round(kit.pitch * MM), 114);
+  assert.equal(kit.cells.get("tt-vertical-door"), 1, "the vertical door occupies one Iron module");
+  assert.equal(kit.cells.get("tt-sliding-door"), 2, "the sliding door occupies two Iron modules");
+  assert.equal(kit.excluded.includes("tt-vertical-door"), false);
+  assert.equal(kit.excluded.includes("tt-sliding-door"), false);
+
+  const { report } = run({ width:48, height:48, catalogue:"ttcombat", inventory, anchor:"fill", seed:1 });
+  assert.ok(report.plan, `nothing built — ${report.note}`);
+  const doors = report.pieces.filter((piece) => piece.defId === "tt-vertical-door" || piece.defId === "tt-sliding-door");
+  assert.ok(doors.some((piece) => piece.defId === "tt-vertical-door"), "a vertical door should be used");
+  assert.ok(doors.some((piece) => piece.defId === "tt-sliding-door"), "a sliding door should be used");
+  assert.ok(doors.every((piece) => piece.servesDoorway === true), "dedicated Iron doors must never substitute for plain walls");
+  assert.ok(doors.length <= 5, `${doors.length} doors is too many for tactical entry points`);
+  assert.ok(report.metrics!.doorwayShare < .1, `${(report.metrics!.doorwayShare * 100).toFixed(0)}% of edges became doors`);
+  const physicalWidth = report.lattice!.cols * report.lattice!.pitchX + kit.support;
+  const physicalHeight = report.lattice!.rows * report.lattice!.pitchY + kit.support;
+  assert.ok(Math.abs(physicalWidth - 48) < kit.pitch / 2, `the physical width missed by ${Math.abs(physicalWidth - 48).toFixed(2)}"`);
+  assert.ok(Math.abs(physicalHeight - 48) < kit.pitch / 2, `the physical height missed by ${Math.abs(physicalHeight - 48).toFixed(2)}"`);
+  assert.equal(report.lattice!.cols, 10, "11 cells plus the outer connectors overflow a 4-foot board excessively");
+  assert.equal(report.lattice!.rows, 10, "11 cells plus the outer connectors overflow a 4-foot board excessively");
+});
 
 // ---------------------------------------------------------------------------
 // Determinism

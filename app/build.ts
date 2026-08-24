@@ -80,6 +80,10 @@ export type BuildDef = {
    * exactly or it overlaps the connectors it is supposed to sit between.
    */
   straddles:boolean;
+  /** Whether a physical door panel may be consumed for an edge the plan says is
+   *  solid wall. Boarding Actions needs this because most panels contain hatches;
+   *  dedicated door products such as Iron Labyrinth doors do not. */
+  substitutesWall?:boolean;
   /** HUB KITS ONLY: which arrangement of moulded wall arms this node casting
    *  carries — see `CANONICAL_ARMS`. Undefined everywhere else, where a column is
    *  direction-agnostic and stands at any node. */
@@ -146,7 +150,7 @@ const chooseDef = (
   defs:BuildDef[], stock:Map<string, number>, cells:number, needsDoorway:boolean, random:() => number,
 ) => {
   const available = defs.filter((def) => def.cells === cells && (stock.get(def.id) ?? 0) > 0
-    && (needsDoorway ? def.kind === "door" : true));
+    && (needsDoorway ? def.kind === "door" : def.kind !== "door" || def.substitutesWall !== false));
   if (!available.length) return null;
   // Matching the plan comes first, carrying columns second. Ranked the other way
   // round, a hatchway panel that happens to have moulded columns outranks a plain
@@ -180,6 +184,36 @@ const panelsAtNode = (node:LatticeNode, state:Map<string, EdgeState>) => {
     { axis:"v", col:node.col, row:node.row - 1 },
     { axis:"v", col:node.col, row:node.row },
   ] as LatticeEdge[]).filter(carriesPanel).length;
+};
+
+/**
+ * Close a hatch that can be bypassed by walking round either end through the
+ * neighbouring cell. Such a hatch changes neither movement nor positioning; it is
+ * just an expensive freestanding door frame. The detour proves that replacing it
+ * with an ordinary wall cannot disconnect the board.
+ *
+ * This is a plan-level rule, not a hub-kit peculiarity. It originally lived in the
+ * Eberleg builder, leaving panel kits free to produce exactly the same comedy doors.
+ */
+const closeLocallyBypassableHatches = (lattice:Lattice, state:Map<string, EdgeState>, edges:LatticeEdge[]) => {
+  const insideEdge = (edge:LatticeEdge) => edge.axis === "h"
+    ? edge.col >= 0 && edge.col < lattice.cols && edge.row >= 0 && edge.row <= lattice.rows
+    : edge.col >= 0 && edge.col <= lattice.cols && edge.row >= 0 && edge.row < lattice.rows;
+  const open = (edge:LatticeEdge) => insideEdge(edge) && (state.get(edgeKey(edge)) ?? "open") === "open";
+  const detours = (edge:LatticeEdge):LatticeEdge[][] => edge.axis === "h"
+    ? [
+        [{ axis:"v", col:edge.col, row:edge.row - 1 }, { axis:"h", col:edge.col - 1, row:edge.row }, { axis:"v", col:edge.col, row:edge.row }],
+        [{ axis:"v", col:edge.col + 1, row:edge.row - 1 }, { axis:"h", col:edge.col + 1, row:edge.row }, { axis:"v", col:edge.col + 1, row:edge.row }],
+      ]
+    : [
+        [{ axis:"h", col:edge.col - 1, row:edge.row }, { axis:"v", col:edge.col, row:edge.row - 1 }, { axis:"h", col:edge.col, row:edge.row }],
+        [{ axis:"h", col:edge.col - 1, row:edge.row + 1 }, { axis:"v", col:edge.col, row:edge.row + 1 }, { axis:"h", col:edge.col, row:edge.row + 1 }],
+      ];
+  edges.forEach((edge) => {
+    if (state.get(edgeKey(edge)) === "hatch" && detours(edge).some((route) => route.every(open))) {
+      state.set(edgeKey(edge), "wall");
+    }
+  });
 };
 
 // ---------------------------------------------------------------------------
@@ -238,7 +272,7 @@ const dirFromNode = (edge:LatticeEdge, from:LatticeNode):Dir =>
  */
 const tileRun = (
   run:LatticeEdge[], state:Map<string, EdgeState>, defs:BuildDef[], stock:Map<string, number>,
-  random:() => number,
+  random:() => number, longMidpoints:Set<string>,
 ):Placement[] | null => {
   const placements:Placement[] = [];
   const wants = (edge:LatticeEdge) => state.get(edgeKey(edge)) === "hatch";
@@ -249,11 +283,20 @@ const tileRun = (
     let placed:Placement | null = null;
 
     if (next) {
+      // Two long castings can never cross at their midpoints: neither ends there,
+      // so there is no connector and the pieces pass straight through one another.
+      // A solid long wall may meet a SHORT perpendicular panel, whose end supplies
+      // the connector. A long hatchway may not: its operable leaf occupies that
+      // midpoint, so even a properly supported T would collide with the door.
+      const middle = nodesOfEdge(edge)[1];
+      const clearMiddle = panelsAtNode(middle, state) === 2;
+      const anotherLongCrosses = longMidpoints.has(nodeKey(middle));
       // A long panel carries a single hatchway, so it can serve at most one
       // doorway. Two doorways side by side need two panels.
       const doorways = (wants(edge) ? 1 : 0) + (wants(next) ? 1 : 0);
-      if (doorways <= 1) {
-        const def = chooseDef(defs, stock, 2, doorways === 1, random);
+      if (!anotherLongCrosses && doorways <= 1) {
+        const longDefs = clearMiddle ? defs : defs.filter((def) => def.kind === "wall");
+        const def = chooseDef(longDefs, stock, 2, doorways === 1, random);
         if (def) {
           stock.set(def.id, stock.get(def.id)! - 1);
           const [from] = nodesOfEdge(edge);
@@ -269,6 +312,7 @@ const tileRun = (
       placed = { def, edge, cells:1, ends:nodesOfEdge(edge), servesDoorway:wants(edge) };
     }
     placements.push(placed);
+    if (placed.cells === 2) longMidpoints.add(nodeKey(nodesOfEdge(placed.edge)[1]));
     index += placed.cells;
   }
   return placements;
@@ -341,28 +385,7 @@ const buildHub = ({ plan, defs, stock, heights, nextUid, seed }:BuildInput):Buil
     !isBorderEdge(lattice, edge) || plan.exterior.has(edgeKey(edge)));
   if (!panelEdges.length) return { ok:false, reason:"plan carries no panels" };
 
-  // Eberleg bulkheads are large freestanding frames, so a door with a three-edge
-  // detour around either end looks especially absurd: the model just walks round
-  // the frame. Close those locally bypassable hatches into ordinary wall before
-  // choosing castings. The detour proves this cannot disconnect the board.
-  const insideEdge = (edge:LatticeEdge) => edge.axis === "h"
-    ? edge.col >= 0 && edge.col < lattice.cols && edge.row >= 0 && edge.row <= lattice.rows
-    : edge.col >= 0 && edge.col <= lattice.cols && edge.row >= 0 && edge.row < lattice.rows;
-  const open = (edge:LatticeEdge) => insideEdge(edge) && (state.get(edgeKey(edge)) ?? "open") === "open";
-  const detours = (edge:LatticeEdge):LatticeEdge[][] => edge.axis === "h"
-    ? [
-        [{ axis:"v", col:edge.col, row:edge.row - 1 }, { axis:"h", col:edge.col, row:edge.row - 1 }, { axis:"v", col:edge.col + 1, row:edge.row - 1 }],
-        [{ axis:"v", col:edge.col, row:edge.row }, { axis:"h", col:edge.col, row:edge.row + 1 }, { axis:"v", col:edge.col + 1, row:edge.row }],
-      ]
-    : [
-        [{ axis:"h", col:edge.col - 1, row:edge.row }, { axis:"v", col:edge.col - 1, row:edge.row }, { axis:"h", col:edge.col - 1, row:edge.row + 1 }],
-        [{ axis:"h", col:edge.col, row:edge.row }, { axis:"v", col:edge.col + 1, row:edge.row }, { axis:"h", col:edge.col, row:edge.row + 1 }],
-      ];
-  panelEdges.forEach((edge) => {
-    if (state.get(edgeKey(edge)) === "hatch" && detours(edge).some((route) => route.every(open))) {
-      state.set(edgeKey(edge), "wall");
-    }
-  });
+  closeLocallyBypassableHatches(lattice, state, panelEdges);
 
   // A doorway is settled before anything else, because it is what says which hubs
   // must NOT arm a direction. Double bulkheads go first: one fills the whole gap
@@ -605,6 +628,7 @@ export const build = (input:BuildInput):BuildResult => {
   const panelEdges = plan.panelEdges.filter((edge) =>
     !isBorderEdge(lattice, edge) || plan.exterior.has(edgeKey(edge)));
   if (!panelEdges.length) return { ok:false, reason:"plan carries no panels" };
+  closeLocallyBypassableHatches(lattice, state, panelEdges);
 
   // Runs are tiled in a shuffled order. Tiling them as listed let one orientation
   // drain the long panels dry and leave the other with nothing but shorts, which
@@ -612,8 +636,9 @@ export const build = (input:BuildInput):BuildResult => {
   const runs = shuffle(edgeRuns(panelEdges), random);
   const placements:Placement[] = [];
   const pieces:BuiltPiece[] = [];
+  const longMidpoints = new Set<string>();
   runs.forEach((run, runIndex) => {
-    const tiled = tileRun(run, state, defs, working, random);
+    const tiled = tileRun(run, state, defs, working, random, longMidpoints);
     if (!tiled) return;
     const runId = `deck-${seed}-${runIndex}`;
     tiled.forEach((placement, sequence) => {
