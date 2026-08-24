@@ -40,7 +40,7 @@ test("server-renders the Mortalis Architect workspace", async () => {
   assert.match(html, /Generator palette/);
   assert.match(html, /Available pieces|Selected kit/);
   assert.match(html, /Generate from palette/);
-  assert.ok(html.indexOf("Selected kit") < html.indexOf("Generator palette"), "kit pieces should appear before layout inventory");
+  assert.ok(html.indexOf("Selected kit") < html.indexOf('<h2 id="generator-palette-heading">Generator palette</h2>'), "kit pieces should appear before layout inventory");
   assert.doesNotMatch(html, /Generate uses only this persistent list/);
   // The default board is one Boarding Actions card board, 704 x 607 mm, which is
   // the board the kit is cut for and the one a single set fills.
@@ -54,7 +54,12 @@ test("ships the complete first-pass catalogues and planner tools", async () => {
   // The catalogue lives in terrain.ts so the generator tests read the same numbers
   // the app draws, rather than keeping their own copy of the inventory.
   const page = await readFile(new URL("../app/terrain.ts", import.meta.url), "utf8")
-    + await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+    + await readFile(new URL("../app/page.tsx", import.meta.url), "utf8")
+    + await readFile(new URL("../app/ui/topbar.tsx", import.meta.url), "utf8")
+    + await readFile(new URL("../app/ui/board-toolbar.tsx", import.meta.url), "utf8")
+    + await readFile(new URL("../app/ui/palette-panel.tsx", import.meta.url), "utf8")
+    + await readFile(new URL("../app/ui/analysis-panel.tsx", import.meta.url), "utf8")
+    + await readFile(new URL("../app/ui/terrain-library.tsx", import.meta.url), "utf8");
 
   for (const kit of [
     "Iron Labyrinth Alpha",
@@ -103,7 +108,8 @@ test("keeps the desktop workspace fixed while panels scroll independently", asyn
 });
 
 test("ships persistent light and dark interface colour palettes", async () => {
-  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8")
+    + await readFile(new URL("../app/ui/topbar.tsx", import.meta.url), "utf8");
   const css = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
 
   assert.match(page, /\["dark", "light"\]/);

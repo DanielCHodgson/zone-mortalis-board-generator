@@ -2,36 +2,23 @@
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { generate, type Anchor, type GenerateReport } from "./generate.ts";
+import { exportLayoutPng } from "./export-layout-png.ts";
 import {
   APPEARANCE_STORAGE_KEY, BOARDING_INVENTORY, BOARD_SIZES, BOARD_STORAGE_KEY, MANUFACTURERS,
   MM_PER_IN, PALETTE_STORAGE_KEY, TERRAIN, TERRAIN_KITS, getDef,
   type Appearance, type BoardPreset, type CatalogueId, type TerrainDef,
 } from "./terrain.ts";
-
-type PlacedPiece = {
-  uid: string;
-  defId: string;
-  x: number;
-  y: number;
-  rotation: 0 | 90;
-  height: number;
-  runId?: string;
-  sequenceIndex?: number;
-  /** Set by the generator on a hatchway panel whose door is a route the plan uses. A
-   *  hatchway panel without it is standing in a wall run with its door shut. */
-  servesDoorway?: boolean;
-  /** Set by the generator on a shaped corner/T casting — which way its icon points. */
-  facing?: 0 | 90 | 180 | 270;
-};
-
-type ReservedZone = {
-  uid: string;
-  name: string;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-};
+import {
+  boundsOf, clamp, connectionCandidates, normaliseZoneDraft, pieceRect, piecesOverlap, structuralEndpoints,
+  type PlacedPiece, type ReservedZone,
+} from "./board/model.ts";
+import { UiIcon } from "./ui/icon.tsx";
+import { BoardToolbar, type BoardTheme } from "./ui/board-toolbar.tsx";
+import { AnalysisPanel, type InventoryGroup } from "./ui/analysis-panel.tsx";
+import { pieceIconClass } from "./ui/piece-icon.ts";
+import { PalettePanel } from "./ui/palette-panel.tsx";
+import { TerrainLibrary } from "./ui/terrain-library.tsx";
+import { Topbar } from "./ui/topbar.tsx";
 
 type ZoneCorner = "nw" | "ne" | "sw" | "se";
 
@@ -39,30 +26,7 @@ const MIN_BOARD_SIZE = 12;
 const MAX_BOARD_WIDTH = BOARD_SIZES["60x48"].width;
 const MAX_BOARD_HEIGHT = BOARD_SIZES["60x48"].height;
 const BOARD_ZOOM_STEPS = [50, 75, 100, 125, 150, 175, 200] as const;
-const EBERLEG_LEGEND = TERRAIN.filter((def) => def.catalogue === "eberleg");
-const pieceIconClass = (def:TerrainDef) => `piece-icon piece-${def.id} ${def.kind} ${def.width > 5 ? "long" : "short"} ${def.visual ? `visual-${def.visual}` : ""}`;
 
-type UiIconName = "brand" | "sun" | "moon" | "palette" | "download" | "wand" | "pointer" | "zone" | "copy" | "paste" | "duplicate" | "rotate" | "trash" | "grid" | "shrink";
-const UiIcon = ({ name }: { name:UiIconName }) => {
-  const paths:Record<UiIconName, React.ReactNode> = {
-    brand:<><rect x="3" y="3" width="8" height="8" rx="1" /><rect x="13" y="3" width="8" height="8" rx="1" /><rect x="3" y="13" width="8" height="8" rx="1" /><path d="M13 17h8M17 13v8" /></>,
-    sun:<><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" /></>,
-    moon:<path d="M20 15.2A8.5 8.5 0 0 1 8.8 4a8.5 8.5 0 1 0 11.2 11.2Z" />,
-    palette:<><path d="M12 3a9 9 0 0 0 0 18h1.5a2.5 2.5 0 0 0 0-5H12a1.5 1.5 0 0 1 0-3h3.5A5.5 5.5 0 0 0 21 7.5C21 4.8 17 3 12 3Z" /><circle cx="7.5" cy="10" r=".8" fill="currentColor" stroke="none" /><circle cx="9.5" cy="6.8" r=".8" fill="currentColor" stroke="none" /><circle cx="14" cy="6.5" r=".8" fill="currentColor" stroke="none" /></>,
-    download:<><path d="M12 3v12M7 10l5 5 5-5" /><path d="M4 19h16" /></>,
-    wand:<><path d="m4 20 11-11" /><path d="m14 4 1-2 1 2 2 1-2 1-1 2-1-2-2-1 2-1ZM18 12l.7-1.5.8 1.5 1.5.8-1.5.7-.8 1.5-.7-1.5-1.5-.7 1.5-.8Z" /></>,
-    pointer:<path d="m5 3 13 9-6 1-3 6Z" />,
-    zone:<><rect x="4" y="4" width="16" height="16" rx="2" strokeDasharray="3 3" /><path d="M9 12h6M12 9v6" /></>,
-    copy:<><rect x="8" y="8" width="11" height="11" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></>,
-    paste:<><path d="M9 5h6v3H9z" /><path d="M8 7H6v14h12V7h-2" /></>,
-    duplicate:<><rect x="7" y="7" width="13" height="13" rx="2" /><path d="M4 16V5a1 1 0 0 1 1-1h11M13.5 10v7M10 13.5h7" /></>,
-    rotate:<><path d="M20 7v5h-5" /><path d="M19 12a7 7 0 1 1-2-5" /></>,
-    trash:<><path d="M4 7h16M9 7V4h6v3M7 7l1 14h8l1-14M10 11v6M14 11v6" /></>,
-    grid:<><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M9 3v18M15 3v18M3 9h18M3 15h18" /></>,
-    shrink:<><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5" /><path d="m3 3 6 6M21 3l-6 6M3 21l6-6M21 21l-6-6" /></>,
-  };
-  return <svg className="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]}</svg>;
-};
 
 /** A piece being dragged toward the board. "palette" drags an existing palette
  *  entry (already counted in `limits`); "catalogue" drags a not-yet-added kit
@@ -72,10 +36,6 @@ type PaletteDragState = { defId: string; x: number; y: number; source: "palette"
 /** One way a dragged piece could meet a fixed one: the offset that joins them, and
  *  the rotation the move implies where the joint only works at right angles (a wall
  *  end capping a run, or a wall meeting a connector face). */
-type ConnectionCandidate = { dx:number; dy:number; rotation?:0 | 90 };
-
-const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
-
 /** Decorrelates the seeds of the several lattices a mixed board generates, so two
  *  catalogues on the same table at the same size do not come out mirror-identical.
  *  Derived from the id so a new catalogue needs nothing added here. */
@@ -107,7 +67,7 @@ export default function Home() {
   const [gridSize, setGridSize] = useState(1);
   const [boardZoom, setBoardZoom] = useState(100);
   const [boardPanning, setBoardPanning] = useState(false);
-  const [theme, setTheme] = useState<"industrial" | "gothic" | "desert">("industrial");
+  const [theme, setTheme] = useState<BoardTheme>("industrial");
   const [boardPreset, setBoardPreset] = useState<BoardPreset | "custom">("card");
   const [boardReady, setBoardReady] = useState(false);
   // Only meaningful while boardPreset is "custom" — set the moment a drag resize
@@ -129,7 +89,6 @@ export default function Home() {
   // a free wall, so a corner uses two of them and spends more of the kit on interior
   // structure, while a centred island has to build its own perimeter.
   const [anchor, setAnchor] = useState<Anchor>("fill");
-  const [enabled, setEnabled] = useState<Record<string, boolean>>(() => Object.fromEntries(TERRAIN.map((item) => [item.id, Boolean(BOARDING_INVENTORY[item.id])])));
   const [limits, setLimits] = useState<Record<string, number>>(() => Object.fromEntries(TERRAIN.map((item) => [item.id, BOARDING_INVENTORY[item.id] || 0])));
   const [kitAddAmounts, setKitAddAmounts] = useState<Record<string, number>>({});
   const [paletteReady, setPaletteReady] = useState(false);
@@ -242,8 +201,8 @@ export default function Home() {
   // palette has available. Grouped by catalogue because a mixed-kit board needs
   // pieces out of more than one box. Ordered the way TERRAIN already lists them
   // (walls, then doors, then supports, per catalogue) rather than sorting again.
-  const usedInventory = useMemo(() => {
-    const groups: { catalogue:CatalogueId; maker:string; range:string; items:{ def:TerrainDef; count:number }[] }[] = [];
+  const usedInventory = useMemo<InventoryGroup[]>(() => {
+    const groups:InventoryGroup[] = [];
     TERRAIN.forEach((def) => {
       const count = used[def.id] || 0;
       if (!count) return;
@@ -257,7 +216,6 @@ export default function Home() {
     });
     return groups;
   }, [used]);
-  const usedTotal = pieces.length;
   const paletteUsed = catalogueTerrain.reduce((sum, def) => sum + Math.min(used[def.id] || 0, limits[def.id] || 0), 0);
   const wallPieces = pieces.filter((piece) => ["wall", "door"].includes(getDef(piece.defId).kind));
   const coverage = Math.min(100, pieces.reduce((sum, piece) => { const def = getDef(piece.defId); return sum + def.width * def.depth; }, 0) / (boardWidth * boardHeight) * 100);
@@ -286,7 +244,6 @@ export default function Home() {
           const parsed = JSON.parse(saved) as Record<string, number>;
           const restored = Object.fromEntries(TERRAIN.map((item) => [item.id, clamp(Number(parsed[item.id]) || 0, 0, 999)]));
           setLimits(restored);
-          setEnabled(Object.fromEntries(TERRAIN.map((item) => [item.id, restored[item.id] > 0])));
         }
       } catch { /* Ignore unavailable or malformed device-local storage. */ }
       setPaletteReady(true);
@@ -346,26 +303,22 @@ export default function Home() {
   const setPaletteQuantity = (defId: string, quantity: number) => {
     const nextQuantity = clamp(Math.round(quantity || 0), 0, 999);
     setLimits((current) => ({ ...current, [defId]:nextQuantity }));
-    setEnabled((current) => ({ ...current, [defId]:nextQuantity > 0 }));
   };
 
   const addToPalette = (defId: string, quantity: number) => {
     const def = getDef(defId);
     const amount = clamp(Math.round(quantity || 0), 1, 999);
     setLimits((current) => ({ ...current, [defId]:clamp((current[defId] || 0) + amount, 0, 999) }));
-    setEnabled((current) => ({ ...current, [defId]:true }));
     setMessage(`${amount} × ${def.shortName} added to the generator palette`);
   };
 
   const addKitToPalette = () => {
     setLimits((current) => ({ ...current, ...Object.fromEntries(kitTerrain.map((def) => [def.id, clamp((current[def.id] || 0) + (activeCatalogueMeta.inventory[def.id] || 0), 0, 999)])) }));
-    setEnabled((current) => ({ ...current, ...Object.fromEntries(kitTerrain.map((def) => [def.id, true])) }));
     setMessage(`${activeCatalogueMeta.name} added to the generator palette`);
   };
 
   const clearPalette = () => {
     setLimits(Object.fromEntries(TERRAIN.map((item) => [item.id, 0])));
-    setEnabled(Object.fromEntries(TERRAIN.map((item) => [item.id, false])));
     setMessage("Terrain palette cleared · pieces already on the board were preserved");
   };
 
@@ -375,12 +328,6 @@ export default function Home() {
     setSelectedIds(uid ? [uid] : []);
   }, []);
   const quantize = useCallback((value: number) => snap ? Math.round(value / gridSize) * gridSize : Math.round(value * 10) / 10, [gridSize, snap]);
-  const normaliseZoneDraft = (draft: { startX:number; startY:number; currentX:number; currentY:number }) => ({
-    x:Math.min(draft.startX, draft.currentX),
-    y:Math.min(draft.startY, draft.currentY),
-    width:Math.abs(draft.currentX - draft.startX),
-    height:Math.abs(draft.currentY - draft.startY),
-  });
   const pieceIntersectsReservedZone = (piece: PlacedPiece, padding = .08) => {
     const def = getDef(piece.defId);
     const width = piece.rotation === 90 ? def.depth : def.width;
@@ -388,10 +335,6 @@ export default function Home() {
     return zones.some((zone) => piece.x < zone.x + zone.width + padding && piece.x + width > zone.x - padding && piece.y < zone.y + zone.height + padding && piece.y + height > zone.y - padding);
   };
   const reservedCoverage = zones.reduce((sum, zone) => sum + zone.width * zone.height, 0) / (boardWidth * boardHeight) * 100;
-  const pieceRect = (piece: PlacedPiece) => {
-    const def = getDef(piece.defId);
-    return { x:piece.x, y:piece.y, width:piece.rotation === 90 ? def.depth : def.width, height:piece.rotation === 90 ? def.width : def.depth };
-  };
   const fitTerrainToBoardSize = (next: { width:number; height:number }) => {
     setPieces((current) => current.map((piece) => {
       const rect = pieceRect(piece);
@@ -403,7 +346,8 @@ export default function Home() {
       return { ...zone, width, height, x:clamp(zone.x, 0, next.width - width), y:clamp(zone.y, 0, next.height - height) };
     }));
   };
-  const changeBoardSize = (preset: BoardPreset) => {
+  const changeBoardSize = (preset: BoardPreset | "custom") => {
+    if (preset === "custom") return;
     const next = BOARD_SIZES[preset];
     setBoardPreset(preset);
     fitTerrainToBoardSize(next);
@@ -416,16 +360,13 @@ export default function Home() {
       ...zones.map((zone) => ({ x:zone.x, y:zone.y, width:zone.width, height:zone.height })),
     ];
     if (!bounds.length) return;
-    const minX = Math.min(...bounds.map((rect) => rect.x));
-    const minY = Math.min(...bounds.map((rect) => rect.y));
-    const maxX = Math.max(...bounds.map((rect) => rect.x + rect.width));
-    const maxY = Math.max(...bounds.map((rect) => rect.y + rect.height));
-    const contentWidth = maxX - minX;
-    const contentHeight = maxY - minY;
+    const content = boundsOf(bounds)!;
+    const contentWidth = content.width;
+    const contentHeight = content.height;
     const width = clamp(Math.ceil(contentWidth * 10) / 10, MIN_BOARD_SIZE, MAX_BOARD_WIDTH);
     const height = clamp(Math.ceil(contentHeight * 10) / 10, MIN_BOARD_SIZE, MAX_BOARD_HEIGHT);
-    const offsetX = (width - contentWidth) / 2 - minX;
-    const offsetY = (height - contentHeight) / 2 - minY;
+    const offsetX = (width - contentWidth) / 2 - content.x;
+    const offsetY = (height - contentHeight) / 2 - content.y;
     setPieces((current) => current.map((piece) => ({ ...piece, x:piece.x + offsetX, y:piece.y + offsetY })));
     setZones((current) => current.map((zone) => ({ ...zone, x:zone.x + offsetX, y:zone.y + offsetY })));
     setCustomBoardSize({ width, height });
@@ -460,69 +401,6 @@ export default function Home() {
     setBoardResize(null);
     setMessage(`Board resized to ${boardWidth.toFixed(1)}″ × ${boardHeight.toFixed(1)}″`);
   };
-  const pieceCentre = (piece: PlacedPiece) => { const rect = pieceRect(piece); return { x:rect.x + rect.width / 2, y:rect.y + rect.height / 2 }; };
-  const structuralEndpoints = (piece: PlacedPiece) => {
-    const def = getDef(piece.defId);
-    const centre = def.depth / 2;
-    return piece.rotation === 0
-      ? [{ x:piece.x, y:piece.y + centre }, { x:piece.x + def.width, y:piece.y + centre }]
-      : [{ x:piece.x + centre, y:piece.y }, { x:piece.x + centre, y:piece.y + def.width }];
-  };
-  const endAttachmentPoints = (piece: PlacedPiece) => {
-    const rect = pieceRect(piece);
-    return piece.rotation === 90
-      ? [{ x:rect.x, y:rect.y + rect.height / 2 }, { x:rect.x + rect.width, y:rect.y + rect.height / 2 }]
-      : [{ x:rect.x + rect.width / 2, y:rect.y }, { x:rect.x + rect.width / 2, y:rect.y + rect.height }];
-  };
-  const connectorFaces = (piece: PlacedPiece) => { const rect = pieceRect(piece); return [{ x:rect.x, y:rect.y + rect.height / 2 }, { x:rect.x + rect.width, y:rect.y + rect.height / 2 }, { x:rect.x + rect.width / 2, y:rect.y }, { x:rect.x + rect.width / 2, y:rect.y + rect.height }]; };
-  const connectionCandidates = (moving: PlacedPiece, fixed: PlacedPiece): ConnectionCandidate[] => {
-    const movingDef = getDef(moving.defId);
-    const fixedDef = getDef(fixed.defId);
-    const movingStructural = ["wall", "door"].includes(movingDef.kind);
-    const fixedStructural = ["wall", "door"].includes(fixedDef.kind);
-    if (movingDef.catalogue !== fixedDef.catalogue) {
-      const hasSpecialFace = (def: TerrainDef) => ["pipe", "vertical-pipe", "floor", "stair"].includes(def.visual || "");
-      if (!movingStructural || !fixedStructural || hasSpecialFace(movingDef) || hasSpecialFace(fixedDef)) return [];
-      if (Math.abs(movingDef.depth - fixedDef.depth) > .55) return [];
-      return structuralEndpoints(moving).flatMap((movingPoint) => structuralEndpoints(fixed).map((fixedPoint) => ({ dx:fixedPoint.x - movingPoint.x, dy:fixedPoint.y - movingPoint.y })));
-    }
-    let movingPoints: Array<{x:number;y:number}> = [];
-    let fixedPoints: Array<{x:number;y:number}> = [];
-    let rotation: 0 | 90 | undefined;
-    // Branch on the JOINT MODEL, not the maker. A straddling column takes panel
-    // ends at its centre; a butting connector takes them at its faces. Gallowdark,
-    // Zone Mortalis and Deadbolt's Derelict all straddle, so keying this on
-    // `=== "boarding"` silently gave the two new straddling ranges the connector
-    // treatment and snapped their panels half a column out of place.
-    if (MANUFACTURERS[movingDef.catalogue].joint === "straddle") {
-      if (movingStructural && fixedStructural) { movingPoints = structuralEndpoints(moving); fixedPoints = structuralEndpoints(fixed); }
-      else if (movingStructural && fixedDef.kind === "pillar") { movingPoints = structuralEndpoints(moving); fixedPoints = [pieceCentre(fixed)]; }
-      else if (movingDef.kind === "pillar" && fixedStructural) { movingPoints = [pieceCentre(moving)]; fixedPoints = structuralEndpoints(fixed); }
-      else if (movingDef.kind === "end" && fixedStructural) {
-        rotation = fixed.rotation === 0 ? 90 : 0;
-        movingPoints = endAttachmentPoints({ ...moving, rotation });
-        fixedPoints = structuralEndpoints(fixed);
-      }
-      else if (movingStructural && fixedDef.kind === "end") { movingPoints = structuralEndpoints(moving); fixedPoints = endAttachmentPoints(fixed); }
-    } else {
-      if (movingStructural && fixedDef.kind === "connector") { movingPoints = structuralEndpoints(moving); fixedPoints = connectorFaces(fixed); }
-      else if (movingDef.kind === "connector" && fixedStructural) { movingPoints = connectorFaces(moving); fixedPoints = structuralEndpoints(fixed); }
-      else if (movingDef.kind === "end" && fixedDef.kind === "connector") {
-        return connectorFaces(fixed).flatMap((fixedPoint, faceIndex) => {
-          const nextRotation: 0 | 90 = faceIndex < 2 ? 0 : 90;
-          return structuralEndpoints({ ...moving, rotation:nextRotation }).map((movingPoint) => ({ dx:fixedPoint.x - movingPoint.x, dy:fixedPoint.y - movingPoint.y, rotation:nextRotation }));
-        });
-      }
-      else if (movingDef.kind === "connector" && fixedDef.kind === "end") { movingPoints = connectorFaces(moving); fixedPoints = structuralEndpoints(fixed); }
-    }
-    return movingPoints.flatMap((movingPoint) => fixedPoints.map((fixedPoint) => ({ dx:fixedPoint.x - movingPoint.x, dy:fixedPoint.y - movingPoint.y, rotation })));
-  };
-  const piecesOverlap = (first: PlacedPiece, second: PlacedPiece, padding = .06) => {
-    const a = pieceRect(first);
-    const b = pieceRect(second);
-    return a.x < b.x + b.width + padding && a.x + a.width > b.x - padding && a.y < b.y + b.height + padding && a.y + a.height > b.y - padding;
-  };
-
   const familyFor = (def: TerrainDef) => (["wall", "door", "floor", "stair"].includes(def.kind) ? "wall" : ["pillar", "connector"].includes(def.kind) ? "support" : "end");
   const familyHeightMm = (family: "wall" | "support" | "end") => {
     const matching = catalogueTerrain.filter((def) => familyFor(def) === family);
@@ -559,10 +437,10 @@ export default function Home() {
   const addPiece = useCallback((defId: string, x = boardWidth / 2, y = boardHeight / 2, rotation: 0 | 90 = 0) => {
     const def = getDef(defId);
     const current = pieces.filter((piece) => piece.defId === defId).length;
-    if (!enabled[defId] || current >= limits[defId]) { setMessage("No more of that piece available"); return; }
+    if ((limits[defId] ?? 0) <= 0 || current >= limits[defId]) { setMessage("No more of that piece available"); return; }
     placeNewPiece(defId, x, y, rotation);
     setMessage(`${def.shortName} placed`);
-  }, [boardHeight, boardWidth, enabled, limits, pieces, placeNewPiece]);
+  }, [boardHeight, boardWidth, limits, pieces, placeNewPiece]);
 
   /** The catalogue's combined "Add" action: tops up the palette by `quantity` and
    *  drops one copy straight onto the board, so a click does something visible
@@ -571,7 +449,6 @@ export default function Home() {
     const def = getDef(defId);
     const amount = clamp(Math.round(quantity || 0), 1, 999);
     setLimits((current) => ({ ...current, [defId]:clamp((current[defId] || 0) + amount, 0, 999) }));
-    setEnabled((current) => ({ ...current, [defId]:true }));
     placeNewPiece(defId, x, y);
     setMessage(`${amount} × ${def.shortName} added to the palette · 1 placed on the board`);
   }, [boardHeight, boardWidth, placeNewPiece]);
@@ -676,12 +553,9 @@ export default function Home() {
     const unavailable = Object.entries(required).find(([defId, count]) => pieces.filter((piece) => piece.defId === defId).length + count > (limits[defId] || 0));
     if (unavailable) { setMessage(`Not enough ${getDef(unavailable[0]).shortName} pieces available to duplicate the selection`); return; }
     const offset = snap ? gridSize : 1;
-    const minX = Math.min(...sources.map((piece) => piece.x));
-    const minY = Math.min(...sources.map((piece) => piece.y));
-    const maxX = Math.max(...sources.map((piece) => { const rect = pieceRect(piece); return rect.x + rect.width; }));
-    const maxY = Math.max(...sources.map((piece) => { const rect = pieceRect(piece); return rect.y + rect.height; }));
-    const deltaX = clamp(offset, -minX, boardWidth - maxX);
-    const deltaY = clamp(offset, -minY, boardHeight - maxY);
+    const bounds = boundsOf(sources.map(pieceRect))!;
+    const deltaX = clamp(offset, -bounds.x, boardWidth - bounds.x - bounds.width);
+    const deltaY = clamp(offset, -bounds.y, boardHeight - bounds.y - bounds.height);
     const duplicates = sources.map((source) => ({ ...source, uid:nextUid(), x:quantize(source.x + deltaX), y:quantize(source.y + deltaY), runId:undefined, sequenceIndex:undefined }));
     setPieces((current) => [...current, ...duplicates]);
     setSelectedIds(duplicates.map((piece) => piece.uid));
@@ -702,12 +576,9 @@ export default function Home() {
     const unavailable = Object.entries(required).find(([defId, count]) => pieces.filter((piece) => piece.defId === defId).length + count > (limits[defId] || 0));
     if (unavailable) { setMessage(`Not enough ${getDef(unavailable[0]).shortName} pieces available to paste the group`); return; }
     const step = (copyBuffer.pasteCount + 1) * (snap ? gridSize : 1);
-    const minX = Math.min(...copyBuffer.pieces.map((piece) => piece.x));
-    const minY = Math.min(...copyBuffer.pieces.map((piece) => piece.y));
-    const maxX = Math.max(...copyBuffer.pieces.map((piece) => { const rect = pieceRect(piece); return rect.x + rect.width; }));
-    const maxY = Math.max(...copyBuffer.pieces.map((piece) => { const rect = pieceRect(piece); return rect.y + rect.height; }));
-    const deltaX = clamp(step, -minX, boardWidth - maxX);
-    const deltaY = clamp(step, -minY, boardHeight - maxY);
+    const bounds = boundsOf(copyBuffer.pieces.map(pieceRect))!;
+    const deltaX = clamp(step, -bounds.x, boardWidth - bounds.x - bounds.width);
+    const deltaY = clamp(step, -bounds.y, boardHeight - bounds.y - bounds.height);
     const pasted = copyBuffer.pieces.map((source) => ({ ...source, uid:nextUid(), x:quantize(source.x + deltaX), y:quantize(source.y + deltaY), runId:undefined, sequenceIndex:undefined }));
     setPieces((current) => [...current, ...pasted]);
     setCopyBuffer((current) => current ? { ...current, pasteCount:current.pasteCount + 1 } : current);
@@ -719,14 +590,11 @@ export default function Home() {
   const moveSelected = useCallback((deltaX: number, deltaY: number) => {
     if (!selectedIds.length) return;
     const sources = pieces.filter((piece) => selectedIds.includes(piece.uid));
-    const minX = Math.min(...sources.map((piece) => piece.x));
-    const minY = Math.min(...sources.map((piece) => piece.y));
-    const maxX = Math.max(...sources.map((piece) => { const rect = pieceRect(piece); return rect.x + rect.width; }));
-    const maxY = Math.max(...sources.map((piece) => { const rect = pieceRect(piece); return rect.y + rect.height; }));
+    const bounds = boundsOf(sources.map(pieceRect))!;
     const requestedX = deltaX * gridSize;
     const requestedY = deltaY * gridSize;
-    const allowedX = clamp(requestedX, -minX, boardWidth - maxX);
-    const allowedY = clamp(requestedY, -minY, boardHeight - maxY);
+    const allowedX = clamp(requestedX, -bounds.x, boardWidth - bounds.x - bounds.width);
+    const allowedY = clamp(requestedY, -bounds.y, boardHeight - bounds.y - bounds.height);
     setPieces((current) => current.map((piece) => {
       if (!selectedIds.includes(piece.uid)) return piece;
       return { ...piece, x:Math.round((piece.x + allowedX) * 100) / 100, y:Math.round((piece.y + allowedY) * 100) / 100 };
@@ -934,282 +802,16 @@ export default function Home() {
     }
   };
 
-  const exportLayoutPng = () => {
-    if (!pieces.length) return;
+  const downloadLayoutPng = () => exportLayoutPng({
+    pieces,
+    zones,
+    boardWidth,
+    boardHeight,
+    theme,
+    coverage,
+    onStatus:setMessage,
+  });
 
-    const canvas = document.createElement("canvas");
-    canvas.width = 1800;
-    canvas.height = 1320;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) { setMessage("PNG export is unavailable in this browser"); return; }
-
-    const boardX = 70;
-    const boardY = 160;
-    const boardScale = Math.min(1080 / boardWidth, 1080 / boardHeight);
-    const boardPixelWidth = boardWidth * boardScale;
-    const boardPixelHeight = boardHeight * boardScale;
-    const exportPanelHeight = 1080;
-    const manifestX = 1200;
-    const manifestWidth = 530;
-    const themeColours = {
-      industrial: { board:"#858e89", minor:"rgba(238,243,239,.16)", major:"rgba(28,37,34,.30)" },
-      gothic: { board:"#626967", minor:"rgba(235,237,230,.13)", major:"rgba(18,23,22,.36)" },
-      desert: { board:"#b9aa8b", minor:"rgba(255,248,226,.25)", major:"rgba(77,65,45,.28)" },
-    }[theme];
-    const manifest = TERRAIN.map((def) => {
-      const matches = pieces.filter((piece) => piece.defId === def.id);
-      const heightCounts = matches.reduce<Record<string, number>>((counts, piece) => {
-        const height = String(Math.round(piece.height * MM_PER_IN));
-        return { ...counts, [height]:(counts[height] || 0) + 1 };
-      }, {});
-      return { def, count:matches.length, heightCounts };
-    }).filter((item) => item.count > 0);
-    const cataloguesUsed = [...new Set(manifest.map((item) => item.def.catalogue))];
-
-    ctx.fillStyle = "#f2f3f0";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.fillStyle = "#17201e";
-    ctx.font = "700 38px Arial, sans-serif";
-    ctx.fillText("MORTALIS ARCHITECT", 70, 70);
-    ctx.fillStyle = "#68736e";
-    ctx.font = "700 15px Arial, sans-serif";
-    ctx.fillText("HORUS HERESY LAYOUT SHEET", 72, 102);
-    ctx.textAlign = "right";
-    ctx.font = "700 17px Arial, sans-serif";
-    ctx.fillText(`BOARD ${boardWidth} × ${boardHeight} IN  ·  SCALE 1:1 DATA`, 1730, 76);
-    ctx.font = "15px Arial, sans-serif";
-    const exportSource = cataloguesUsed.length === 1
-      ? `${MANUFACTURERS[cataloguesUsed[0]].name} · ${MANUFACTURERS[cataloguesUsed[0]].range}`
-      : "Mixed terrain layout";
-    ctx.fillText(exportSource, 1730, 103);
-    ctx.textAlign = "left";
-
-    ctx.fillStyle = themeColours.board;
-    ctx.fillRect(boardX, boardY, boardPixelWidth, boardPixelHeight);
-    for (let inch = 0; inch <= boardWidth; inch++) {
-      const position = boardX + inch * boardScale;
-      ctx.beginPath();
-      ctx.strokeStyle = inch % 12 === 0 ? themeColours.major : themeColours.minor;
-      ctx.lineWidth = inch % 12 === 0 ? 3 : 1;
-      ctx.moveTo(position, boardY);
-      ctx.lineTo(position, boardY + boardPixelHeight);
-      ctx.stroke();
-    }
-    for (let inch = 0; inch <= boardHeight; inch++) {
-      ctx.beginPath();
-      ctx.strokeStyle = inch % 12 === 0 ? themeColours.major : themeColours.minor;
-      ctx.lineWidth = inch % 12 === 0 ? 3 : 1;
-      ctx.moveTo(boardX, boardY + inch * boardScale);
-      ctx.lineTo(boardX + boardPixelWidth, boardY + inch * boardScale);
-      ctx.stroke();
-    }
-    ctx.strokeStyle = "#17201e";
-    ctx.lineWidth = 5;
-    ctx.strokeRect(boardX, boardY, boardPixelWidth, boardPixelHeight);
-    ctx.fillStyle = "#5f6965";
-    ctx.font = "13px Arial, sans-serif";
-    ctx.textAlign = "center";
-    Array.from({ length:boardWidth / 12 + 1 }, (_, index) => index * 12).forEach((inch) => ctx.fillText(`${inch}${inch === boardWidth ? "″" : ""}`, boardX + inch * boardScale, boardY - 17));
-    ctx.textAlign = "right";
-    Array.from({ length:boardHeight / 12 + 1 }, (_, index) => index * 12).forEach((inch) => ctx.fillText(`${inch}${inch === boardHeight ? "″" : ""}`, boardX - 17, boardY + inch * boardScale + 5));
-    ctx.textAlign = "left";
-
-    zones.forEach((zone) => {
-      const x = boardX + zone.x * boardScale;
-      const y = boardY + zone.y * boardScale;
-      const width = zone.width * boardScale;
-      const height = zone.height * boardScale;
-      ctx.fillStyle = "rgba(226,214,164,.58)";
-      ctx.fillRect(x, y, width, height);
-      ctx.save();
-      ctx.setLineDash([12, 8]);
-      ctx.strokeStyle = "#815f29";
-      ctx.lineWidth = 4;
-      ctx.strokeRect(x, y, width, height);
-      ctx.restore();
-      ctx.fillStyle = "#3c321f";
-      ctx.font = "700 17px Arial, sans-serif";
-      ctx.fillText(zone.name || "Reserved zone", x + 10, y + 26);
-      ctx.font = "13px Arial, sans-serif";
-      ctx.fillText(`${zone.width.toFixed(1)} × ${zone.height.toFixed(1)}″ CLEAR`, x + 10, y + 48);
-    });
-
-    pieces.forEach((piece) => {
-      const def = getDef(piece.defId);
-      const widthIn = piece.rotation === 90 ? def.depth : def.width;
-      const depthIn = piece.rotation === 90 ? def.width : def.depth;
-      const x = boardX + piece.x * boardScale;
-      const y = boardY + piece.y * boardScale;
-      const width = Math.max(4, widthIn * boardScale);
-      const depth = Math.max(4, depthIn * boardScale);
-      // The export always prints on paper, whichever appearance the app is set to.
-      // A sheet you take to the table wants ink on white, not a screenshot of a dark
-      // viewport, so these are deliberately the light palette's literals rather than
-      // the live tokens.
-      // A hatchway panel the plan uses as a WALL prints as wall — same piece, door shut.
-      // Colouring every door-kind panel as an opening is what made a board running 8%
-      // doorways read as 58% doors. The manifest below still lists it as a hatchway,
-      // because that is the piece you reach into the box for.
-      const asDoorway = def.kind === "door" && piece.servesDoorway !== false;
-      const colour = asDoorway ? "#7d4b39"
-        : def.kind === "wall" || def.kind === "door" ? "#3d4844"
-          : def.kind === "end" ? "#56615c"
-            : def.kind === "scatter" ? "#4c6f66"
-              : "#2d3934";
-      if (def.catalogue === "eberleg") {
-        // The arm meets the straight face of the 18%-chamfered 51.91 mm node:
-        // 64% × 51.91 = 33.22 mm. Door frames retain their measured 43.97 mm depth.
-        const wallThickness = 51.91 * .64 / MM_PER_IN * boardScale;
-        const doorFrameThickness = 43.97 / MM_PER_IN * boardScale;
-        const hubSize = 51.91 / MM_PER_IN * boardScale;
-        const armReach = 76.2 / MM_PER_IN * boardScale;
-        const baseArms:Record<string, Array<"n" | "e" | "s" | "w">> = {
-          column:[], stub:["e"], straight:["w","e"], corner:["w","s"], t:["w","e","s"], cross:["n","e","s","w"],
-        };
-        const clockwise = { n:"e", e:"s", s:"w", w:"n" } as const;
-        let arms = [...(baseArms[def.shape || "column"] || [])];
-        for (let turn = 0; turn < (piece.facing || 0) / 90; turn++) arms = arms.map((dir) => clockwise[dir]);
-
-        if (def.shape) {
-          const nodeX = x + (arms.includes("w") ? armReach : hubSize / 2);
-          const nodeY = y + (arms.includes("n") ? armReach : hubSize / 2);
-          ctx.fillStyle = "#3d4844";
-          if (arms.includes("w")) ctx.fillRect(x, nodeY - wallThickness / 2, nodeX - x, wallThickness);
-          if (arms.includes("e")) ctx.fillRect(nodeX, nodeY - wallThickness / 2, x + width - nodeX, wallThickness);
-          if (arms.includes("n")) ctx.fillRect(nodeX - wallThickness / 2, y, wallThickness, nodeY - y);
-          if (arms.includes("s")) ctx.fillRect(nodeX - wallThickness / 2, nodeY, wallThickness, y + depth - nodeY);
-          const half = hubSize / 2;
-          const bevel = hubSize * .18;
-          ctx.beginPath();
-          ctx.moveTo(nodeX - half + bevel, nodeY - half);
-          ctx.lineTo(nodeX + half - bevel, nodeY - half);
-          ctx.lineTo(nodeX + half, nodeY - half + bevel);
-          ctx.lineTo(nodeX + half, nodeY + half - bevel);
-          ctx.lineTo(nodeX + half - bevel, nodeY + half);
-          ctx.lineTo(nodeX - half + bevel, nodeY + half);
-          ctx.lineTo(nodeX - half, nodeY + half - bevel);
-          ctx.lineTo(nodeX - half, nodeY - half + bevel);
-          ctx.closePath();
-          ctx.fillStyle = "#2d3934";
-          ctx.fill();
-          ctx.strokeStyle = "#18211e";
-          ctx.lineWidth = 2;
-          ctx.stroke();
-        } else {
-          const horizontal = piece.rotation !== 90;
-          const thickness = def.kind === "door" ? doorFrameThickness : wallThickness;
-          const bar = horizontal
-            ? { x, y:y + (depth - thickness) / 2, width, height:thickness }
-            : { x:x + (width - thickness) / 2, y, width:thickness, height:depth };
-          ctx.fillStyle = asDoorway ? "#7d4b39" : "#3d4844";
-          ctx.fillRect(bar.x, bar.y, bar.width, bar.height);
-          if (asDoorway) {
-            ctx.fillStyle = "#252d2a";
-            if (horizontal) ctx.fillRect(x + width * .32, bar.y + 2, width * .36, Math.max(2, bar.height - 4));
-            else ctx.fillRect(bar.x + 2, y + depth * .32, Math.max(2, bar.width - 4), depth * .36);
-          }
-        }
-        return;
-      }
-      ctx.fillStyle = colour;
-      ctx.fillRect(x, y, width, depth);
-      ctx.strokeStyle = "#18211e";
-      ctx.lineWidth = 2;
-      ctx.strokeRect(x, y, width, depth);
-      ctx.strokeStyle = "rgba(226,233,228,.48)";
-      ctx.lineWidth = 2;
-      if (asDoorway) {
-        ctx.fillStyle = "#252d2a";
-        if (width >= depth) ctx.fillRect(x + width * .35, y + 3, width * .3, Math.max(2, depth - 6));
-        else ctx.fillRect(x + 3, y + depth * .35, Math.max(2, width - 6), depth * .3);
-      } else if (def.kind === "door") {
-        // Shut, but still outlined: the sheet is a build guide and you need to know
-        // which panel goes here.
-        ctx.strokeStyle = "rgba(189,113,82,.45)";
-        if (width >= depth) ctx.strokeRect(x + width * .35, y + 3, width * .3, Math.max(2, depth - 6));
-        else ctx.strokeRect(x + 3, y + depth * .35, Math.max(2, width - 6), depth * .3);
-        ctx.strokeStyle = "rgba(226,233,228,.48)";
-      } else if (["pillar", "connector"].includes(def.kind)) {
-        ctx.strokeRect(x + 4, y + 4, Math.max(1, width - 8), Math.max(1, depth - 8));
-      } else if (def.visual === "grid") {
-        for (let offset = 5; offset < Math.max(width, depth); offset += 8) {
-          ctx.beginPath(); ctx.moveTo(x + Math.min(offset, width), y); ctx.lineTo(x + Math.min(offset, width), y + depth); ctx.stroke();
-        }
-      } else if (["pipe", "vertical-pipe"].includes(def.visual || "")) {
-        ctx.beginPath();
-        if (width >= depth) { ctx.moveTo(x + 5, y + depth * .35); ctx.lineTo(x + width - 5, y + depth * .35); ctx.moveTo(x + 5, y + depth * .65); ctx.lineTo(x + width - 5, y + depth * .65); }
-        else { ctx.moveTo(x + width * .35, y + 5); ctx.lineTo(x + width * .35, y + depth - 5); ctx.moveTo(x + width * .65, y + 5); ctx.lineTo(x + width * .65, y + depth - 5); }
-        ctx.stroke();
-      } else if (def.visual === "reinforced") {
-        ctx.strokeRect(x + 4, y + 4, Math.max(1, width - 8), Math.max(1, depth - 8));
-      } else if (def.visual === "fan") {
-        ctx.beginPath(); ctx.arc(x + width / 2, y + depth / 2, Math.max(2, Math.min(width, depth) * .28), 0, Math.PI * 2); ctx.stroke();
-      }
-    });
-
-    ctx.fillStyle = "#fafbf9";
-    ctx.fillRect(manifestX, boardY, manifestWidth, exportPanelHeight);
-    ctx.strokeStyle = "#d0d6d2";
-    ctx.lineWidth = 2;
-    ctx.strokeRect(manifestX, boardY, manifestWidth, exportPanelHeight);
-    ctx.fillStyle = "#17201e";
-    ctx.font = "700 25px Arial, sans-serif";
-    ctx.fillText("PIECES USED", manifestX + 30, boardY + 48);
-    ctx.fillStyle = "#68736e";
-    ctx.font = "15px Arial, sans-serif";
-    ctx.fillText(`${pieces.length} terrain pieces  ·  ${coverage.toFixed(1)}% footprint coverage`, manifestX + 30, boardY + 77);
-    if (zones.length) {
-      ctx.fillStyle = "#815f29";
-      ctx.font = "700 13px Arial, sans-serif";
-      const zoneNames = zones.map((zone) => zone.name || "Reserved zone").join(" · ");
-      ctx.fillText(`${zones.length} RESERVED · ${zoneNames.length > 46 ? `${zoneNames.slice(0, 43)}…` : zoneNames}`, manifestX + 30, boardY + 104);
-    }
-    let rowY = boardY + (zones.length ? 142 : 118);
-    cataloguesUsed.forEach((catalogueId) => {
-      ctx.fillStyle = "#eef1ed";
-      ctx.fillRect(manifestX + 20, rowY - 22, manifestWidth - 40, 34);
-      ctx.fillStyle = "#4e5a55";
-      ctx.font = "700 13px Arial, sans-serif";
-      ctx.fillText(`${MANUFACTURERS[catalogueId].name.toUpperCase()} · ${MANUFACTURERS[catalogueId].range.toUpperCase()}`, manifestX + 30, rowY);
-      rowY += 42;
-      manifest.filter((item) => item.def.catalogue === catalogueId).forEach(({ def, count, heightCounts }) => {
-        // The manifest lists piece TYPES, so a hatchway panel shows as a hatchway here
-        // whatever the layout uses it for — this is the shopping list, not the board.
-        ctx.fillStyle = def.kind === "door" ? "#7d4b39" : def.kind === "wall" ? "#3d4844" : def.kind === "end" ? "#56615c" : "#2d3934";
-        ctx.fillRect(manifestX + 30, rowY - 16, 12, 12);
-        ctx.fillStyle = "#17201e";
-        ctx.font = "700 16px Arial, sans-serif";
-        ctx.fillText(`${count} × ${def.shortName}`, manifestX + 55, rowY - 4);
-        ctx.fillStyle = "#68736e";
-        ctx.font = "13px Arial, sans-serif";
-        const heightEntries = Object.entries(heightCounts).sort(([a], [b]) => Number(a) - Number(b));
-        const zText = heightEntries.length === 1 ? `${heightEntries[0][0]} mm` : heightEntries.map(([height, quantity]) => `${quantity}×${height}`).join(" / ") + " mm";
-        ctx.fillText(`${def.note}  ·  Z ${zText}`, manifestX + 55, rowY + 15);
-        rowY += 42;
-      });
-      rowY += 10;
-    });
-    ctx.fillStyle = "#68736e";
-    ctx.font = "13px Arial, sans-serif";
-    ctx.fillText("Bird's-eye placement diagram · dimensions shown at real-world scale", manifestX + 30, boardY + exportPanelHeight - 35);
-    ctx.fillText("Generated with Mortalis Architect", 70, 1286);
-    ctx.textAlign = "right";
-    ctx.fillText(new Date().toLocaleDateString(undefined, { year:"numeric", month:"short", day:"numeric" }), 1730, 1286);
-    ctx.textAlign = "left";
-
-    setMessage("Preparing PNG layout sheet…");
-    canvas.toBlob((blob) => {
-      if (!blob) { setMessage("PNG export could not be created"); return; }
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      const catalogueSlug = (cataloguesUsed.length === 1 ? MANUFACTURERS[cataloguesUsed[0]].range : "mixed-terrain").toLowerCase().replace(/[^a-z0-9]+/g, "-");
-      link.href = url;
-      link.download = `mortalis-layout-${catalogueSlug}-${new Date().toISOString().slice(0, 10)}.png`;
-      link.click();
-      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-      setMessage(`PNG exported · ${pieces.length} pieces listed`);
-    }, "image/png");
-  };
 
   const boardPoint = useCallback((clientX: number, clientY: number) => {
     const rect = boardRef.current!.getBoundingClientRect();
@@ -1464,61 +1066,50 @@ export default function Home() {
   return (
     <main className="app-shell">
       <a className="skip-link" href="#layout-board">Skip to layout board</a>
-      <header className="topbar">
-        <div className="app-brand"><span className="brand-mark"><UiIcon name="brand" /></span><div><h1>Mortalis Architect</h1><p>Terrain layout studio</p></div></div>
-        <div className="project-summary"><span className="project-summary-icon"><UiIcon name="grid" /></span><span><small>Current board</small><strong>{activeCatalogueMeta.name}</strong></span></div>
-        <div className="top-actions"><div className="appearance-switch" role="group" aria-label="Colour palette">{(["dark", "light"] as const).map((mode) => <button key={mode} className={appearance === mode ? "active" : ""} aria-label={`${mode} colour palette`} aria-pressed={appearance === mode} onClick={() => setAppearance(mode)}><UiIcon name={mode === "light" ? "sun" : "moon"} /><span>{mode}</span></button>)}</div><label className="board-size-control"><span>Board size</span><select aria-label="Board size" value={boardPreset} onChange={(event) => changeBoardSize(event.target.value as BoardPreset)}>{boardPreset === "custom" && <option value="custom">{boardWidth.toFixed(1)}″ × {boardHeight.toFixed(1)}″ · custom</option>}{(Object.entries(BOARD_SIZES) as Array<[BoardPreset, typeof BOARD_SIZES[BoardPreset]]>).map(([value, size]) => <option key={value} value={value}>{size.label}</option>)}</select></label><span className="board-chip">{boardWidth.toFixed(1)} × {boardHeight.toFixed(1)} IN</span><button className="export-action" onClick={exportLayoutPng} disabled={!pieces.length} aria-label="Export layout and piece manifest as PNG"><UiIcon name="download" />Export</button><button className="primary" onClick={generateLayout} disabled={!pieces.length} aria-label="Generate a new layout using every piece currently on the board"><UiIcon name="wand" />Remix board</button></div>
-      </header>
+      <Topbar appearance={appearance} boardPreset={boardPreset} boardWidth={boardWidth} boardHeight={boardHeight} activeBoardName={activeCatalogueMeta.name} canExport={pieces.length > 0} canRemix={pieces.length > 0} onAppearanceChange={setAppearance} onBoardSizeChange={changeBoardSize} onExport={downloadLayoutPng} onRemix={generateLayout} />
 
       <section className={`workspace ${libraryOpen ? "" : "library-closed"}`}>
         <nav className="workspace-rail" aria-label="Workspace shortcuts">
           <div><button className={libraryOpen ? "active" : ""} aria-label="Toggle terrain library" aria-pressed={libraryOpen} title={libraryOpen ? "Close terrain library" : "Open terrain library"} onClick={() => setLibraryOpen((current) => !current)}><UiIcon name="brand" /><span>Library</span></button><button className={inspectorTab === "palette" ? "active" : ""} aria-label="Generator palette" aria-pressed={inspectorTab === "palette"} title="Generator palette" onClick={() => setInspectorTab("palette")}><UiIcon name="palette" /><span>Palette</span><em>{catalogueTotal}</em></button><button className={inspectorTab === "analysis" ? "active" : ""} aria-label="Board analysis" aria-pressed={inspectorTab === "analysis"} title="Board analysis" onClick={() => setInspectorTab("analysis")}><UiIcon name="wand" /><span>Analysis</span></button></div>
         </nav>
-        <aside id="terrain-library" className="catalogue panel">
-          <div className="catalogue-heading"><div><p className="eyebrow">Terrain library</p><h2>Browse pieces</h2></div><button aria-label="Close terrain library" title="Close terrain library" onClick={() => setLibraryOpen(false)}>×</button></div>
-          <div className="catalogue-selectors" aria-label="Terrain source">
-            <label><span>Manufacturer</span><select value={activeCatalogue} onChange={(event) => selectManufacturer(event.target.value as CatalogueId)}>{(Object.keys(MANUFACTURERS) as CatalogueId[]).map((catalogueId) => <option key={catalogueId} value={catalogueId}>{MANUFACTURERS[catalogueId].name} · {MANUFACTURERS[catalogueId].range}</option>)}</select></label>
-            <label><span>Kit</span><select value={activeKitId} onChange={(event) => selectKit(event.target.value)}>{manufacturerKits.map((kit) => <option key={kit.id} value={kit.id}>{kit.name}</option>)}</select></label>
-          </div>
-          <section className="kit-browser" aria-labelledby="kit-browser-heading">
-            <div className="section-heading">
-              <div><p className="eyebrow">Selected kit</p><h2 id="kit-browser-heading">{activeCatalogueMeta.name}</h2></div>
-              <button className="add-kit" onClick={addKitToPalette}>Add kit <span>+{activeKitTotal}</span></button>
-            </div>
-            <p className="section-intro">{activeCatalogueMeta.description} <a href={activeCatalogueMeta.sourceUrl} target="_blank" rel="noreferrer">View source <span aria-hidden="true">↗</span></a></p>
-            <div className="kit-piece-list" aria-label={`${activeCatalogueMeta.name} available pieces`}>
-              {kitTerrain.map((def) => {
-                const amountKey = `${activeKitId}:${def.id}`;
-                const kitAmount = kitAddAmounts[amountKey] ?? activeCatalogueMeta.inventory[def.id] ?? 1;
-                return <div className="kit-piece-row" key={def.id} onPointerDown={(event) => { if ((event.target as HTMLElement).closest("input, button")) return; const nextDrag: PaletteDragState = { defId:def.id, x:event.clientX, y:event.clientY, source:"catalogue", amount:kitAmount }; paletteDragRef.current = nextDrag; setPaletteDrag(nextDrag); }}>
-                  <span className={pieceIconClass(def)}><i /></span>
-                  <span className="piece-copy"><strong>{def.shortName}</strong><small>{def.note} · kit includes {activeCatalogueMeta.inventory[def.id]}</small></span>
-                  <div className="kit-piece-actions">
-                    <label className="add-amount"><span className="sr-only">Amount of {def.name} to add</span><input aria-label={`Amount of ${def.name} to add`} type="number" min="1" max="999" value={kitAmount} onChange={(event) => setKitAddAmounts((current) => ({ ...current, [amountKey]:clamp(Number(event.target.value), 1, 999) }))} /></label>
-                    <div className="kit-piece-buttons">
-                      <button className="add-piece-to-palette" onClick={() => addToPalette(def.id, kitAmount)} aria-label={`Add ${kitAmount} ${def.name} to the palette only`} title="Add this quantity to the palette">Add stock</button>
-                      <button className="add-piece-to-board" onClick={() => addFromCatalogue(def.id, kitAmount)} aria-label={`Add ${kitAmount} ${def.name} to the palette and place one on the board`} title="Add this quantity and place one">Place 1</button>
-                    </div>
-                  </div>
-                </div>;
-              })}
-            </div>
-            {activeCatalogueMeta.caveat && <details className="kit-caveat"><summary>Measurement notes</summary><p>{activeCatalogueMeta.caveat}</p></details>}
-          </section>
-        </aside>
+        <TerrainLibrary
+          activeCatalogue={activeCatalogue}
+          activeKitId={activeKitId}
+          activeKit={activeCatalogueMeta}
+          manufacturerKits={manufacturerKits}
+          pieces={kitTerrain}
+          kitTotal={activeKitTotal}
+          addAmounts={kitAddAmounts}
+          onClose={() => setLibraryOpen(false)}
+          onManufacturerChange={selectManufacturer}
+          onKitChange={selectKit}
+          onAddKit={addKitToPalette}
+          onAmountChange={(key, amount) => setKitAddAmounts((current) => ({ ...current, [key]:clamp(amount, 1, 999) }))}
+          onAddStock={addToPalette}
+          onPlaceOne={addFromCatalogue}
+          onPiecePointerDown={(event, defId, amount) => {
+            const nextDrag:PaletteDragState = { defId, x:event.clientX, y:event.clientY, source:"catalogue", amount };
+            paletteDragRef.current = nextDrag;
+            setPaletteDrag(nextDrag);
+          }}
+        />
 
         <div className="board-column">
           <div className="stage-heading"><div><p className="eyebrow">Editing board</p><h2>{boardWidth.toFixed(0)} × {boardHeight.toFixed(0)} in · {theme}</h2></div><span>{pieces.length} placed · {zones.length} reserved zone{zones.length === 1 ? "" : "s"}</span></div>
-          <div className="board-toolbar panel" role="toolbar" aria-label="Layout tools">
-            <div className="tool-group primary-tools"><button className={`tool ${!zoneMode ? "active" : ""}`} aria-label="Select terrain" title="Select terrain" aria-pressed={!zoneMode} onClick={() => { setZoneMode(false); setZoneDraft(null); }}><UiIcon name="pointer" /><span className="tool-label">Select</span></button><button className={`tool ${zoneMode ? "active zone-tool" : ""}`} aria-label="Reserve a clear zone" title="Reserve a clear zone" aria-pressed={zoneMode} onClick={() => { setZoneMode(true); selectOnly(null); setFocusedZone(null); setZoneResize(null); setMarquee(null); setMessage("Name the zone, then drag it on the board"); }}><UiIcon name="zone" /><span className="tool-label">Reserve zone</span></button><span className="tool-divider" aria-hidden="true" /><button className="tool icon-tool" title="Copy selected terrain · Ctrl C" aria-label="Copy selected terrain" onClick={copySelected} disabled={!selectedIds.length || zoneMode}><UiIcon name="copy" /></button><button className="tool icon-tool" title="Paste copied terrain · Ctrl V" aria-label="Paste copied terrain" onClick={pasteCopied} disabled={!copyBuffer || zoneMode}><UiIcon name="paste" /></button><button className="tool icon-tool" title="Duplicate selected terrain · Ctrl D" aria-label="Duplicate selected terrain" onClick={duplicateSelected} disabled={!selectedIds.length || zoneMode}><UiIcon name="duplicate" /></button><button className="tool icon-tool" title="Rotate selected terrain · R" aria-label="Rotate selected terrain" onClick={rotateSelected} disabled={!selectedIds.length || zoneMode}><UiIcon name="rotate" /></button><button className="tool icon-tool danger" title="Delete selected terrain" aria-label="Delete selected terrain" onClick={deleteSelected} disabled={!selectedIds.length || zoneMode}><UiIcon name="trash" /></button><span className="tool-divider" aria-hidden="true" /><button className={`tool`} aria-label={showGrid ? "Hide board grid lines" : "Show board grid lines"} aria-pressed={showGrid} title="Show or hide board grid lines" onClick={() => { setShowGrid((current) => !current); setMessage(showGrid ? "Grid lines hidden" : "Grid lines shown"); }}><UiIcon name="grid" /><span className="tool-label">Grid</span></button><button className="tool" aria-label="Shrink board to fit terrain" onClick={shrinkBoardToTerrain} disabled={!pieces.length && !zones.length} title="Crop the board to the terrain bounds"><UiIcon name="shrink" /><span className="tool-label">Fit board</span></button><button className="tool danger destructive-tool" aria-label="Clear terrain" title="Remove terrain; keep reserved zones" onClick={clearTerrain} disabled={!pieces.length}><UiIcon name="trash" /><span className="tool-label">Clear board</span></button><button className="tool danger destructive-tool" aria-label="Clear reserved zones" title="Remove reserved zones; keep terrain" onClick={() => { setZones([]); setFocusedZone(null); setZoneDraft(null); setZoneResize(null); setMessage("Reserved zones cleared · terrain preserved"); }} disabled={!zones.length}><UiIcon name="zone" /><span className="tool-label">Clear zones</span></button></div>
-            <div className="tool-group settings">
-              <div className="zoom-control" role="group" aria-label="Board zoom"><button aria-label="Zoom board out" title="Zoom out" onClick={() => changeBoardZoom(-1)} disabled={boardZoom === BOARD_ZOOM_STEPS[0]}>−</button><button className="zoom-value" aria-label={`Reset board zoom, currently ${boardZoom}%`} title="Reset to 100%" onClick={() => { setBoardZoom(100); setMessage("Board zoom 100%"); }}>{boardZoom}%</button><button aria-label="Zoom board in" title="Zoom in" onClick={() => changeBoardZoom(1)} disabled={boardZoom === BOARD_ZOOM_STEPS.at(-1)}>+</button></div>
-              <label className="switch-label" title="Snaps matching kit connectors and compatible ordinary wall faces across kits"><input type="checkbox" checked={smartFit} onChange={(event) => { setSmartFit(event.target.checked); setMessage(event.target.checked ? "Smart fit enabled · compatible same-kit and cross-kit wall faces snap cleanly" : "Smart fit disabled · free overlap allowed"); }} /><span className="toggle" /> Smart fit</label>
-              <label className="switch-label"><input type="checkbox" checked={snap} onChange={(event) => setSnap(event.target.checked)} /><span className="toggle" /> Snap</label>
-              {snap && <select aria-label="Snap grid size" value={gridSize} onChange={(event) => setGridSize(Number(event.target.value))}><option value="1">1″ grid</option><option value="0.5">½″ grid</option><option value="0.25">¼″ grid</option></select>}
-              <div className="theme-switch" aria-label="Board style">{(["industrial", "gothic", "desert"] as const).map((item) => <button key={item} className={theme === item ? "active" : ""} aria-pressed={theme === item} onClick={() => setTheme(item)}>{item}</button>)}</div>
-            </div>
-          </div>
+          <BoardToolbar
+            zoneMode={zoneMode} showGrid={showGrid} hasSelection={selectedIds.length > 0}
+            canPaste={copyBuffer !== null} hasTerrain={pieces.length > 0} hasZones={zones.length > 0}
+            boardZoom={boardZoom} snap={snap} smartFit={smartFit} gridSize={gridSize} theme={theme}
+            onSelectMode={() => { setZoneMode(false); setZoneDraft(null); }}
+            onZoneMode={() => { setZoneMode(true); selectOnly(null); setFocusedZone(null); setZoneResize(null); setMarquee(null); setMessage("Name the zone, then drag it on the board"); }}
+            onCopy={copySelected} onPaste={pasteCopied} onDuplicate={duplicateSelected}
+            onRotate={rotateSelected} onDelete={deleteSelected} onToggleGrid={() => { setShowGrid((current) => !current); setMessage(showGrid ? "Grid lines hidden" : "Grid lines shown"); }}
+            onFitBoard={shrinkBoardToTerrain} onClearBoard={clearTerrain}
+            onClearZones={() => { setZones([]); setFocusedZone(null); setZoneDraft(null); setZoneResize(null); setMessage("Reserved zones cleared · terrain preserved"); }}
+            onZoom={changeBoardZoom} onResetZoom={() => { setBoardZoom(100); setMessage("Board zoom 100%"); }}
+            onSmartFitChange={(value) => { setSmartFit(value); setMessage(value ? "Smart fit enabled" : "Smart fit disabled"); }}
+            onSnapChange={setSnap} onGridSizeChange={setGridSize} onThemeChange={setTheme}
+          />
           {zoneMode && <div className="zone-designator panel"><label><span>Zone name</span><input aria-label="Zone name" value={zoneName} maxLength={32} onChange={(event) => setZoneName(event.target.value)} /></label><p>Drag on the grid to reserve a clear area. Hold <kbd>Shift</kbd> while dragging for a perfect square.</p><strong>{zones.length} saved</strong></div>}
 
           <div ref={boardAreaRef} className={`board-area ${boardPanning ? "panning" : ""}`} title="Scroll to zoom · hold the mouse wheel and drag to pan" onWheel={zoomBoardAtPointer} onPointerDownCapture={beginBoardPan} onPointerMoveCapture={moveBoardPan} onPointerUpCapture={finishBoardPan} onPointerCancelCapture={finishBoardPan} onAuxClick={(event) => { if (event.button === 1) event.preventDefault(); }}><div className="board-pan-stage" style={{ "--board-stage-width":`${boardZoom + Math.max(0, boardZoom - 100) * .9}cqw`, "--board-stage-height":`${boardZoom + Math.max(0, boardZoom - 100) * .9}cqh` } as CSSProperties}><div className="board-frame" style={{ "--board-ratio":boardWidth / boardHeight, "--board-zoom":boardZoom / 100 } as CSSProperties}>
@@ -1545,82 +1136,45 @@ export default function Home() {
 
         <aside id="generator-panel" className="inspector panel">
           <div className="inspector-heading"><p className="eyebrow">{inspectorTab === "palette" ? "Generation studio" : "Board intelligence"}</p><h2>{inspectorTab === "palette" ? "Shape the board" : "Review the layout"}</h2></div>
-          {inspectorTab === "palette" ? <section className="palette-builder" aria-labelledby="generator-palette-heading">
-            <div className="palette-selection-summary" aria-label="Current board selection">
-              {selectedPiece ? <>
-                <span className={pieceIconClass(getDef(selectedPiece.defId))}><i /></span>
-                <div className="palette-selection-copy"><span>{selectedIds.length > 1 ? "Selected group" : "Selected piece"}</span><strong>{selectedIds.length > 1 ? `${selectedIds.length} pieces` : getDef(selectedPiece.defId).shortName}</strong><small>{selectedIds.length > 1 ? "Edit height for the full selection" : `${Math.round((selectedPiece.rotation === 90 ? getDef(selectedPiece.defId).depth : getDef(selectedPiece.defId).width) * MM_PER_IN)} × ${Math.round((selectedPiece.rotation === 90 ? getDef(selectedPiece.defId).width : getDef(selectedPiece.defId).depth) * MM_PER_IN)} mm · ${selectedPiece.rotation}°`}</small></div>
-                <label className="palette-selection-height"><span>Z height</span><span className="dimension-input"><input aria-label="Selected piece height in palette view" type="number" min="10" max="300" step="1" value={Math.round(selectedPiece.height * MM_PER_IN)} onChange={(event) => setSelectedHeightMm(Number(event.target.value))} /> mm</span></label>
-              </> : <div className="palette-selection-copy empty"><span>Board selection</span><strong>No terrain selected</strong><small>Click a piece to inspect it here</small></div>}
-              <div className="palette-selection-stats"><span><strong>{pieces.length}</strong> placed</span><span><strong>{paletteUsed}</strong> / {catalogueTotal} used</span><span><strong>{zones.length}</strong> zones</span></div>
-            </div>
-            <div className="section-heading">
-              <div><p className="eyebrow">Layout inventory</p><h2 id="generator-palette-heading">Generator palette</h2></div>
-              <div className="section-actions"><span className="count">{catalogueTotal} pcs</span><button className="text-action danger clear-action" onClick={clearPalette} disabled={!catalogueTotal} title="Remove every item from the palette"><UiIcon name="trash" />Clear all</button></div>
-            </div>
-            {catalogueTotal > 0 && <div className="palette-generation-controls">
-              <label className="generation-target palette-generation-target" title="Maximum share of the palette to use."><span>Use up to <strong>{generationPercent}%</strong></span><input type="range" min="20" max="100" step="5" value={generationPercent} onChange={(event) => setGenerationPercent(Number(event.target.value))} aria-label="Maximum palette use" /></label>
-              <label className="generation-target palette-generation-target" title="Choose where the generated layout sits."><span>Placement</span><select value={anchor} onChange={(event) => setAnchor(event.target.value as Anchor)} aria-label="Generated layout placement"><option value="fill">Fill the table</option><option value="corner">Into a corner</option><option value="edge">Against an edge</option><option value="centre">Centred island</option></select></label>
-              {paletteDoorTotal > 0 && <div className="door-range-control"><span>Doors used</span><label><small>Min</small><select aria-label="Minimum doors used" value={effectiveDoorMin} onChange={(event) => { const min = Number(event.target.value); setDoorRange((current) => ({ min, max:Math.max(min, current.max) })); }}>{Array.from({ length:paletteDoorTotal + 1 }, (_, value) => <option key={value} value={value}>{value}</option>)}</select></label><span aria-hidden="true">–</span><label><small>Max</small><select aria-label="Maximum doors used" value={effectiveDoorMax} onChange={(event) => { const max = Number(event.target.value); setDoorRange((current) => ({ min:Math.min(current.min, max), max })); }}>{Array.from({ length:paletteDoorTotal + 1 }, (_, value) => <option key={value} value={value}>{value}</option>)}</select></label></div>}
-              <button className="primary palette-generate" onClick={generateFromPalette} aria-label="Generate layout from current terrain palette">Generate from palette</button>
-            </div>}
-            {catalogueTotal > 0 && <div className="palette-range"><span>{paletteMaker}</span><strong>{paletteLabel}</strong><em>{Math.max(0, catalogueTotal - paletteUsed)} unplaced</em></div>}
-            <div className="palette-list" aria-label="Current generator terrain palette">
-              {!catalogueTotal && <div className="palette-empty"><strong>Palette empty</strong><span>Add a kit or individual pieces from the library.</span></div>}
-              {catalogueTerrain.map((def) => {
-                const remaining = Math.max(0, limits[def.id] - (used[def.id] || 0));
-                return (
-                <div className="palette-row" key={def.id} onPointerDown={(event) => { if (remaining === 0 || (event.target as HTMLElement).closest("input, .remove-palette")) return; const nextDrag: PaletteDragState = { defId:def.id, x:event.clientX, y:event.clientY, source:"palette" }; paletteDragRef.current = nextDrag; setPaletteDrag(nextDrag); }}>
-                  <button className="piece-add" onClick={() => addPiece(def.id)} disabled={remaining === 0} aria-label={`Place ${def.name}`}>
-                    <span className={pieceIconClass(def)}><i /></span>
-                    <span className="piece-copy"><strong>{def.shortName}</strong><small>{def.note} · Z {Math.round(heightDefaults[def.id] * MM_PER_IN)} mm</small></span>
-                  </button>
-                  <label className="palette-quantity"><span>Available</span><input aria-label={`${def.name} palette quantity`} type="number" min="0" max="999" value={limits[def.id]} onChange={(event) => setPaletteQuantity(def.id, Number(event.target.value))} /><em>{remaining} left</em></label>
-                  <button className="remove-palette" aria-label={`Remove ${def.name} from palette`} title="Remove from palette" onClick={() => setPaletteQuantity(def.id, 0)}>×</button>
-                </div>
-              );
-            })}
-            </div>
-          </section> : <>
-            <p className="eyebrow">Layout analysis</p><h2>{pieces.length ? "Playable sector" : "Ready to build"}</h2>
-            {selectedPiece && <div className="selected-piece-editor">
-              <div><span>{selectedIds.length > 1 ? "Selected group" : "Selected piece"}</span><strong>{selectedIds.length > 1 ? `${selectedIds.length} pieces` : getDef(selectedPiece.defId).shortName}</strong></div>
-              <label><span>Height · Z</span><span className="dimension-input"><input aria-label="Selected piece height" type="number" min="10" max="300" step="1" value={Math.round(selectedPiece.height * MM_PER_IN)} onChange={(event) => setSelectedHeightMm(Number(event.target.value))} /> mm</span></label>
-              <small>{selectedIds.length > 1 ? "Height changes apply to the whole selection" : `${getDef(selectedPiece.defId).note} footprint`}</small>
-            </div>}
-            <div className="metric"><span>Current layout</span><strong>{pieces.length} pcs</strong></div>
-            <div className="metric"><span>Palette used</span><strong>{paletteUsed} / {catalogueTotal}</strong></div>
-            <div className="metric"><span>Generator palette</span><strong>{paletteMaker || "None"}</strong></div>
-            <div className="metric"><span>Footprint coverage</span><strong>{coverage.toFixed(1)}%</strong></div><div className="meter"><i style={{ width:`${Math.min(coverage * 5, 100)}%` }} /></div>
-            <div className="metric"><span>Reserved clear space</span><strong>{zones.length} · {reservedCoverage.toFixed(1)}%</strong></div>
-            <div className="metric"><span>{paletteCatalogues.length > 1 ? "Walls + hatchways" : generationJoint === "straddle" ? "Operable doorways" : "Wall modules"}</span><strong>{paletteCatalogues.length > 1 ? wallPieces.length : generationJoint === "straddle" ? doors : wallPieces.length}</strong></div><div className="metric"><span>Corridor loops</span><strong>{loops}</strong></div><div className="metric"><span>Open chambers</span><strong>{chambers}</strong></div>
-            <div className="divider" />
-            <p className="inspector-copy">{paletteCatalogues.length === 1 && paletteCatalogues[0] === "eberleg" ? "An unofficial, print-at-home proxy for Games Workshop’s Zone Mortalis terrain. Not affiliated with or endorsed by Games Workshop." : paletteCatalogues.length > 1 ? "Each terrain system keeps its own physical assembly rules while compatible ordinary wall faces align across kits." : generationJoint === "straddle" ? `Walls and doors slot into the ${generationRange} support grid.` : `${generationRange} pieces retain their own connector system.`}</p>
-            {paletteCatalogues.length === 1 && paletteCatalogues[0] === "eberleg" ? <div className="eberleg-legend" aria-label="Eberleg terrain legend">{EBERLEG_LEGEND.map((def) => <span key={def.id}><span className={pieceIconClass(def)}><i /></span><small>{def.shortName.replace("Eb ", "")}</small></span>)}</div> : <div className="layout-key">{paletteCatalogues.length > 1 ? <><span><i className="key-wall" /> Compatible wall</span><span><i className="key-door" /> Door / hatch</span><span><i className="key-pillar" /> System support</span></> : generationJoint === "straddle" ? <><span><i className="key-wall" /> Wall</span><span><i className="key-door" /> Doorway</span><span><i className="key-pillar" /> Column</span><span><i className="key-open" /> Open face</span></> : <><span><i className="key-wall" /> Wall</span><span><i className="key-door" /> Wall end</span><span><i className="key-pillar" /> Connector</span></>}</div>}
-            {usedInventory.length > 0 && <div className="bom">
-              <div className="bom-heading"><strong>What to pull off the sprue</strong><span>{usedTotal} pcs total</span></div>
-              <p className="bom-intro">Exact pieces used on this board.</p>
-              {usedInventory.map((group) => <div className="bom-group" key={group.catalogue}>
-                {usedInventory.length > 1 && <div className="bom-group-heading">{group.maker} · {group.range}</div>}
-                {group.items.map(({ def, count }) => <div className="bom-row" key={def.id}>
-                  <span className={pieceIconClass(def)}><i /></span>
-                  <span className="piece-copy"><strong>{def.shortName}</strong><small>{def.note}</small></span>
-                  <strong className="bom-count">× {count}</strong>
-                </div>)}
-              </div>)}
-            </div>}
-            {catalogueTotal > 0 && <details className="height-settings inspector-height">
-              <summary><span><strong>Advanced dimensions</strong><small>3D and export height defaults</small></span><em>Z axis · mm</em></summary>
-              <p className="height-explainer">Export heights only; footprints stay fixed.</p>
-              <div className="height-grid">
-                {familyIsAvailable("wall") && <label><span>Structures</span><input aria-label={`${paletteLabel} structure default height`} type="number" min="10" max="300" step="1" value={familyHeightMm("wall")} onChange={(event) => setFamilyHeightMm("wall", Number(event.target.value))} /></label>}
-                {familyIsAvailable("support") && <label><span>{paletteCatalogues.length > 1 ? "Supports" : generationJoint === "straddle" ? "Columns" : "Connectors"}</span><input aria-label={`${paletteLabel} support default height`} type="number" min="10" max="300" step="1" value={familyHeightMm("support")} onChange={(event) => setFamilyHeightMm("support", Number(event.target.value))} /></label>}
-                {familyIsAvailable("end") && <label><span>Wall ends</span><input aria-label={`${paletteLabel} end default height`} type="number" min="10" max="300" step="1" value={familyHeightMm("end")} onChange={(event) => setFamilyHeightMm("end", Number(event.target.value))} /></label>}
-              </div>
-            </details>}
-            {zones.length > 0 && <div className="zone-list"><div className="zone-list-heading"><span>Reserved zones</span><button onClick={() => { setZones([]); setFocusedZone(null); setZoneDraft(null); setZoneResize(null); setMessage("Reserved zones cleared"); }}>Clear all</button></div><small className="zone-list-hint">Hover a zone for temporary handles, or click it to keep them active.</small>{zones.map((zone) => <div className={`zone-list-row ${focusedZone === zone.uid ? "active" : ""}`} key={zone.uid} onPointerDown={() => setFocusedZone(zone.uid)}><input aria-label={`Rename ${zone.name}`} value={zone.name} maxLength={32} onFocus={() => setFocusedZone(zone.uid)} onChange={(event) => setZones((current) => current.map((item) => item.uid === zone.uid ? { ...item, name:event.target.value } : item))} /><span>{zone.width.toFixed(1)} × {zone.height.toFixed(1)}″</span><button aria-label={`Remove ${zone.name}`} onClick={() => { setZones((current) => current.filter((item) => item.uid !== zone.uid)); if (focusedZone === zone.uid) setFocusedZone(null); if (zoneResize?.uid === zone.uid) setZoneResize(null); }}>×</button></div>)}</div>}
-            <p className="accuracy-note">Scale: {boardWidth} × {boardHeight}″ · 25.4 mm/in. Published dimensions where available; otherwise measured approximations.</p>
-          </>}
+          {inspectorTab === "palette" ? <PalettePanel
+            selectedPiece={selectedPiece} selectedCount={selectedIds.length}
+            placedCount={pieces.length} paletteUsed={paletteUsed} catalogueTotal={catalogueTotal}
+            zoneCount={zones.length} generationPercent={generationPercent} anchor={anchor}
+            doorTotal={paletteDoorTotal} doorMin={effectiveDoorMin} doorMax={effectiveDoorMax}
+            paletteMaker={paletteMaker} paletteLabel={paletteLabel} terrain={catalogueTerrain}
+            used={used} limits={limits} heightDefaults={heightDefaults}
+            onSelectedHeightChange={setSelectedHeightMm} onClear={clearPalette}
+            onGenerationPercentChange={setGenerationPercent} onAnchorChange={setAnchor}
+            onDoorMinChange={(min) => setDoorRange((current) => ({ min, max:Math.max(min, current.max) }))}
+            onDoorMaxChange={(max) => setDoorRange((current) => ({ min:Math.min(current.min, max), max }))}
+            onGenerate={generateFromPalette} onPlace={addPiece} onQuantityChange={setPaletteQuantity}
+            onPiecePointerDown={(event, defId) => {
+              const nextDrag:PaletteDragState = { defId, x:event.clientX, y:event.clientY, source:"palette" };
+              paletteDragRef.current = nextDrag;
+              setPaletteDrag(nextDrag);
+            }}
+          /> : <AnalysisPanel
+            pieces={pieces} selectedPiece={selectedPiece} selectedCount={selectedIds.length}
+            paletteUsed={paletteUsed} catalogueTotal={catalogueTotal}
+            paletteMaker={paletteMaker} paletteLabel={paletteLabel} paletteCatalogues={paletteCatalogues}
+            generationJoint={generationJoint} generationRange={generationRange}
+            coverage={coverage} zones={zones} reservedCoverage={reservedCoverage}
+            wallCount={wallPieces.length} doorCount={doors} loops={loops} chambers={chambers}
+            usedInventory={usedInventory} boardWidth={boardWidth} boardHeight={boardHeight}
+            focusedZone={focusedZone} onSelectedHeightChange={setSelectedHeightMm}
+            familyIsAvailable={familyIsAvailable} familyHeightMm={familyHeightMm}
+            onFamilyHeightChange={setFamilyHeightMm}
+            onZonesChange={setZones} onFocusedZoneChange={setFocusedZone}
+            onZoneResizeCancel={(uid) => {
+              if (!uid) {
+                setZoneDraft(null);
+                setZoneResize(null);
+                setMessage("Reserved zones cleared");
+              } else if (zoneResize?.uid === uid) {
+                setZoneResize(null);
+              }
+            }}
+          />}
         </aside>
       </section>
       {paletteDrag && <div className="drag-preview" style={{ left:paletteDrag.x, top:paletteDrag.y }}><span className={pieceIconClass(getDef(paletteDrag.defId))}><i /></span><small>{getDef(paletteDrag.defId).shortName}</small></div>}
